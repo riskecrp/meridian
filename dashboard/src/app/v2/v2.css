@@ -225,7 +225,32 @@
 .v2-root .restricted { display: flex; align-items: center; gap: 8px; margin: 12px 16px; padding: 8px 12px; background: var(--lock-bg); border: 1px solid color-mix(in srgb, var(--lock) 22%, transparent); border-radius: 8px; font-size: 11.5px; color: var(--lock); font-weight: 550; }
 .v2-root .imp-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 14px 16px; }
 .v2-root .imp-chips .ic-chip { font-family: var(--v2-mono); font-size: 10.5px; padding: 3px 8px; border-radius: 6px; background: var(--panel-2); color: var(--ink-1); border: 1px solid var(--line); }
-.v2-root .sub-tabs { display: flex; gap: 3px; padding: 10px 14px 0; }
+.v2-root .sub-tabs { display: flex; gap: 3px; padding: 10px 14px 0; flex-wrap: wrap; }
+/* cap meter */
+.v2-root .cap { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid var(--line); }
+.v2-root .cap:last-child { border-bottom: none; }
+.v2-root .cap .lbl { font-family: var(--v2-mono); font-size: 10.5px; color: var(--ink-2); width: 92px; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.04em; }
+.v2-root .cap .bar { flex: 1; height: 7px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+.v2-root .cap .bar .fill { height: 100%; border-radius: 4px; background: var(--accent); }
+.v2-root .cap .bar .fill.full { background: var(--rose); }
+.v2-root .cap .num { font-family: var(--v2-mono); font-size: 11.5px; color: var(--ink-1); font-variant-numeric: tabular-nums; width: 72px; text-align: right; flex-shrink: 0; }
+.v2-root .cap .num b { color: var(--ink-0); }
+/* import toggle row */
+.v2-root .imp-row { display: flex; align-items: center; gap: 10px; padding: 7px 16px; border-bottom: 1px solid var(--line); }
+.v2-root .imp-row:last-child { border-bottom: none; }
+.v2-root .imp-row .nm { flex: 1; font-size: 12.5px; color: var(--ink-1); }
+.v2-root .imp-row .tg { font-size: 10px; font-weight: 700; font-family: var(--v2-mono); padding: 3px 10px; border-radius: 20px; cursor: pointer; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-3); }
+.v2-root .imp-row .tg.on { background: var(--good-bg); color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.v2-root .imp-row .tg:disabled { cursor: default; opacity: 0.7; }
+.v2-root .imp-grp { font-family: var(--v2-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); padding: 10px 16px 5px; background: var(--panel-2); }
+/* alert pills on overview */
+.v2-root .alerts { display: flex; flex-wrap: wrap; gap: 7px; }
+.v2-root .alert { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; padding: 5px 11px; border-radius: 8px; }
+.v2-root .alert.promo { background: var(--good-bg); color: var(--good); }
+.v2-root .alert.rp { background: var(--sky-bg); color: var(--sky); }
+.v2-root .alert.warn { background: var(--warn-bg); color: var(--warn); }
+.v2-root .alert.lock { background: var(--lock-bg); color: var(--lock); }
+.v2-root .qa { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
 @media (max-width: 860px) { .v2-root .hub-body { grid-template-columns: 1fr; } .v2-root .kv { grid-template-columns: repeat(2,1fr); } }
 
 @media (max-width: 860px) {
