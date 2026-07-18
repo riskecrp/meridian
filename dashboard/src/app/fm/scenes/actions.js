@@ -1,7 +1,6 @@
 "use server";
 import { query, queryOne, run } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendDiscord, getChannel } from "../../../lib/discord.js";
 import { requireActor } from "../../../lib/requireActor.js";
 
 const MERIDIAN_DB_CHANNEL = '1457201300583485491';
@@ -63,17 +62,13 @@ export async function submitScene(data) {
     }
 
     if (data.items?.length > 0) {
-      const leadershipCh = getChannel('leadership_channel');
       for (const sel of data.items) {
-        const item = queryOne("SELECT id, current_stock, threshold, purchaseable FROM inventory_stock WHERE name = ?", [sel.name]);
+        const item = queryOne("SELECT id, current_stock FROM inventory_stock WHERE name = ?", [sel.name]);
         const qty = parseInt(sel.qty);
         if (item && qty > 0) {
           const newStock = item.current_stock - qty;
           run("UPDATE inventory_stock SET current_stock = ?, updated_at = datetime('now') WHERE id = ?", [newStock, item.id]);
           run("INSERT INTO inventory_logs (date, item_name, quantity, distributed_by) VALUES (?, ?, ?, ?)", [dt, sel.name, qty, actor.name]);
-          if (newStock <= item.threshold && item.purchaseable === 0 && leadershipCh) {
-            await sendDiscord(leadershipCh, `⚠️ **LOW INVENTORY ALERT**\n**${sel.name}** is at **${newStock}** units (threshold: ${item.threshold})\nThis item is not purchaseable in-store.`);
-          }
         }
       }
     }
