@@ -7,7 +7,11 @@ import {
   getFactions, getFactionDetail, getFactionContacts, getFactionImports,
   toggleFactionImport, stagePromotion, completePromotion, cancelPromotion, demoteFaction,
 } from "../../../fm/factions/actions.js";
-import { getReviewHistory } from "../../../fm/leadership/actions.js";
+import {
+  getReviewHistory, getReviewData, submitReview, setReviewStatus,
+  getFactionLeadershipSummary, getMyPersonalNotes, submitPersonalNote,
+  generateFeedbackDraft, adjustFeedbackDraft, sendFeedbackToFaction, markFeedbackSent,
+} from "../../../fm/leadership/actions.js";
 import {
   getFleetOverview, getFleetTierDefaults,
   addFleetVehicle, deleteFleetVehicle, addFleetGarage, deleteFleetGarage,
@@ -48,6 +52,12 @@ export default function FactionHub() {
   const [fleet, setFleet] = useState(null);
   const [tierDefaults, setTierDefaults] = useState({});
   const [reviews, setReviews] = useState([]);
+  const [reviewInfo, setReviewInfo] = useState(null); // { scenes30/60/90, forumPosts, currentReview }
+  const [leadSummary, setLeadSummary] = useState({ notes: [], pending: [] });
+  const [myNotes, setMyNotes] = useState([]);
+  const [recForm, setRecForm] = useState({ recommendation: "", feedback: "" });
+  const [noteText, setNoteText] = useState("");
+  const [fbMsg, setFbMsg] = useState("");
   const [tab, setTab] = useState("overview");
   const [actSub, setActSub] = useState("scenes");
   const [capSub, setCapSub] = useState("imports");
@@ -68,7 +78,16 @@ export default function FactionHub() {
     getFactionImports(d.id).then(i => setImports(i || [])).catch(() => {});
     getFleetTierDefaults().then(setTierDefaults).catch(() => {});
     if (isL3) getFleetOverview().then(all => setFleet((all || []).find(f => f.id === d.id) || null)).catch(() => {});
-    if (isLeader) getReviewHistory(d.id).then(r => setReviews(r || [])).catch(() => {});
+    if (isLeader) {
+      getReviewHistory(d.id).then(r => setReviews(r || [])).catch(() => {});
+      getReviewData().then(all => {
+        const info = (all || []).find(f => f.id === d.id) || null;
+        setReviewInfo(info);
+        if (info?.currentReview) setRecForm({ recommendation: info.currentReview.recommendation || "", feedback: info.currentReview.feedback || "" });
+      }).catch(() => {});
+      getFactionLeadershipSummary(d.id).then(s => setLeadSummary(s || { notes: [], pending: [] })).catch(() => {});
+      if (isL3) getMyPersonalNotes(d.id).then(n => setMyNotes(n || [])).catch(() => {});
+    }
     setLoading(false);
   };
 
@@ -347,84 +366,171 @@ export default function FactionHub() {
         </div>
       )}
 
-      {/* ── Review (L2+) ── */}
-      {tab === "review" && isLeader && (
-        <div className="hub-body">
-          <div className="stack">
-            <div className="card">
-              <div className="hd"><div className="t">Monthly decision</div><div className="meta">Tier {detail.tier}</div></div>
-              <div className="restricted">Confidential to Leadership</div>
-              {staged ? (
-                <div style={{ padding: "4px 16px 14px" }}>
-                  <div className="alert promo" style={{ marginBottom: 10 }}>📋 Staged → Tier {staged.tier} · {(staged.imports || []).length} imports</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button className="act good" disabled={busy} onClick={() => run(() => completePromotion(detail.id, detail.name))}>Complete promotion</button>
-                    <button className="act warn" disabled={busy} onClick={() => run(() => cancelPromotion(detail.id, detail.name))}>Cancel</button>
-                  </div>
+      {/* ── Review (L2+) — the monthly workspace ── */}
+      {tab === "review" && isLeader && (() => {
+        const cur = reviewInfo?.currentReview;
+        const REC = [{ v: "Promote", cls: "good" }, { v: "Hold", cls: "" }, { v: "Demote", cls: "warn" }, { v: "Remove", cls: "warn" }];
+        const canReview = reviewInfo?.mine || isL3;
+        return (
+          <div className="hub-body">
+            <div className="stack">
+              {/* Evidence */}
+              <div className="card">
+                <div className="hd"><div className="t">Activity — the evidence</div></div>
+                <div className="metrics" style={{ marginBottom: 0, borderBottom: "none", gap: 26, paddingTop: 6 }}>
+                  <div className="metric"><div className="l">Scenes · this mo</div><div className="v">{reviewInfo?.scenes30 ?? summary?.scenes30d ?? 0}</div></div>
+                  <div className="metric"><div className="l">Prev mo</div><div className="v">{reviewInfo?.scenes60 ?? 0}</div></div>
+                  <div className="metric"><div className="l">2 mo ago</div><div className="v">{reviewInfo?.scenes90 ?? 0}</div></div>
+                  <div className="metric"><div className="l">Forum · 30d</div><div className="v">{reviewInfo?.forumPosts ?? summary?.forumPosts ?? 0}</div></div>
                 </div>
-              ) : (
-                <div style={{ padding: "4px 16px 14px" }}>
-                  <div style={{ fontSize: 12.5, color: "var(--ink-2)", marginBottom: 10 }}>This month’s decision:</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {isL3 && <button className="act primary" onClick={() => setForm({ kind: "promote", tier: String(detail.tier + 1), picks: new Set(imports.filter(i => i.permitted).map(i => i.name)) })}>Promote ↑</button>}
-                    {isL3 && <button className="act warn" onClick={() => setForm({ kind: "demote", tier: String(Math.max(1, detail.tier - 1)) })}>Demote ↓</button>}
-                    <span className="act" style={{ cursor: "default", opacity: 0.7 }}>Stay = no change</span>
-                  </div>
-                  {!isL3 && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 8 }}>Promotion/demotion is executed by L3.</div>}
+              </div>
 
-                  {form?.kind === "promote" && (
-                    <div className="inline-form" style={{ marginTop: 12 }}>
-                      <div className="lbl">Promote to tier</div>
-                      <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>
-                        {[...Array(9)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}
-                      </select>
-                      <div className="lbl" style={{ marginTop: 4 }}>Imports this tier grants ({form.picks.size} selected)</div>
-                      <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
-                        {imports.map(i => (
-                          <div className="imp-row" key={i.id}>
-                            <span className="nm">{i.name} <span style={{ color: "var(--ink-3)", fontSize: 10 }}>T{i.tier}</span></span>
-                            <button className={`tg${form.picks.has(i.name) ? " on" : ""}`} onClick={() => {
-                              const p = new Set(form.picks); p.has(i.name) ? p.delete(i.name) : p.add(i.name); setForm({ ...form, picks: p });
-                            }}>{form.picks.has(i.name) ? "Granted" : "Off"}</button>
-                          </div>
-                        ))}
-                      </div>
-                      {err && <div className="err">{err}</div>}
-                      <div className="row-btns">
-                        <button className="act primary" disabled={busy} onClick={() => run(() => stagePromotion(detail.id, detail.name, parseInt(form.tier), [...form.picks]))}>Stage promotion</button>
-                        <button className="act" onClick={() => { setForm(null); setErr(""); }}>Cancel</button>
-                      </div>
+              {/* The review */}
+              <div className="card">
+                <div className="hd"><div className="t">This month’s review</div>{cur && <div className="meta">{cur.status || "Pending Discussion"}</div>}</div>
+                <div className="restricted">Confidential to Leadership · shared with the team lead to write the 15th message</div>
+                {!canReview && <div className="empty">You can view but only {reviewInfo?.teamName || "the owning team"}’s leads (or L3) edit this review.</div>}
+                {canReview && (
+                  <div style={{ paddingTop: 6 }}>
+                    <div className="lbl" style={{ fontFamily: "var(--v2-mono)", fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 6 }}>Recommendation</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                      {REC.map(r => (
+                        <button key={r.v} className={`act${recForm.recommendation === r.v ? " primary" : ` ${r.cls}`}`}
+                          onClick={() => setRecForm({ ...recForm, recommendation: r.v })}>{r.v}</button>
+                      ))}
                     </div>
-                  )}
-                  {form?.kind === "demote" && (
-                    <div className="inline-form" style={{ marginTop: 12 }}>
-                      <div className="lbl">Demote to tier</div>
-                      <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>
-                        {[...Array(detail.tier)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}
-                      </select>
-                      {err && <div className="err">{err}</div>}
-                      <div className="row-btns">
-                        <button className="act warn" disabled={busy} onClick={() => run(() => demoteFaction(detail.id, detail.name, parseInt(form.tier)))}>Confirm demotion</button>
-                        <button className="act" onClick={() => { setForm(null); setErr(""); }}>Cancel</button>
-                      </div>
+                    <textarea className="filter-inp" rows={5} placeholder="Written feedback for this faction — what went well, what to improve…"
+                      value={recForm.feedback} onChange={e => setRecForm({ ...recForm, feedback: e.target.value })} style={{ marginBottom: 8 }} />
+                    {err && <div className="err" style={{ marginBottom: 6 }}>{err}</div>}
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="act primary" disabled={busy || !recForm.recommendation || !recForm.feedback.trim()}
+                        onClick={() => run(() => submitReview({ factionId: detail.id, factionName: detail.name, recommendation: recForm.recommendation, feedback: recForm.feedback }))}>
+                        {cur ? "Update review" : "Submit review"}
+                      </button>
                     </div>
-                  )}
+                    {cur && (
+                      <div style={{ marginTop: 14 }}>
+                        <div className="lbl" style={{ fontFamily: "var(--v2-mono)", fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 6 }}>Confirm outcome</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {["Confirmed Promote", "Confirmed Hold", "Confirmed Demote", "Confirmed Remove"].map(st => (
+                            <button key={st} className={`act${cur.status === st ? " primary" : ""}`} disabled={busy}
+                              onClick={() => run(() => setReviewStatus(cur.id, st))}>{st.replace("Confirmed ", "")}</button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Feedback message to the faction */}
+              <div className="card">
+                <div className="hd"><div className="t">Feedback message · the 15th</div></div>
+                <div style={{ paddingTop: 6 }}>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+                    <button className="act" disabled={busy} onClick={async () => {
+                      setBusy(true); setErr("");
+                      const r = await generateFeedbackDraft(detail.id).catch(() => ({ ok: false, error: "Draft failed" }));
+                      setBusy(false);
+                      if (r.ok) setFbMsg(r.message || r.draft || r.text || ""); else setErr(r.error || "Draft failed");
+                    }}>✦ Generate draft</button>
+                  </div>
+                  <textarea className="filter-inp" rows={5} placeholder="The message sent to the faction. Generate a draft, edit, then send."
+                    value={fbMsg} onChange={e => setFbMsg(e.target.value)} style={{ marginBottom: 8 }} />
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className="act primary" disabled={busy || !fbMsg.trim()} onClick={() => run(() => sendFeedbackToFaction(detail.id, fbMsg))}>Send to faction</button>
+                    <button className="act" disabled={busy} onClick={() => run(() => markFeedbackSent(detail.id))}>Mark sent (manual)</button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tier execution */}
+              <div className="card">
+                <div className="hd"><div className="t">Apply outcome → tier</div><div className="meta">Tier {detail.tier}</div></div>
+                {staged ? (
+                  <div style={{ paddingTop: 6 }}>
+                    <div className="alert promo" style={{ marginBottom: 10 }}>📋 Staged → Tier {staged.tier} · {(staged.imports || []).length} imports</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="act good" disabled={busy} onClick={() => run(() => completePromotion(detail.id, detail.name))}>Complete promotion</button>
+                      <button className="act warn" disabled={busy} onClick={() => run(() => cancelPromotion(detail.id, detail.name))}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ paddingTop: 6 }}>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {isL3 && <button className="act primary" onClick={() => setForm({ kind: "promote", tier: String(Math.min(9, detail.tier + 1)), picks: new Set(imports.filter(i => i.permitted).map(i => i.name)) })}>Stage promotion ↑</button>}
+                      {isL3 && <button className="act warn" onClick={() => setForm({ kind: "demote", tier: String(Math.max(1, detail.tier - 1)) })}>Demote ↓</button>}
+                      <span className="act" style={{ cursor: "default", opacity: 0.6 }}>Hold = no change</span>
+                    </div>
+                    {!isL3 && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 8 }}>Promotion/demotion is executed by L3.</div>}
+                    {form?.kind === "promote" && (
+                      <div className="inline-form" style={{ marginTop: 12 }}>
+                        <div className="lbl">Promote to tier</div>
+                        <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>
+                          {[...Array(9)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}
+                        </select>
+                        <div className="lbl" style={{ marginTop: 4 }}>Imports this tier grants ({form.picks.size} selected)</div>
+                        <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px" }}>
+                          {imports.map(i => (
+                            <div className="imp-row" key={i.id}>
+                              <span className="nm">{i.name} <span style={{ color: "var(--ink-3)", fontSize: 10 }}>T{i.tier}</span></span>
+                              <button className={`tg${form.picks.has(i.name) ? " on" : ""}`} onClick={() => { const p = new Set(form.picks); p.has(i.name) ? p.delete(i.name) : p.add(i.name); setForm({ ...form, picks: p }); }}>{form.picks.has(i.name) ? "Granted" : "Off"}</button>
+                            </div>
+                          ))}
+                        </div>
+                        {err && <div className="err">{err}</div>}
+                        <div className="row-btns">
+                          <button className="act primary" disabled={busy} onClick={() => run(() => stagePromotion(detail.id, detail.name, parseInt(form.tier), [...form.picks]))}>Stage</button>
+                          <button className="act" onClick={() => { setForm(null); setErr(""); }}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                    {form?.kind === "demote" && (
+                      <div className="inline-form" style={{ marginTop: 12 }}>
+                        <div className="lbl">Demote to tier</div>
+                        <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>
+                          {[...Array(detail.tier)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}
+                        </select>
+                        {err && <div className="err">{err}</div>}
+                        <div className="row-btns">
+                          <button className="act warn" disabled={busy} onClick={() => run(() => demoteFaction(detail.id, detail.name, parseInt(form.tier)))}>Confirm demotion</button>
+                          <button className="act" onClick={() => { setForm(null); setErr(""); }}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Side: personal notes + history */}
+            <div className="stack">
+              {isL3 && (
+                <div className="card">
+                  <div className="hd"><div className="t">Leadership notes</div><div className="meta">{(leadSummary.notes || []).length} in · {(leadSummary.pending || []).length} pending</div></div>
+                  <textarea className="filter-inp" rows={3} placeholder="Your private note on this faction this month…" value={noteText} onChange={e => setNoteText(e.target.value)} style={{ marginBottom: 6 }} />
+                  <button className="act primary" disabled={busy || !noteText.trim()} onClick={async () => { const ok = await run(() => submitPersonalNote(detail.id, detail.name, noteText, recForm.recommendation || "Hold")); if (ok) setNoteText(""); }}>Save note</button>
+                  <div style={{ marginTop: 10 }}>
+                    {(leadSummary.notes || []).length === 0 ? <div className="empty">No notes yet this month.</div> :
+                      (leadSummary.notes || []).map((n, i) => <div className="note" key={i}>{n.note}{n.status ? <span className="chip role" style={{ marginLeft: 6 }}>{n.status}</span> : null}<div className="by">— {n.author_name || n.author_id}</div></div>)}
+                    {(leadSummary.pending || []).length > 0 && (
+                      <div style={{ paddingTop: 8, fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>Awaiting: {(leadSummary.pending || []).map(p => p.display_name).join(", ")}</div>
+                    )}
+                  </div>
                 </div>
               )}
+              <div className="card">
+                <div className="hd"><div className="t">Review history</div><div className="meta">{reviews.length}</div></div>
+                {reviews.length === 0 ? <div className="empty">No reviews on record.</div> : (
+                  <table className="dtable"><thead><tr><th>Month</th><th>Rec</th></tr></thead><tbody>
+                    {reviews.map((r, i) => <tr key={i}><td><b>{r.review_month}</b></td><td>{r.recommendation || r.status || "—"}</td></tr>)}
+                  </tbody></table>
+                )}
+              </div>
             </div>
           </div>
-          <div className="stack">
-            <div className="card">
-              <div className="hd"><div className="t">Review history</div><div className="meta">{reviews.length}</div></div>
-              {reviews.length === 0 ? <div className="empty">No reviews on record.</div> : (
-                <table className="dtable"><thead><tr><th>Month</th><th>Rating</th><th>Summary</th></tr></thead><tbody>
-                  {reviews.map((r, i) => <tr key={i}><td><b>{r.review_month}</b></td><td>{r.rating || r.overall_rating || r.status || "—"}</td><td style={{ color: "var(--ink-2)" }}>{(r.summary || r.notes || r.feedback || "").slice(0, 80) || "—"}</td></tr>)}
-                </tbody></table>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       <div className="disclaimer">Faction hub · review → tier → imports/fleet, all in one place</div>
     </div>
