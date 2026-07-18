@@ -43,7 +43,7 @@ export default function V2Layout({ children }) {
     { key: "home", label: "Home", href: "/v2", icon: I.home },
     { key: "inbox", label: "Inbox", icon: I.inbox, badge: "hot", soon: true },
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
-    { key: "story", label: "Storytelling", icon: I.story, soon: true },
+    { key: "story", label: "Storytelling", href: "/v2/story", icon: I.story },
     { key: "comms", label: "Comms", icon: I.comms, soon: true },
     { key: "leadership", label: "Leadership", icon: I.leadership, min: 2, soon: true },
     { key: "admin", label: "Admin", icon: I.admin, min: 3, soon: true },

@@ -1,13 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { getFactions } from "../../fm/factions/actions.js";
 
+const GUILD = "1457188814916423855";
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 
 export default function V2Factions() {
   const auth = useAuth();
+  const router = useRouter();
   const [facs, setFacs] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -25,13 +27,16 @@ export default function V2Factions() {
     .filter(f => !needle || `${f.name} ${f.teamName} ${f.leadName}`.toLowerCase().includes(needle))
     .sort((a, b) => (b.tier || 0) - (a.tier || 0) || a.name.localeCompare(b.name));
 
+  const linkStyle = { fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--accent)", padding: "1px 6px", borderRadius: 5 };
+  const dim = { color: "var(--ink-3)", opacity: 0.5, fontFamily: "var(--v2-mono)", fontSize: 10.5, padding: "1px 6px" };
+
   return (
     <div className="view">
       <div className="page-head">
         <div>
           <p className="eyebrow">Faction Management</p>
           <h1>Factions</h1>
-          <div className="sub">{facs.length} active · open one to manage everything about it in one place</div>
+          <div className="sub">{facs.length} active · open one to manage everything about it</div>
         </div>
       </div>
 
@@ -39,17 +44,33 @@ export default function V2Factions() {
         placeholder="Filter by faction, team, or lead…" style={{ marginBottom: 14, maxWidth: 420 }} />
 
       {shown.length === 0 ? <div className="empty">No factions match.</div> : (
-        <div className="fac-grid" style={{ marginTop: 0 }}>
-          {shown.map(f => (
-            <Link className="fac" href={`/v2/factions/${encodeURIComponent(f.name)}`} key={f.id}>
-              <div className="top"><div className="nm">{f.name}</div><span className={`tier ${tierBand(f.tier)}`}>T{f.tier}</span></div>
-              <div className="mini-stats">
-                <div className="ms"><div className="n">{f.scenes30d ?? 0}</div><div className="k">Scenes</div></div>
-                <div className="ms"><div className="n">{f.forumPosts ?? 0}</div><div className="k">Forum</div></div>
-              </div>
-              <div className="lead">↳ {f.teamName || "No team"}{f.pendingPromo ? " · promo staged" : ""}</div>
-            </Link>
-          ))}
+        <div style={{ overflowX: "auto" }}>
+          <table className="dtable" style={{ minWidth: 720 }}>
+            <thead>
+              <tr>
+                <th>Faction</th><th>Tier</th><th>Team</th><th style={{ textAlign: "right" }}>Scenes 30d</th><th style={{ textAlign: "right" }}>Forum 30d</th><th>Links</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map(f => (
+                <tr key={f.id} style={{ cursor: "pointer" }}
+                  onClick={() => router.push(`/v2/factions/${encodeURIComponent(f.name)}`)}
+                  onMouseEnter={e => e.currentTarget.style.background = "var(--panel-2)"}
+                  onMouseLeave={e => e.currentTarget.style.background = ""}>
+                  <td><b>{f.name}</b>{f.pendingPromo ? <span className="chip lock" style={{ marginLeft: 8 }}>promo</span> : null}</td>
+                  <td><span className={`tier ${tierBand(f.tier)}`}>T{f.tier}</span></td>
+                  <td style={{ color: "var(--ink-2)" }}>{f.teamName || "—"}</td>
+                  <td style={{ textAlign: "right", fontFamily: "var(--v2-mono)" }}>{f.scenes30d ?? 0}</td>
+                  <td style={{ textAlign: "right", fontFamily: "var(--v2-mono)" }}>{f.forumPosts ?? 0}</td>
+                  <td onClick={e => e.stopPropagation()} style={{ whiteSpace: "nowrap" }}>
+                    {f.discord ? <a href={f.discord} target="_blank" rel="noreferrer" style={linkStyle}>Discord ↗</a> : <span style={dim}>Discord</span>}
+                    {f.forum ? <a href={f.forum} target="_blank" rel="noreferrer" style={linkStyle}>Forum ↗</a> : <span style={dim}>Forum</span>}
+                    {f.threadId ? <a href={`https://discord.com/channels/${GUILD}/${f.threadId}`} target="_blank" rel="noreferrer" style={linkStyle}>Feedback ↗</a> : <span style={dim}>Feedback</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
