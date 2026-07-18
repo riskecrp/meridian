@@ -46,24 +46,25 @@
   -webkit-font-smoothing: antialiased;
 }
 :root[data-theme="dark"] .v2-root {
-  --bg: #12130f;
-  --panel: #1a1b16;
-  --panel-2: #212319;
-  --panel-3: #2a2c20;
+  /* Neutral charcoal — green lives ONLY in the accent/status, never the ground. */
+  --bg: #131417;
+  --panel: #1a1c20;
+  --panel-2: #212429;
+  --panel-3: #2a2e34;
   --line: rgba(255,255,255,0.08);
   --line-2: rgba(255,255,255,0.15);
-  --ink-0: #eef0e6;
-  --ink-1: #c2c4b6;
-  --ink-2: #8b8d80;
-  --ink-3: #5e6054;
-  --accent: #4bb37e;
-  --accent-hi: #6fce9a;
-  --accent-bg: rgba(75,179,126,0.14);
-  --good: #4bb37e;   --good-bg: rgba(75,179,126,0.14);
-  --amber: #e0a52e;  --amber-bg: rgba(224,165,46,0.14);
-  --rose: #e5695f;   --rose-bg: rgba(229,105,95,0.13);
-  --sky: #63a8e0;    --sky-bg: rgba(99,168,224,0.13);
-  --lock: #d8a24a;   --lock-bg: rgba(216,162,74,0.12);
+  --ink-0: #eceef2;
+  --ink-1: #c0c3ca;
+  --ink-2: #888c96;
+  --ink-3: #595d67;
+  --accent: #46c98b;
+  --accent-hi: #74e0ab;
+  --accent-bg: rgba(70,201,139,0.15);
+  --good: #46c98b;   --good-bg: rgba(70,201,139,0.15);
+  --amber: #e2ad39;  --amber-bg: rgba(226,173,57,0.15);
+  --rose: #ec7066;   --rose-bg: rgba(236,112,102,0.14);
+  --sky: #61a8e6;    --sky-bg: rgba(97,168,230,0.14);
+  --lock: #dcaa55;   --lock-bg: rgba(220,170,85,0.13);
 }
 @media (prefers-reduced-motion: reduce) { .v2-root * { transition: none !important; } }
 .v2-root * { box-sizing: border-box; }
