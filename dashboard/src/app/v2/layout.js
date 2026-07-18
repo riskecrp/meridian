@@ -41,7 +41,7 @@ export default function V2Layout({ children }) {
 
   const NAV = [
     { key: "home", label: "Home", href: "/v2", icon: I.home },
-    { key: "inbox", label: "Inbox", icon: I.inbox, badge: "hot", soon: true },
+    { key: "inbox", label: "Inbox", href: "/v2/inbox", icon: I.inbox },
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
     { key: "story", label: "Storytelling", href: "/v2/story", icon: I.story },
     { key: "comms", label: "Comms", icon: I.comms, soon: true },
