@@ -251,6 +251,28 @@
 .v2-root .alert.warn { background: var(--warn-bg); color: var(--warn); }
 .v2-root .alert.lock { background: var(--lock-bg); color: var(--lock); }
 .v2-root .qa { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+/* filter pills */
+.v2-root .pill { padding: 4px 11px; border-radius: 7px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); white-space: nowrap; font-family: inherit; }
+.v2-root .pill:hover { color: var(--ink-0); }
+.v2-root .pill.on { background: var(--accent-bg); color: var(--accent-hi); border-color: transparent; }
+.v2-root .pill.on.amber { background: var(--amber-bg); color: var(--amber); }
+.v2-root .pill.on.good { background: var(--good-bg); color: var(--good); }
+.v2-root .pill .ct { opacity: 0.6; font-size: 10px; margin-left: 3px; }
+/* copy button + star + code block */
+.v2-root .copybtn { padding: 5px 12px; border-radius: 7px; font-size: 11.5px; font-weight: 700; cursor: pointer; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-1); font-family: inherit; }
+.v2-root .copybtn:hover { border-color: var(--accent); color: var(--accent); }
+.v2-root .copybtn.done { background: var(--good); border-color: transparent; color: #fff; }
+.v2-root .star { background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1; color: var(--ink-3); padding: 0 2px; }
+.v2-root .star.on { color: var(--amber); }
+.v2-root .codeblock { background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; font-family: var(--v2-mono); font-size: 12px; color: var(--accent-hi); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.v2-root .codeblock.good { color: var(--good); }
+/* kb / entry cards (kept subtly boxed — they're a gallery of copyable items) */
+.v2-root .entry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+.v2-root .entry { border: 1px solid var(--line); border-radius: 11px; padding: 13px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); }
+.v2-root .entry.fav { border-color: color-mix(in srgb, var(--amber) 30%, transparent); background: var(--amber-bg); }
+.v2-root .entry.mgmt { border-color: color-mix(in srgb, var(--good) 25%, transparent); }
+.v2-root .clog { display: flex; align-items: center; gap: 8px; padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
+.v2-root .clog:last-child { border-bottom: none; }
 @media (max-width: 860px) { .v2-root .hub-body { grid-template-columns: 1fr; } .v2-root .kv { grid-template-columns: repeat(2,1fr); } }
 
 @media (max-width: 860px) {
