@@ -1,0 +1,6 @@
+[Unit]
+Description=Meridian nightly DB backup + log retention
+
+[Service]
+Type=oneshot
+ExecStart=/opt/meridian/scripts/backup.sh
