@@ -571,7 +571,9 @@ export async function getAllServerTasks() {
 
 // Returns all tasks created by the current user, regardless of target or claim status. L2+.
 export async function getMyCreatedTasks() {
-  const actor = await requireActor(2);
+  // Self-scoped (WHERE created_by_id = actor.id) — every member may track the
+  // tasks they created, so the floor is L1, not L2.
+  const actor = await requireActor(1);
 
   const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
   const gameAffairsRoleId = '1457189093594239147';

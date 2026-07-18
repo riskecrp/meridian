@@ -2,8 +2,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "../../lib/useAuth";
-import { getMyTasks, getMyReminders, getMyTeamFactions } from "../fm/dashboard/actions.js";
+import { getMyTasks, getMyCreatedTasks, getMyReminders, getMyTeamFactions, getStaffForCreate, getRoleTargetsForCreate, getQACountsForTasks } from "../fm/dashboard/actions.js";
 import { getPendingQueue } from "../fm/leadership/actions.js";
+import TaskList from "./TaskList.js";
 
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const fmtDay = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }).toUpperCase().replace(" ", "\n");
@@ -11,23 +12,42 @@ const fmtDay = (d) => d.toLocaleDateString(undefined, { month: "short", day: "nu
 export default function V2Home() {
   const auth = useAuth();
   const [tasks, setTasks] = useState({ assignedToMe: [], forMyTeam: [] });
+  const [created, setCreated] = useState([]);
   const [reminders, setReminders] = useState([]);
   const [facs, setFacs] = useState({ teamName: "", factions: [] });
   const [queue, setQueue] = useState({ rpChanges: [], deletions: [], promos: [] });
-  const [taskTab, setTaskTab] = useState("assigned");
+  const [staffList, setStaffList] = useState([]);
+  const [roleTargets, setRoleTargets] = useState({ teams: [] });
+  const [qaCounts, setQaCounts] = useState({});
   const [loading, setLoading] = useState(true);
 
   const isLeader = (auth?.level || 0) >= 2 || auth?.isLeadStoryteller;
+
+  const refreshTasks = () => {
+    Promise.all([
+      getMyTasks().catch(() => ({ assignedToMe: [], forMyTeam: [] })),
+      getMyCreatedTasks().catch(() => []),
+    ]).then(([t, c]) => {
+      setTasks(t); setCreated(c || []);
+      const uids = [...(t.assignedToMe || []), ...(t.forMyTeam || []), ...(c || [])].map(x => x.task_uid).filter(Boolean);
+      if (uids.length) getQACountsForTasks(uids).then(setQaCounts).catch(() => {});
+    });
+  };
 
   useEffect(() => {
     if (auth?.loading || !auth?.id) return;
     Promise.all([
       getMyTasks().catch(() => ({ assignedToMe: [], forMyTeam: [] })),
+      getMyCreatedTasks().catch(() => []),
       getMyReminders().catch(() => []),
       getMyTeamFactions().catch(() => ({ teamName: "", factions: [] })),
-    ]).then(([t, r, f]) => {
-      setTasks(t); setReminders(r || []); setFacs(f); setLoading(false);
+    ]).then(([t, c, r, f]) => {
+      setTasks(t); setCreated(c || []); setReminders(r || []); setFacs(f); setLoading(false);
+      const uids = [...(t.assignedToMe || []), ...(t.forMyTeam || []), ...(c || [])].map(x => x.task_uid).filter(Boolean);
+      if (uids.length) getQACountsForTasks(uids).then(setQaCounts).catch(() => {});
     });
+    getStaffForCreate().then(setStaffList).catch(() => {});
+    getRoleTargetsForCreate().then(setRoleTargets).catch(() => {});
     if (isLeader) getPendingQueue().then(setQueue).catch(() => {});
   }, [auth?.id, auth?.loading]);
 
@@ -44,7 +64,6 @@ export default function V2Home() {
     ...queue.deletions.map(x => ({ k: `Delete · ${x.content_type}`, t: (x.original_text || "").slice(0, 48) })),
   ].slice(0, 5);
 
-  const shown = taskTab === "team" ? tasks.forMyTeam : tasks.assignedToMe;
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
 
   return (
@@ -69,30 +88,8 @@ export default function V2Home() {
       </div>
 
       <div className="cols">
-        <div className="card">
-          <div className="hd">
-            <div className="t">My Work</div>
-            <div className="tabs">
-              <button className={`tab${taskTab === "assigned" ? " on" : ""}`} onClick={() => setTaskTab("assigned")}>Assigned ({tasks.assignedToMe.length})</button>
-              <button className={`tab${taskTab === "team" ? " on" : ""}`} onClick={() => setTaskTab("team")}>Team ({tasks.forMyTeam.length})</button>
-            </div>
-          </div>
-          {shown.length === 0 ? (
-            <div className="empty">{taskTab === "team" ? "No team tasks." : "Nothing assigned to you."}</div>
-          ) : shown.slice(0, 8).map(t => {
-            const claimed = t.claimed_by && t.claimed_by !== "None";
-            const leadershipScoped = t.targetLabel === "FM Leadership" || t.targetLabel === "Game Affairs";
-            return (
-              <div className="row" key={t.task_uid}>
-                <span className={`stat-dot ${claimed ? "claimed" : "open"}`} />
-                <span className="desc">{t.description}</span>
-                {leadershipScoped && <span className="chip lock">🔒 {t.targetLabel}</span>}
-                {!leadershipScoped && <span className="chip role">{t.targetLabel || "—"}</span>}
-                <span className="chip due">{claimed ? t.claimerName : "unclaimed"}</span>
-              </div>
-            );
-          })}
-        </div>
+        <TaskList auth={auth} assigned={tasks.assignedToMe} created={created} team={tasks.forMyTeam}
+          staffList={staffList} roleTargets={roleTargets} qaCounts={qaCounts} onRefresh={refreshTasks} />
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div className="card">
