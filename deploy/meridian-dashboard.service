@@ -1,0 +1,16 @@
+[Unit]
+Description=Meridian Dashboard (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/meridian/dashboard
+EnvironmentFile=/opt/meridian/.env
+ExecStart=/usr/bin/node node_modules/.bin/next start -p 3000
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies / builds
+node_modules/
+.next/
+
+# Live data & backups (never in git)
+data/
+archive/
+*.db
+*.db-shm
+*.db-wal
+*.bak*
+*.tar.gz
+
+# Map tiles: ~700MB of static tiles, too large for GitHub
+public/map-tiles/
+dashboard/public/map-tiles/

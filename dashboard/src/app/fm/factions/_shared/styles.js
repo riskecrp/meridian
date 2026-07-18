@@ -1,0 +1,26 @@
+// Shared inline styles + helpers for the Factions list and detail pages.
+export const s = {
+  card: { background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 12 },
+  cardHover: { borderColor: 'var(--accent)', boxShadow: '0 0 20px var(--accent-bg)' },
+  badge: { background: 'var(--bg-3)', color: 'var(--fg-3)', fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 99, letterSpacing: '0.1em' },
+  link: { color: 'var(--accent)', fontSize: 11, fontWeight: 700, textDecoration: 'none', letterSpacing: '0.05em' },
+  label: { fontSize: 10, fontWeight: 700, color: 'var(--fg-4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 4 },
+  btn: { background: 'var(--accent)', color: 'white', border: 'none', padding: '8px 16px', borderRadius: 8, fontSize: 11, fontWeight: 800, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.1em' },
+  btnGhost: { background: 'transparent', color: 'var(--fg-3)', border: '1px solid var(--border)', padding: '6px 14px', borderRadius: 8, fontSize: 10, fontWeight: 700, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.1em' },
+  btnDanger: { background: 'var(--red-bg)', color: 'var(--red)', border: '1px solid var(--red-bg)', padding: '6px 14px', borderRadius: 8, fontSize: 10, fontWeight: 700, cursor: 'pointer', textTransform: 'uppercase' },
+  input: { width: '100%', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--fg-0)', outline: 'none' },
+  modal: { position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  modalBg: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)' },
+  modalContent: { position: 'relative', width: '100%', maxWidth: 1100, maxHeight: '92vh', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  tab: (active) => ({ padding: '12px 24px', fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em', cursor: 'pointer', borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent', color: active ? 'var(--accent)' : 'var(--fg-4)', background: 'transparent', border: 'none', borderBottomWidth: 2, borderBottomStyle: 'solid', borderBottomColor: active ? 'var(--accent)' : 'transparent', whiteSpace: 'nowrap' }),
+  subtab: (active) => ({ padding: '6px 14px', fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', cursor: 'pointer', borderRadius: 7, background: active ? 'var(--accent)' : 'var(--bg-2)', color: active ? 'white' : 'var(--fg-3)', border: '1px solid var(--border)' }),
+  section: { background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 },
+};
+
+export const tierColor = (t) => {
+  if (t >= 5) return 'var(--fg-0)';
+  if (t >= 4) return 'var(--fg-2)';
+  if (t >= 3) return 'var(--accent)';
+  if (t >= 2) return 'var(--green)';
+  return 'var(--fg-4)';
+};

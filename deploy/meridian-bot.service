@@ -1,0 +1,16 @@
+[Unit]
+Description=Meridian Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/meridian/bot
+EnvironmentFile=/opt/meridian/.env
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
