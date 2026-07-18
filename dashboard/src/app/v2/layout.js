@@ -46,7 +46,7 @@ export default function V2Layout({ children }) {
     { key: "story", label: "Storytelling", href: "/v2/story", icon: I.story },
     { key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms },
     { key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2 },
-    { key: "admin", label: "Admin", icon: I.admin, min: 3, soon: true },
+    { key: "admin", label: "Admin", href: "/v2/admin", icon: I.admin, min: 3 },
   ].filter(it => !it.min || level >= it.min);
 
   return (
