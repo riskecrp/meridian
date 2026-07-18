@@ -1,27 +1,37 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import {
   claimMyTask, completeMyTask, unclaimMyTask,
   reassignMyTask, requestTaskInfo, editMyTask,
 } from "../fm/dashboard/actions.js";
 
-// One interactive "My Work" card: Assigned / Created / Team tabs, expandable
-// rows, and the full action set (claim, complete, unclaim, reassign, request
-// info, edit) reusing the existing guarded server actions.
-export default function TaskList({ auth, assigned, created, team, staffList, roleTargets, qaCounts, onRefresh }) {
+// Interactive task list, reused in two modes:
+//  - compact (Home): Assigned / Created / Team tabs, capped, "View all →" link.
+//  - full (/v2/tasks): adds an All-server tab (L3) + search, uncapped.
+// Expandable rows + the full action set (claim, complete, unclaim, reassign,
+// request info, edit) via the existing guarded server actions.
+export default function TaskList({ auth, assigned, created, team, allServer, staffList, roleTargets, qaCounts, onRefresh, full = false, viewAllHref }) {
   const [tab, setTab] = useState("assigned");
   const [openUid, setOpenUid] = useState(null);
   const [form, setForm] = useState(null); // { uid, kind, text, target }
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [q, setQ] = useState("");
 
   const TABS = [
     { id: "assigned", label: "Assigned", list: assigned },
     { id: "created", label: "Created by me", list: created },
     { id: "team", label: "Team", list: team },
+    ...(allServer ? [{ id: "all", label: "All server", list: allServer }] : []),
   ];
   const active = TABS.find(t => t.id === tab) || TABS[0];
-  const list = active.list || [];
+  let list = active.list || [];
+  if (full && q.trim()) {
+    const needle = q.trim().toLowerCase();
+    list = list.filter(t => `${t.description} ${t.targetLabel || ""} ${t.claimerName || ""} ${t.teamContext || ""}`.toLowerCase().includes(needle));
+  }
+  const cap = full ? list.length : 12;
 
   const resetForm = () => { setForm(null); setErr(""); };
   const openForm = (uid, kind, seed = "") => { setForm({ uid, kind, text: seed, target: "" }); setErr(""); };
@@ -60,7 +70,7 @@ export default function TaskList({ auth, assigned, created, team, staffList, rol
   return (
     <div className="card">
       <div className="hd">
-        <div className="t">My Work</div>
+        <div className="t">{full ? "Tasks" : "My Work"}</div>
         <div className="tabs">
           {TABS.map(t => (
             <button key={t.id} className={`tab${tab === t.id ? " on" : ""}`}
@@ -68,14 +78,22 @@ export default function TaskList({ auth, assigned, created, team, staffList, rol
               {t.label} ({(t.list || []).length})
             </button>
           ))}
+          {viewAllHref && <Link href={viewAllHref} className="tab" style={{ color: "var(--iris)" }}>View all →</Link>}
         </div>
       </div>
 
+      {full && (
+        <div style={{ padding: "10px 17px", borderBottom: "1px solid var(--line)" }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter by text, target, claimer…"
+            style={{ width: "100%", background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 11px", fontSize: 13, color: "var(--ink-0)", outline: "none" }} />
+        </div>
+      )}
+
       {list.length === 0 ? (
         <div className="empty">
-          {tab === "created" ? "You haven't created any open tasks." : tab === "team" ? "No team tasks." : "Nothing assigned to you."}
+          {q.trim() ? "No tasks match your filter." : tab === "created" ? "You haven't created any open tasks." : tab === "team" ? "No team tasks." : tab === "all" ? "No tasks on the server." : "Nothing assigned to you."}
         </div>
-      ) : list.slice(0, 12).map(t => {
+      ) : list.slice(0, cap).map(t => {
         const claimed = t.claimed_by && t.claimed_by !== "None";
         const claimedByMe = t.claimed_by === auth.id;
         const leadershipScoped = t.targetLabel === "FM Leadership" || t.targetLabel === "Game Affairs";

@@ -47,7 +47,6 @@ export default function V2Layout({ children }) {
     { grp: "Work", items: [
       { key: "home", label: "Home", href: "/v2", icon: I.home },
       { key: "inbox", label: "Inbox", icon: I.inbox, soon: true },
-      { key: "tasks", label: "Tasks", icon: I.tasks, soon: true },
     ]},
     { grp: "Factions & Story", items: [
       { key: "factions", label: "Factions", icon: I.factions, soon: true },

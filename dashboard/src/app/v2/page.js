@@ -89,7 +89,8 @@ export default function V2Home() {
 
       <div className="cols">
         <TaskList auth={auth} assigned={tasks.assignedToMe} created={created} team={tasks.forMyTeam}
-          staffList={staffList} roleTargets={roleTargets} qaCounts={qaCounts} onRefresh={refreshTasks} />
+          staffList={staffList} roleTargets={roleTargets} qaCounts={qaCounts} onRefresh={refreshTasks}
+          viewAllHref="/v2/tasks" />
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div className="card">
