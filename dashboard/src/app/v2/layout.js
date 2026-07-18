@@ -45,7 +45,7 @@ export default function V2Layout({ children }) {
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
     { key: "story", label: "Storytelling", href: "/v2/story", icon: I.story },
     { key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms },
-    { key: "leadership", label: "Leadership", icon: I.leadership, min: 2, soon: true },
+    { key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2 },
     { key: "admin", label: "Admin", icon: I.admin, min: 3, soon: true },
   ].filter(it => !it.min || level >= it.min);
 
