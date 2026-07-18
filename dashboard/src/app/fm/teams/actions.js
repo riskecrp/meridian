@@ -23,6 +23,7 @@ function today() { return new Date().toLocaleDateString('en-GB',{day:'2-digit',m
 
 export async function getTeams() {
   try {
+    await requireActor(1);
     const staff = query("SELECT * FROM staff WHERE discord_id != '' AND discord_id != 'Unassigned_Lead_Placeholder' ORDER BY team_id, rank");
     const factions = query(`SELECT f.*, 
       COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id=f.id AND sl.created_at>=datetime('now','-30 days')),0) as scenes30d,
@@ -55,6 +56,7 @@ export async function getTeams() {
 
 export async function getTeamTasks(teamId) {
   try {
+    await requireActor(1);
     const staffInTeam = query("SELECT discord_id FROM staff WHERE team_id = ?", [teamId]);
     const memberIds = staffInTeam.map(s => s.discord_id);
     const allTasks = query("SELECT * FROM tasks ORDER BY created_at DESC");
@@ -71,6 +73,7 @@ export async function getTeamTasks(teamId) {
 
 export async function getTeamReminders(teamId) {
   try {
+    await requireActor(1);
     const staffInTeam = query("SELECT discord_id FROM staff WHERE team_id = ?", [teamId]);
     const memberIds = staffInTeam.map(s => s.discord_id);
     const all = query("SELECT * FROM reminders WHERE status != 'FIRED' ORDER BY epoch_ms");
@@ -87,8 +90,10 @@ export async function getTeamReminders(teamId) {
   } catch (e) { return []; }
 }
 
-export async function getMyTasks(discordId, teamId, rank) {
+export async function getMyTasks() {
   try {
+    const actor = await requireActor(1);
+    const discordId = actor.id, teamId = actor.teamId, rank = actor.rank;
     const allTasks = query("SELECT * FROM tasks ORDER BY created_at DESC");
     const isLead = rank?.toLowerCase().includes('lead');
     const isMgmt = rank?.toLowerCase().includes('management') || rank?.toLowerCase().includes('admin');
@@ -110,8 +115,10 @@ export async function getMyTasks(discordId, teamId, rank) {
   } catch (e) { return []; }
 }
 
-export async function getMyReminders(discordId, teamId, rank) {
+export async function getMyReminders() {
   try {
+    const actor = await requireActor(1);
+    const discordId = actor.id, teamId = actor.teamId, rank = actor.rank;
     const all = query("SELECT * FROM reminders WHERE status != 'FIRED' ORDER BY epoch_ms");
     const isLead = rank?.toLowerCase().includes('lead');
     const isMgmt = rank?.toLowerCase().includes('management');
@@ -131,8 +138,9 @@ export async function getMyReminders(discordId, teamId, rank) {
   } catch (e) { return []; }
 }
 
-export async function createTask(data, actor) {
+export async function createTask(data) {
   try {
+    const actor = await requireActor(1);
     const uid = Date.now().toString();
     const ts = today();
     const nextReminder = data.enableDM ? (Date.now() + 86400000).toString() : null;
@@ -163,6 +171,7 @@ export async function createTask(data, actor) {
 
 export async function claimTask(taskUid, claimerId, claimerName, enableDM) {
   try {
+    const actor = await requireActor(1);
     run("UPDATE tasks SET claimed_by = ? WHERE task_uid = ?", [claimerId, taskUid]);
     if (enableDM) run("UPDATE tasks SET next_reminder = ? WHERE task_uid = ?", [(Date.now() + 86400000).toString(), taskUid]);
     run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('CLAIMED', ?, ?, '', 'Status Updated', ?)",
@@ -180,8 +189,9 @@ export async function claimTask(taskUid, claimerId, claimerName, enableDM) {
   } catch (e) { return { ok: false }; }
 }
 
-export async function completeTask(taskUid, actor, note) {
+export async function completeTask(taskUid, note) {
   try {
+    const actor = await requireActor(1);
     const task = queryOne("SELECT description, target_id, target_type, created_by_id, notify_creator FROM tasks WHERE task_uid = ?", [taskUid]);
     run("DELETE FROM tasks WHERE task_uid = ?", [taskUid]);
     run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('COMPLETED', ?, ?, ?, 'Task Cleared', ?)",
@@ -200,16 +210,23 @@ export async function completeTask(taskUid, actor, note) {
   } catch (e) { return { ok: false }; }
 }
 
-export async function editTask(taskUid, newDesc, actor) {
+export async function editTask(taskUid, newDesc) {
   try {
+    const actor = await requireActor(1);
+    const task = queryOne("SELECT created_by_id FROM tasks WHERE task_uid = ?", [taskUid]);
+    if (!task) return { ok: false, error: "Task not found" };
+    if (task.created_by_id !== actor.id && actor.level < 2) {
+      return { ok: false, error: "Only the creator or L2+ can edit this task" };
+    }
     run("UPDATE tasks SET description = ? WHERE task_uid = ?", [newDesc, taskUid]);
     logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, newDesc.substring(0,100));
     return { ok: true };
   } catch (e) { return { ok: false }; }
 }
 
-export async function createReminder(data, actor) {
+export async function createReminder(data) {
   try {
+    const actor = await requireActor(1);
     const uuid = Math.random().toString(36).substring(2, 8);
     const targetTag = data.targetType === 'Role' ? `<@&${data.targetId}>` : `<@${data.targetId}>`;
     const readable = new Date(data.epochMs).toISOString();
@@ -233,6 +250,7 @@ export async function createReminder(data, actor) {
 
 export async function snoozeReminder(uuid) {
   try {
+    await requireActor(1);
     const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [uuid]);
     if (!r) return { ok: false };
     const newTime = parseInt(r.epoch_ms) + 3600000;
@@ -241,19 +259,27 @@ export async function snoozeReminder(uuid) {
   } catch (e) { return { ok: false }; }
 }
 
-export async function deleteReminder(uuid, actor) {
+export async function deleteReminder(uuid) {
   try {
+    const me = await requireActor(1);
+    const r = queryOne("SELECT author_id FROM reminders WHERE uuid = ?", [uuid]);
+    if (!r) return { ok: false, error: "Reminder not found" };
+    if (r.author_id !== me.id && me.level < 2) {
+      return { ok: false, error: "Only the author or L2+ can delete this reminder" };
+    }
     run("DELETE FROM reminders WHERE uuid = ?", [uuid]);
-    logAudit(actor.id, actor.name, 'DELETE', 'reminder', null, uuid, 'Reminder deleted');
+    logAudit(me.id, me.name, 'DELETE', 'reminder', null, uuid, 'Reminder deleted');
     return { ok: true };
   } catch (e) { return { ok: false }; }
 }
 
 export async function getStaffList() {
+  await requireActor(1);
   return query("SELECT discord_id, display_name, team_id, team_name, rank FROM staff WHERE discord_id != '' AND discord_id != 'Unassigned_Lead_Placeholder' ORDER BY display_name");
 }
 
 export async function getRoleTargets() {
+  await requireActor(1);
   const leadershipId = getRole('fm_leadership');
   const leadId = getRole('fm_team_lead');
   const allFmId = getRole('fm_team_guide');
@@ -429,6 +455,7 @@ export async function answerTaskQuestion(questionId, answer) {
 // ── IC Contacts ──────────────────────────────────────────────────────────────
 
 export async function getTeamIcContacts(teamId) {
+  await requireActor(1);
   const staffInTeam = query("SELECT discord_id FROM staff WHERE team_id = ?", [teamId]);
   const factionIds = query(`
     SELECT DISTINCT f.id FROM factions f
@@ -444,6 +471,7 @@ export async function getTeamIcContacts(teamId) {
 }
 
 export async function getTeamIcContactsAll(teamId) {
+  await requireActor(1);
   const factionIds = query(`
     SELECT DISTINCT f.id FROM factions f
     JOIN staff s ON s.discord_id = f.lead_discord_id

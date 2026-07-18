@@ -12,6 +12,9 @@ export default {
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
     const author = interaction.user.globalName || interaction.user.username;
+    // FM-staff only — this command reads/creates/deletes tasks in the shared DB.
+    const staffRow = queryOne("SELECT clearance FROM staff WHERE discord_id = ? AND discord_id NOT LIKE 'placeholder%'", [interaction.user.id]);
+    if (!staffRow) return interaction.reply({ content: 'This command is for FM staff only.', ephemeral: true });
     if (sub === 'list') {
       const tasks = query("SELECT * FROM tasks WHERE target_id = ? OR claimed_by = ? ORDER BY created_at DESC", [interaction.user.id, interaction.user.id]);
       if (tasks.length === 0) return interaction.reply({ content: 'No tasks assigned to you.', ephemeral: true });

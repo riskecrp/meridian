@@ -157,7 +157,7 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
   const canRequestInfo = t.created_by_id && t.created_by_id !== auth.id;
   const doComplete = async () => {
     setCompleteSubmitting(true);
-    await completeTask(t.task_uid, actor, completeNote.trim() || undefined);
+    await completeTask(t.task_uid, completeNote.trim() || undefined);
     setCompleteSubmitting(false);
     setCompleteOpen(false); setCompleteNote(''); onRefresh();
   };
@@ -201,7 +201,6 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
   };
   const canEdit = t.created_by_id === auth.id;
   const { showConfirm, showPrompt, showAlert } = useDialog();
-  const actor = { id: auth.id, name: auth.name };
 
   return (
     <div className="p-4 rounded-lg" style={{ background:'var(--bg-1)', border:'1px solid var(--border)' }}>
@@ -227,7 +226,7 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
         ) : (
           <>
             <button style={st.btnGhost} onClick={() => setClaiming(true)}>Claim</button>
-            {canEdit && <button style={{ ...st.btnGhost, color:'var(--accent)' }} onClick={async () => { const v = await showPrompt("Edit task:", t.description); if (v) { await editTask(t.task_uid, v, actor); onRefresh(); } }}>Edit</button>}
+            {canEdit && <button style={{ ...st.btnGhost, color:'var(--accent)' }} onClick={async () => { const v = await showPrompt("Edit task:", t.description); if (v) { await editTask(t.task_uid, v); onRefresh(); } }}>Edit</button>}
             {canReassign && <button style={{ ...st.btnGhost, color:'var(--amber)' }} onClick={() => setReassignOpen(true)}>Reassign</button>}
             {canRequestInfo && <button style={{ ...st.btnGhost, color:'var(--accent)' }} onClick={() => setRiOpen(true)}>Request Info</button>}
             {canUnclaim && <button style={{ ...st.btnGhost, color:'var(--fg-3)' }} onClick={() => setUnclaimOpen(true)}>Unclaim</button>}
@@ -311,7 +310,6 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
 function ReminderCard({ r, auth, onRefresh }) {
   const canEdit = r.author_id === auth.id;
   const { showConfirm, showPrompt, showAlert } = useDialog();
-  const actor = { id: auth.id, name: auth.name };
   const timeStr = new Date(r.epochMs).toLocaleString([], { dateStyle:'short', timeStyle:'short' });
 
   return (
@@ -323,7 +321,7 @@ function ReminderCard({ r, auth, onRefresh }) {
       <p className="text-sm leading-relaxed mb-3" style={{ color:'var(--fg-1)' }}>{r.message}</p>
       <div className="flex gap-2 pt-2" style={{ borderTop:'1px solid var(--border)' }}>
         <button style={st.btnGhost} onClick={async () => { await snoozeReminder(r.uuid); onRefresh(); }}>Snooze +1h</button>
-        {(canEdit || auth.level >= 3) && <button style={st.btnDanger} onClick={async () => { if (await showConfirm("Delete this event?")) { await deleteReminder(r.uuid, actor); onRefresh(); } }}>Delete</button>}
+        {(canEdit || auth.level >= 3) && <button style={st.btnDanger} onClick={async () => { if (await showConfirm("Delete this event?")) { await deleteReminder(r.uuid); onRefresh(); } }}>Delete</button>}
       </div>
     </div>
   );
@@ -456,7 +454,6 @@ export default function TeamsPage() {
   const [roleTargets, setRoleTargets] = useState({ teams: [] });
 
   const { showConfirm, showPrompt, showAlert } = useDialog();
-  const actor = { id: auth.id, name: auth.name };
 
   useEffect(() => {
     if (!auth.loading) {
@@ -481,20 +478,20 @@ export default function TeamsPage() {
 
   const openPersonal = async () => {
     setShowPersonal(true); setShowCreateForm(false);
-    const [tasks, rems] = await Promise.all([getMyTasks(auth.id, auth.teamId, auth.rank), getMyReminders(auth.id, auth.teamId, auth.rank)]);
+    const [tasks, rems] = await Promise.all([getMyTasks(), getMyReminders()]);
     setMyTasks(tasks); setMyReminders(rems);
   };
 
   const refreshPersonal = async () => {
-    const [tasks, rems] = await Promise.all([getMyTasks(auth.id, auth.teamId, auth.rank), getMyReminders(auth.id, auth.teamId, auth.rank)]);
+    const [tasks, rems] = await Promise.all([getMyTasks(), getMyReminders()]);
     setMyTasks(tasks); setMyReminders(rems);
   };
 
   const handleFormSubmit = async (data) => {
     if (data.mode === 'task') {
-      await createTask({ desc: data.desc, targetId: data.targetId, targetType: data.targetType, enableDM: data.enableDM }, actor);
+      await createTask({ desc: data.desc, targetId: data.targetId, targetType: data.targetType, enableDM: data.enableDM });
     } else {
-      await createReminder({ message: `[${data.eventType}] ${data.note || ''}`.trim(), epochMs: data.epochMs, eventType: data.eventType, note: data.note, targetType: data.targetType, targetId: data.targetId, enable30m: data.enable30m }, actor);
+      await createReminder({ message: `[${data.eventType}] ${data.note || ''}`.trim(), epochMs: data.epochMs, eventType: data.eventType, note: data.note, targetType: data.targetType, targetId: data.targetId, enable30m: data.enable30m });
     }
     setShowCreateForm(false);
     if (workspace) refreshWorkspace();
