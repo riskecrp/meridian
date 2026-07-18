@@ -42,7 +42,7 @@ export default function V2Layout({ children }) {
   const NAV = [
     { key: "home", label: "Home", href: "/v2", icon: I.home },
     { key: "inbox", label: "Inbox", icon: I.inbox, badge: "hot", soon: true },
-    { key: "factions", label: "Factions", icon: I.factions, soon: true },
+    { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
     { key: "story", label: "Storytelling", icon: I.story, soon: true },
     { key: "comms", label: "Comms", icon: I.comms, soon: true },
     { key: "leadership", label: "Leadership", icon: I.leadership, min: 2, soon: true },
@@ -59,12 +59,12 @@ export default function V2Layout({ children }) {
           </div>
           <nav className="tn-links">
             {NAV.map(it => {
-              const active = it.href && pathname === it.href;
+              const active = it.href && (pathname === it.href || (it.href !== "/v2" && pathname.startsWith(it.href)));
               const cls = `tn-i${active ? " on" : ""}`;
-              const inner = <><Icon d={it.icon} /> {it.label}{it.soon && <span className="ct">soon</span>}</>;
+              const inner = <><Icon d={it.icon} /> {it.label}</>;
               return it.href
                 ? <Link key={it.key} href={it.href} className={cls}>{inner}</Link>
-                : <span key={it.key} className={cls} style={{ opacity: 0.72, cursor: "default" }} title="Coming in this build">{inner}</span>;
+                : <span key={it.key} className={`${cls} soon`} style={{ cursor: "default" }} title="Coming soon">{inner}</span>;
             })}
           </nav>
           <div className="tn-right">

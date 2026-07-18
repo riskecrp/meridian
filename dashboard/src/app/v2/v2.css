@@ -25,13 +25,13 @@
   --ink-1: #43423d;
   --ink-2: #6d6c65;
   --ink-3: #9a988f;
-  --accent: #2f7d55;
-  --accent-hi: #276745;
-  --accent-bg: rgba(47,125,85,0.10);
-  --good: #2f7d55;   --good-bg: rgba(47,125,85,0.11);
+  --accent: #2563c2;
+  --accent-hi: #1c4e9e;
+  --accent-bg: rgba(37,99,194,0.10);
+  --good: #2f8f57;   --good-bg: rgba(47,143,87,0.11);
   --amber: #a9781a;  --amber-bg: rgba(169,120,26,0.12);
   --rose: #c0392b;   --rose-bg: rgba(192,57,43,0.09);
-  --sky: #2f6fb0;    --sky-bg: rgba(47,111,176,0.10);
+  --sky: #1f8fb0;    --sky-bg: rgba(31,143,176,0.10);
   --lock: #8a6417;   --lock-bg: rgba(138,100,23,0.10);
 
   --sans: "InterV", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -57,13 +57,13 @@
   --ink-1: #c0c3ca;
   --ink-2: #888c96;
   --ink-3: #595d67;
-  --accent: #46c98b;
-  --accent-hi: #74e0ab;
-  --accent-bg: rgba(70,201,139,0.15);
+  --accent: #5aa0f0;
+  --accent-hi: #86bcff;
+  --accent-bg: rgba(90,160,240,0.15);
   --good: #46c98b;   --good-bg: rgba(70,201,139,0.15);
   --amber: #e2ad39;  --amber-bg: rgba(226,173,57,0.15);
   --rose: #ec7066;   --rose-bg: rgba(236,112,102,0.14);
-  --sky: #61a8e6;    --sky-bg: rgba(97,168,230,0.14);
+  --sky: #4fc0d8;    --sky-bg: rgba(79,192,216,0.14);
   --lock: #dcaa55;   --lock-bg: rgba(220,170,85,0.13);
 }
 @media (prefers-reduced-motion: reduce) { .v2-root * { transition: none !important; } }
@@ -73,14 +73,15 @@
 
 /* ── Top navigation ── */
 .v2-root .topnav { position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
-.v2-root .topnav-inner { max-width: 1220px; margin: 0 auto; display: flex; align-items: center; gap: 20px; padding: 0 22px; height: 54px; }
+.v2-root .topnav-inner { max-width: 1220px; margin: 0 auto; display: flex; align-items: center; gap: 12px; padding: 0 20px; height: 54px; }
 .v2-root .tn-brand { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
 .v2-root .tn-brand .mk-img { width: 26px; height: 26px; border-radius: 7px; object-fit: contain; flex-shrink: 0; }
 .v2-root .tn-brand .wm { font-weight: 700; font-size: 15px; letter-spacing: -0.02em; color: var(--ink-0); }
 
 .v2-root .tn-links { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .v2-root .tn-links::-webkit-scrollbar { display: none; }
-.v2-root .tn-i { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-radius: 8px; color: var(--ink-2); font-size: 13px; font-weight: 550; white-space: nowrap; cursor: pointer; transition: background .12s, color .12s; }
+.v2-root .tn-i { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 8px; color: var(--ink-2); font-size: 12.5px; font-weight: 550; white-space: nowrap; cursor: pointer; transition: background .12s, color .12s; }
+.v2-root .tn-i.soon { opacity: 0.5; }
 .v2-root .tn-i:hover { background: var(--panel-2); color: var(--ink-0); }
 .v2-root .tn-i .ic { width: 15px; height: 15px; opacity: .85; }
 .v2-root .tn-i.on { color: var(--accent-hi); background: var(--accent-bg); }
@@ -89,7 +90,8 @@
 .v2-root .tn-i .ct.hot { background: var(--rose-bg); color: var(--rose); }
 
 .v2-root .tn-right { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
-.v2-root .search { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-3); font-size: 12.5px; cursor: text; width: 210px; }
+.v2-root .search { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-3); font-size: 12.5px; cursor: text; width: 150px; }
+@media (max-width: 1180px) { .v2-root .search { display: none; } }
 .v2-root .search .kbd { margin-left: auto; font-family: var(--v2-mono); font-size: 9.5px; padding: 1px 5px; border-radius: 4px; background: var(--panel-3); color: var(--ink-3); }
 .v2-root .tb-btn { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-2); display: grid; place-items: center; cursor: pointer; position: relative; }
 .v2-root .tb-btn:hover { color: var(--ink-0); border-color: var(--line-2); }
@@ -188,6 +190,43 @@
 
 .v2-root .h2 { font-size: 15px; font-weight: 700; color: var(--ink-0); margin: 22px 0 0; }
 .v2-root .disclaimer { margin-top: 24px; font-family: var(--v2-mono); font-size: 10.5px; color: var(--ink-3); text-align: center; }
+
+/* ── Faction hub ── */
+.v2-root .hub-back { font-family: var(--v2-mono); font-size: 11.5px; color: var(--ink-2); cursor: pointer; display: inline-block; margin-bottom: 12px; }
+.v2-root .hub-back:hover { color: var(--accent); }
+.v2-root .hub-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.v2-root .hub-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 16px 0 18px; flex-wrap: wrap; }
+.v2-root .hub-tab { font-size: 12.5px; font-weight: 600; padding: 8px 12px; color: var(--ink-2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; align-items: center; gap: 6px; background: none; border-top: none; border-left: none; border-right: none; font-family: inherit; }
+.v2-root .hub-tab:hover { color: var(--ink-0); }
+.v2-root .hub-tab.on { color: var(--ink-0); border-bottom-color: var(--accent); }
+.v2-root .hub-tab .lk { color: var(--lock); }
+.v2-root .hub-body { display: grid; grid-template-columns: 1fr 296px; gap: 14px; align-items: start; }
+.v2-root .stack { display: flex; flex-direction: column; gap: 14px; }
+.v2-root .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 14px 16px; }
+.v2-root .kv .k { font-family: var(--v2-mono); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.v2-root .kv .v { font-size: 14px; color: var(--ink-0); font-weight: 600; margin-top: 3px; }
+.v2-root .dtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.v2-root .dtable th { text-align: left; font-family: var(--v2-mono); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); padding: 9px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.v2-root .dtable td { padding: 9px 16px; border-bottom: 1px solid var(--line); color: var(--ink-1); vertical-align: top; }
+.v2-root .dtable tr:last-child td { border-bottom: none; }
+.v2-root .dtable td b { color: var(--ink-0); font-weight: 600; }
+.v2-root .contact { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.v2-root .contact:last-child { border-bottom: none; }
+.v2-root .contact .ch { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.v2-root .contact .from { font-weight: 650; color: var(--ink-0); font-size: 12.5px; }
+.v2-root .contact .msg { font-size: 12px; color: var(--ink-2); line-height: 1.5; }
+.v2-root .status-pill { font-family: var(--v2-mono); font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.03em; }
+.v2-root .status-pill.disc { background: var(--amber-bg); color: var(--amber); }
+.v2-root .status-pill.rp { background: var(--sky-bg); color: var(--sky); }
+.v2-root .status-pill.done { background: var(--good-bg); color: var(--good); }
+.v2-root .note { padding: 11px 16px; font-size: 12px; color: var(--ink-1); border-bottom: 1px solid var(--line); line-height: 1.5; }
+.v2-root .note:last-child { border-bottom: none; }
+.v2-root .note .by { font-family: var(--v2-mono); font-size: 9.5px; color: var(--ink-3); margin-top: 4px; }
+.v2-root .restricted { display: flex; align-items: center; gap: 8px; margin: 12px 16px; padding: 8px 12px; background: var(--lock-bg); border: 1px solid color-mix(in srgb, var(--lock) 22%, transparent); border-radius: 8px; font-size: 11.5px; color: var(--lock); font-weight: 550; }
+.v2-root .imp-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 14px 16px; }
+.v2-root .imp-chips .ic-chip { font-family: var(--v2-mono); font-size: 10.5px; padding: 3px 8px; border-radius: 6px; background: var(--panel-2); color: var(--ink-1); border: 1px solid var(--line); }
+.v2-root .sub-tabs { display: flex; gap: 3px; padding: 10px 14px 0; }
+@media (max-width: 860px) { .v2-root .hub-body { grid-template-columns: 1fr; } .v2-root .kv { grid-template-columns: repeat(2,1fr); } }
 
 @media (max-width: 860px) {
   .v2-root .cols { grid-template-columns: 1fr; }

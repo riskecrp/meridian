@@ -135,7 +135,7 @@ export default function V2Home() {
       {facs.factions.length === 0 ? <div className="empty">No factions in your scope.</div> : (
         <div className="fac-grid">
           {[...facs.factions].sort((a, b) => (b.tier || 0) - (a.tier || 0)).map(f => (
-            <Link className="fac" href="/v2" key={f.id}>
+            <Link className="fac" href={`/v2/factions/${encodeURIComponent(f.name)}`} key={f.id}>
               <div className="top"><div className="nm">{f.name}</div><span className={`tier ${tierBand(f.tier)}`}>T{f.tier}</span></div>
               <div className="mini-stats">
                 <div className="ms"><div className="n">{f.scenes30d ?? 0}</div><div className="k">Scenes</div></div>
