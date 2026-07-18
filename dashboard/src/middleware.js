@@ -4,7 +4,7 @@ export function middleware(request) {
   const fmSession     = request.cookies.get('meridian_session');
   const verifySession = request.cookies.get('meridian_verify_session');
 
-  if (pathname.startsWith('/fm')) {
+  if (pathname.startsWith('/fm') || pathname.startsWith('/v2')) {
     if (!fmSession) return NextResponse.redirect(new URL('/login', request.url));
   }
   if (pathname === '/login') {
@@ -18,4 +18,4 @@ export function middleware(request) {
   }
   return NextResponse.next();
 }
-export const config = { matcher: ['/fm/:path*', '/login', '/verify', '/verify/login'] };
+export const config = { matcher: ['/fm/:path*', '/v2/:path*', '/login', '/verify', '/verify/login'] };
