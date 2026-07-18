@@ -54,7 +54,7 @@ export default function V2Layout({ children }) {
       <header className="topnav">
         <div className="topnav-inner">
           <div className="tn-brand">
-            <div className="mk" />
+            <img className="mk-img" src="/meridian-logo.png" alt="Meridian" />
             <div className="wm">Meridian</div>
           </div>
           <nav className="tn-links">

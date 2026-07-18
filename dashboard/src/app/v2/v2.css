@@ -75,8 +75,7 @@
 .v2-root .topnav { position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
 .v2-root .topnav-inner { max-width: 1220px; margin: 0 auto; display: flex; align-items: center; gap: 20px; padding: 0 22px; height: 54px; }
 .v2-root .tn-brand { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
-.v2-root .tn-brand .mk { width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg, var(--accent), var(--accent-hi)); display: grid; place-items: center; flex-shrink: 0; }
-.v2-root .tn-brand .mk::after { content: ""; width: 11px; height: 11px; border: 2px solid #fff; border-radius: 50%; border-right-color: transparent; }
+.v2-root .tn-brand .mk-img { width: 26px; height: 26px; border-radius: 7px; object-fit: contain; flex-shrink: 0; }
 .v2-root .tn-brand .wm { font-weight: 700; font-size: 15px; letter-spacing: -0.02em; color: var(--ink-0); }
 
 .v2-root .tn-links { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
