@@ -1,6 +1,7 @@
 "use client";
 import "./v2.css";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../lib/useAuth";
@@ -18,33 +19,45 @@ const Icon = ({ d }) => <svg className="ic" viewBox="0 0 16 16" fill="none" stro
 
 const RISK_ID = "738214924760907907";
 
-/* Nav item whose sections open as a dropdown menu (deep-linked with ?tab=). */
+/* Nav item whose sections open as a dropdown menu (deep-linked with ?tab=).
+   The label itself still navigates; the caret opens the menu. The menu is
+   position:fixed because .tn-links is an overflow-x scroll container that
+   would clip an absolutely-positioned child. */
 function NavDropdown({ item, active, cls, inner }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
   const currentTab = typeof window !== "undefined" && window.location.pathname.startsWith(item.href)
     ? new URLSearchParams(window.location.search).get("tab") || item.menu[0].id
     : null;
+  const toggle = (e) => {
+    const r = e.currentTarget.parentElement.getBoundingClientRect();
+    setPos({ top: r.bottom + 8, left: Math.max(8, r.left) });
+    setOpen(o => !o);
+  };
   return (
-    <div style={{ position: "relative", display: "inline-flex" }}>
-      <button className={cls} style={{ background: "none", border: "none", fontFamily: "inherit" }} onClick={() => setOpen(o => !o)}>
-        {inner} <span style={{ fontSize: 8, opacity: 0.6, marginLeft: 1 }}>▾</span>
+    <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+      <Link href={item.href} className={cls} style={{ paddingRight: 3 }}>{inner}</Link>
+      <button className={cls} aria-label={`${item.label} sections`} onClick={toggle}
+        style={{ background: "none", border: "none", fontFamily: "inherit", padding: "6px 7px 6px 3px", cursor: "pointer" }}>
+        <span style={{ fontSize: 9, opacity: 0.7 }}>▾</span>
       </button>
-      {open && <>
-        <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
-        <div style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 95, minWidth: 185, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 6, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
-          {item.menu.map(m => {
-            const on = active && currentTab === m.id;
-            return (
-              <Link key={m.id} href={`${item.href}?tab=${m.id}`} onClick={() => setOpen(false)}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "7px 10px", borderRadius: 7, fontSize: 12.5, fontWeight: on ? 700 : 500, color: on ? "var(--accent)" : "var(--ink-1)", background: on ? "var(--accent-bg)" : "transparent", textDecoration: "none" }}
-                onMouseEnter={e => { if (!on) e.currentTarget.style.background = "var(--panel-2)"; }}
-                onMouseLeave={e => { if (!on) e.currentTarget.style.background = on ? "var(--accent-bg)" : "transparent"; }}>
-                {m.label}{on && <span style={{ fontSize: 10 }}>●</span>}
-              </Link>
-            );
-          })}
-        </div>
-      </>}
+      {open && createPortal(
+        <div className="v2-root">
+          <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
+          <div style={{ position: "fixed", top: pos.top, left: pos.left, zIndex: 95, minWidth: 185, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 6, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
+            {item.menu.map(m => {
+              const on = active && currentTab === m.id;
+              return (
+                <Link key={m.id} href={`${item.href}?tab=${m.id}`} onClick={() => setOpen(false)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "7px 10px", borderRadius: 7, fontSize: 12.5, fontWeight: on ? 700 : 500, color: on ? "var(--accent)" : "var(--ink-1)", background: on ? "var(--accent-bg)" : "transparent", textDecoration: "none" }}
+                  onMouseEnter={e => { if (!on) e.currentTarget.style.background = "var(--panel-2)"; }}
+                  onMouseLeave={e => { if (!on) e.currentTarget.style.background = on ? "var(--accent-bg)" : "transparent"; }}>
+                  {m.label}{on && <span style={{ fontSize: 10 }}>●</span>}
+                </Link>
+              );
+            })}
+          </div>
+        </div>, document.body)}
     </div>
   );
 }
