@@ -5,6 +5,8 @@ import { useAuth } from "../../../lib/useAuth";
 import { getTeamPerformance, getGuideActivity, getMeetingNotes, saveMeetingNote, deleteMeetingNote, getNoteTargets, getAttendeesForTarget, getReviewData, getPendingQueue } from "../../fm/leadership/actions.js";
 import { approveRPChange, denyRPChange, markRPDone, executeRPChange, deleteRPChange, resolveDeletion } from "../../fm/operations/actions.js";
 import { completePromotion, cancelPromotion } from "../../fm/factions/actions.js";
+import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../fm/teams/actions.js";
+import RpChangeForm from "../../fm/teams/RpChangeForm";
 
 function Modal({ title, onClose, onSave, saveDisabled, children }) {
   return (
@@ -28,7 +30,7 @@ export default function V2Leadership() {
   const [tab, setTab] = useState("approvals");
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead or Leadership access required.</div>;
-  const TABS = [["approvals", "Approvals"], ["performance", "Performance"], ["notes", "Meeting Notes"], ["reviews", "Reviews"]];
+  const TABS = [["approvals", "Approvals"], ["performance", "Performance"], ["notes", "Meeting Notes"], ["reviews", "Reviews"], ...((auth?.level || 0) >= 3 ? [["contacts", "IC Contacts"]] : [])];
   return (
     <div className="view">
       <div className="page-head"><div><p className="eyebrow">Leadership</p><h1>Oversight</h1><div className="sub">Cross-faction approvals, performance and the monthly review roll-up.</div></div></div>
@@ -37,7 +39,7 @@ export default function V2Leadership() {
       {tab === "performance" && <Performance />}
       {tab === "notes" && <MeetingNotes auth={auth} />}
       {tab === "reviews" && <Reviews />}
-      <div className="disclaimer">IC-contact triage (L3 roll-up) — porting next; per-faction IC contacts live in the faction hub.</div>
+      {tab === "contacts" && <IcContacts />}
     </div>
   );
 }
@@ -271,6 +273,138 @@ function Reviews() {
           </tbody>
         </table>
       </div></div>
+    </>
+  );
+}
+
+/* ── IC Contacts triage (L3): cross-faction roll-up of incoming IC contacts ── */
+const IC_STATUS = {
+  pending_discussion: { label: "Pending Discussion", color: "var(--amber)", bg: "var(--amber-bg)" },
+  pending_roleplay: { label: "Pending Roleplay", color: "var(--sky)", bg: "var(--sky-bg)" },
+  completed: { label: "Completed", color: "var(--good)", bg: "var(--good-bg)" },
+};
+
+function IcThread({ threadId }) {
+  const [msgs, setMsgs] = useState(null);
+  const [open, setOpen] = useState(false);
+  const toggle = () => {
+    if (!open && msgs === null) getThreadMessages(threadId).then(setMsgs);
+    setOpen(o => !o);
+  };
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button className="act" style={{ color: "var(--sky)" }} onClick={toggle}>{open ? "Hide thread" : "View thread messages"}</button>
+      {open && (
+        <div style={{ marginTop: 8, borderRadius: 8, border: "1px solid var(--line)", overflow: "hidden" }}>
+          {msgs === null ? <div style={{ padding: "10px 12px", fontSize: 12, fontStyle: "italic", color: "var(--ink-3)" }}>Loading…</div>
+            : msgs.length === 0 ? <div style={{ padding: "10px 12px", fontSize: 12, fontStyle: "italic", color: "var(--ink-3)" }}>No messages in thread.</div>
+              : msgs.map((m, i) => (
+                <div key={m.id} style={{ padding: "8px 12px", borderBottom: i < msgs.length - 1 ? "1px solid var(--line)" : "none", background: m.authorBot ? "var(--accent-bg)" : "transparent" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: m.authorBot ? "var(--accent)" : "var(--ink-0)" }}>{m.author}</span>
+                    <span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>{new Date(m.timestamp).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}</span>
+                  </div>
+                  <p style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0, color: "var(--ink-1)" }}>{m.content}</p>
+                </div>
+              ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IcContactCard({ contact, staffList, onRefresh }) {
+  const [assigning, setAssigning] = useState(false);
+  const [assignId, setAssignId] = useState("");
+  const [stagingRP, setStagingRP] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const meta = IC_STATUS[contact.status] || IC_STATUS.pending_discussion;
+  const doAssign = async () => {
+    if (!assignId) return;
+    setBusy(true);
+    const member = staffList.find(s => s.discord_id === assignId);
+    await assignIcContact(contact.id, assignId, member?.display_name || assignId);
+    setAssigning(false); setAssignId(""); setBusy(false); onRefresh();
+  };
+  const doStatusChange = async (newStatus) => {
+    setBusy(true);
+    if (newStatus === "completed") await completeIcContact(contact.id);
+    else await setIcContactStatus(contact.id, newStatus);
+    setBusy(false); onRefresh();
+  };
+  return (
+    <div className="card">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", paddingBottom: 8, borderBottom: "1px solid var(--line)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 700 }}>{contact.faction_name}</span>
+          <span style={{ color: "var(--ink-3)" }}>·</span>
+          <span style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{contact.sender_name}</span>
+          {contact.team_name && <span className="chip" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>{contact.team_name}</span>}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>{new Date(contact.submitted_at).toLocaleDateString()}</span>
+          {contact.thread_id && <a href={`https://discord.com/channels/@me/${contact.thread_id}`} target="_blank" rel="noreferrer" style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)" }}>Thread ↗</a>}
+          <select disabled={busy} value={contact.status} onChange={e => doStatusChange(e.target.value)}
+            style={{ fontSize: 9.5, fontWeight: 700, padding: "3px 6px", borderRadius: 6, background: meta.bg, color: meta.color, border: "1px solid var(--line)", cursor: "pointer", outline: "none", fontFamily: "var(--v2-mono)", textTransform: "uppercase" }}>
+            <option value="pending_discussion">Pending Discussion</option>
+            <option value="pending_roleplay">Pending Roleplay</option>
+            <option value="completed">Completed</option>
+          </select>
+        </div>
+      </div>
+      <div style={{ paddingTop: 10 }}>
+        <p style={{ fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap", margin: "0 0 10px", color: "var(--ink-1)" }}>{contact.message}</p>
+        <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginBottom: 10 }}>
+          {contact.assigned_name ? <><span style={{ color: "var(--accent)" }}>{contact.assigned_name}</span> assigned</> : "Unassigned"}
+        </div>
+        {assigning && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+            <select className="filter-inp" style={{ flex: 1, minWidth: 220 }} value={assignId} onChange={e => setAssignId(e.target.value)}>
+              <option value="">Select member…</option>
+              {staffList.map(s => <option key={s.discord_id} value={s.discord_id}>{s.display_name} {s.team_name ? `(${s.team_name})` : ""}</option>)}
+            </select>
+            <button className="act primary" disabled={!assignId || busy} onClick={doAssign}>Confirm</button>
+            <button className="act" onClick={() => setAssigning(false)}>Cancel</button>
+          </div>
+        )}
+        {stagingRP && (
+          <div style={{ marginBottom: 10 }}>
+            <RpChangeForm contact={contact} busy={busy} onSubmit={async (rpData) => { setBusy(true); await stageRoleplay(contact.id, rpData); setStagingRP(false); setBusy(false); onRefresh(); }} onCancel={() => setStagingRP(false)} />
+          </div>
+        )}
+        {!assigning && !stagingRP && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <button className="act" onClick={() => setAssigning(true)}>Assign</button>
+            <button className="act" style={{ color: "var(--sky)" }} onClick={() => setStagingRP(true)}>Request RP change</button>
+          </div>
+        )}
+        {contact.thread_id && <IcThread threadId={contact.thread_id} />}
+      </div>
+    </div>
+  );
+}
+
+function IcContacts() {
+  const [contacts, setContacts] = useState([]);
+  const [staffList, setStaffList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("active");
+  const load = async () => {
+    const [c, s] = await Promise.all([getAllIcContacts(), getStaffList()]);
+    setContacts(c || []); setStaffList(s || []); setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+  if (loading) return <div className="empty">Loading…</div>;
+  const filtered = contacts.filter(c => filter === "all" ? true : c.status !== "completed");
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["active", "all"].map(f => <button key={f} className={`pill${filter === f ? " on" : ""}`} onClick={() => setFilter(f)}>{f === "active" ? "Active" : "All"}</button>)}
+        </div>
+        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>{filtered.length} contact{filtered.length !== 1 ? "s" : ""}</span>
+      </div>
+      {filtered.length === 0 ? <div className="empty">No IC contacts.</div> : filtered.map(c => <IcContactCard key={c.id} contact={c} staffList={staffList} onRefresh={load} />)}
     </>
   );
 }
