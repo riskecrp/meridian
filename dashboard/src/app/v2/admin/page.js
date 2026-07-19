@@ -5,14 +5,18 @@ import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction }
 import { getInventory, addInventoryItem, updateStock, deleteInventoryItem, getDistributionStats } from "../../fm/inventory/actions.js";
 import { getLinks, saveLinks, publishLinks } from "../../fm/operations/links/actions.js";
 import { listCatalog, createCatalogEntry, updateCatalogEntry, deleteCatalogEntry, listFactionsForAdd, addCatalogVehicleToFaction } from "../../fm/operations/vehicles/actions.js";
-import { getGlobalImports, addImportItem, editImportItem, deleteImportItem, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../fm/operations/actions.js";
+import { getGlobalImports, addImportItem, editImportItem, deleteImportItem, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels, getBotServerConfigs, addBotServerConfig, updateBotServerConfig, deleteBotServerConfig, addBotWatchRole, deleteBotWatchRole } from "../../fm/operations/actions.js";
+import { listReminders, listChannels, getTargetOptions, createReminder, updateReminder, deleteReminder, getReminderProgress, adminCompleteInstance, forceSendRecurringReminder } from "../../fm/operations/reminders/actions.js";
+import { getDocuments, createDocument, updateDocument, deleteDocument } from "../../fm/documents/actions.js";
+import { getFactionNames } from "../../fm/factions/actions.js";
+import QuillEditor from "../../../lib/QuillEditor";
 const RISK_ID = "738214924760907907"; // hard-coded client-side like the old /fm memberlog page (constants.js is env-overridable server-side)
 
-// access: "l2" = viewable by L2 / Event Team / Lead Storyteller (matches old /fm nav minView:2 + lst); "risk" = owner only; default = L3/ET only
+// access mirrors the old /fm nav: "l1" = all staff, "l2" = L2 / Event Team / Lead Storyteller, "risk" = owner only, default = L3/ET only
 const GROUPS = [
   { id: "people", label: "People", items: [["staff", "Staff & Teams", true], ["hours", "FM Hours", true], ["dbaccess", "DB Access", true]] },
   { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", false, "l2"], ["vehicles", "Vehicle Catalog", false, "l2"], ["imports", "Import Catalog", false, "l2"]] },
-  { id: "config", label: "Config", items: [["links", "Important Links", false], ["reminders", "Recurring Reminders", true], ["docs", "Documents", true], ["channels", "Faction Channels", true]] },
+  { id: "config", label: "Config", items: [["links", "Important Links", false], ["reminders", "Recurring Reminders", false, "l2"], ["docs", "Documents", false, "l1"], ["channels", "Faction Channels", false]] },
   { id: "records", label: "Records", items: [["audit", "Audit Log", false], ["archive", "Archive", false], ["memberlog", "Server Logs", false, "risk"], ["convos", "Conversations", false]] },
 ];
 
@@ -26,7 +30,7 @@ export default function V2Admin() {
 
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
 
-  const visible = GROUPS.map(g => ({ ...g, items: g.items.filter(it => it[3] === "l2" ? canL2 : it[3] === "risk" ? auth?.id === RISK_ID : isL3) })).filter(g => g.items.length);
+  const visible = GROUPS.map(g => ({ ...g, items: g.items.filter(it => it[3] === "l1" ? true : it[3] === "l2" ? canL2 : it[3] === "risk" ? auth?.id === RISK_ID : isL3) })).filter(g => g.items.length);
   if (!auth?.ok || !visible.length) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead (L2) access required.</div>;
 
   const activeGroup = visible.find(g => g.id === group) || visible.find(g => g.id === "records") || visible[0];
@@ -54,6 +58,9 @@ export default function V2Admin() {
         : viewId === "links" ? <Links />
         : viewId === "memberlog" ? <ServerLogs />
         : viewId === "convos" ? <Conversations />
+        : viewId === "reminders" ? <RecurringReminders auth={auth} />
+        : viewId === "docs" ? <DocumentsView auth={auth} />
+        : viewId === "channels" ? <FactionChannels />
         : null}
     </div>
   );
@@ -864,5 +871,479 @@ function Conversations() {
       )}
       {!stats && !loading && <div className="empty">Set a date range and click <strong>Fetch stats</strong> to load conversation data and AI summaries.</div>}
     </>
+  );
+}
+
+/* ── Recurring Reminders (L2+; Progress + Force Send = L3) ── */
+const CHANNEL_LABELS = {
+  global_ping_channel: "#meridian-database (global)",
+  event_announce_channel: "#up-and-coming",
+  leadership_channel: "#management-board",
+  team_lead_channel: "#team-leads",
+};
+const ord = (n) => (n >= 11 && n <= 13) ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th";
+const labelForTarget = (type, id, targets) =>
+  type === "User" ? (targets.staff.find(s => s.discord_id === id)?.display_name || id)
+  : type === "Team" ? (targets.teams.find(t => t.team_id === id)?.team_name || id)
+  : (targets.roles.find(r => r.role_id === id)?.key || id);
+
+function RecurringReminders({ auth }) {
+  const [reminders, setReminders] = useState([]);
+  const [channels, setChannels] = useState([]);
+  const [targets, setTargets] = useState({ teams: [], staff: [], roles: [] });
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [progressFor, setProgressFor] = useState(null);
+  const [progressRows, setProgressRows] = useState([]);
+  const refresh = async () => {
+    const [r, c, t] = await Promise.all([listReminders(), listChannels(), getTargetOptions()]);
+    setReminders(r || []); setChannels(c || []); setTargets(t || { teams: [], staff: [], roles: [] }); setLoading(false);
+  };
+  useEffect(() => { refresh(); }, []);
+  if (loading) return <div className="empty">Loading…</div>;
+  const openProgress = async (rem) => {
+    const now = new Date();
+    const rows = await getReminderProgress(rem.id, now.getUTCFullYear(), now.getUTCMonth() + 1);
+    setProgressFor(rem); setProgressRows(rows || []);
+  };
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Monthly tasks that ping a target on a set day.</span>
+        <button className="btn" onClick={() => { setEditing(null); setShowForm(true); }}>New reminder +</button>
+      </div>
+      {reminders.length === 0 && <div className="empty">No reminders yet. Create one to get started.</div>}
+      <div className="card">
+        {reminders.map(r => {
+          const chKey = channels.find(c => c.channel_id === r.channel_id)?.key || r.channel_id;
+          const canEdit = auth.level >= 3 || r.created_by_id === auth.id;
+          return (
+            <div key={r.id} style={{ borderBottom: "1px solid var(--line)", padding: "10px 0", opacity: r.active ? 1 : 0.55 }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 260 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontWeight: 700 }}>{r.title}</span>
+                    {!r.active && <span className="chip" style={{ background: "var(--panel-2)", color: "var(--ink-3)" }}>INACTIVE</span>}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 16px", fontSize: 11, color: "var(--ink-2)", marginTop: 3 }}>
+                    <span><b>Target:</b> {r.target_type}: {labelForTarget(r.target_type, r.target_id, targets)}</span>
+                    <span><b>Channel:</b> {CHANNEL_LABELS[chKey] || chKey}</span>
+                    <span><b>Ping:</b> {r.ping_day}{ord(r.ping_day)} / <b>Due:</b> {r.due_day}{ord(r.due_day)}</span>
+                  </div>
+                  {r.body && <p style={{ fontSize: 12, marginTop: 6, whiteSpace: "pre-wrap", color: "var(--ink-1)" }}>{r.body.substring(0, 200)}{r.body.length > 200 ? "…" : ""}</p>}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {auth.level >= 3 && r.active && <button className="act" onClick={() => openProgress(r)}>Progress</button>}
+                  {auth.level >= 3 && r.active && <button className="act" style={{ color: "var(--accent)" }} onClick={async () => {
+                    if (window.confirm(`Force-send "${r.title}" now? Pings the channel and creates this month's instances if missing.`)) {
+                      const res = await forceSendRecurringReminder(r.id);
+                      if (!res.ok) { window.alert(res.error || "Failed"); return; }
+                      window.alert(`Sent. ${res.recipientsCount || 0} recipient(s) notified.`);
+                      refresh();
+                    }
+                  }}>Force send</button>}
+                  {canEdit && <button className="act" onClick={() => { setEditing(r); setShowForm(true); }}>Edit</button>}
+                  {canEdit && r.active && <button className="act" style={{ color: "var(--rose)" }} onClick={async () => { if (window.confirm("Deactivate this reminder? Past instances stay in the DB.")) { await deleteReminder(r.id); refresh(); } }}>Delete</button>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {showForm && <ReminderForm editing={editing} channels={channels} targets={targets} onClose={() => { setShowForm(false); setEditing(null); }} onSaved={() => { setShowForm(false); setEditing(null); refresh(); }} />}
+      {progressFor && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => { setProgressFor(null); setProgressRows([]); }} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 560, maxHeight: "85vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontWeight: 700, color: "var(--ink-0)" }}>{progressFor.title}</div>
+            <div style={{ fontSize: 11, color: "var(--ink-3)", margin: "2px 0 12px" }}>This month — {progressRows.filter(r => r.completed_at).length} / {progressRows.length} completed</div>
+            {progressRows.length === 0 && <div style={{ fontSize: 12, fontStyle: "italic", color: "var(--ink-3)" }}>No instances generated yet (will fire on day {progressFor.ping_day}).</div>}
+            {progressRows.filter(r => !r.completed_at).length > 0 && <>
+              <div className="imp-grp">Pending ({progressRows.filter(r => !r.completed_at).length})</div>
+              {progressRows.filter(r => !r.completed_at).map(p => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", borderRadius: 8, background: "var(--panel-2)", marginBottom: 4 }}>
+                  <span style={{ fontSize: 13 }}>{p.recipient_name}</span>
+                  <button className="act" style={{ padding: "2px 8px" }} onClick={async () => { await adminCompleteInstance(p.id); openProgress(progressFor); }}>Mark done</button>
+                </div>
+              ))}
+            </>}
+            {progressRows.filter(r => r.completed_at).length > 0 && <>
+              <div className="imp-grp">Completed ({progressRows.filter(r => r.completed_at).length})</div>
+              {progressRows.filter(r => r.completed_at).map(c => (
+                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)", marginBottom: 4 }}>
+                  <span style={{ fontSize: 13, color: "var(--good)" }}>✓ {c.recipient_name}</span>
+                  <span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>by {c.completed_by_name === c.recipient_name ? "self" : c.completed_by_name}</span>
+                </div>
+              ))}
+            </>}
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}><button className="act" onClick={() => { setProgressFor(null); setProgressRows([]); }}>Close</button></div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ReminderForm({ editing, channels, targets, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    title: editing?.title || "", body: editing?.body || "", links: editing?.links || "",
+    target_type: editing?.target_type || "Role", target_id: editing?.target_id || "",
+    channel_id: editing?.channel_id || "", ping_day: editing?.ping_day || 1, due_day: editing?.due_day || 10,
+    active: editing?.active ?? 1,
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async () => {
+    setErr("");
+    if (!form.title.trim()) { setErr("Title required"); return; }
+    if (!form.target_id) { setErr("Pick a target"); return; }
+    if (!form.channel_id) { setErr("Pick a channel"); return; }
+    setSubmitting(true);
+    const res = editing ? await updateReminder(editing.id, form) : await createReminder(form);
+    setSubmitting(false);
+    if (!res.ok) { setErr(res.error || "Failed"); return; }
+    onSaved();
+  };
+  const targetOptions = form.target_type === "User" ? targets.staff.map(s => ({ value: s.discord_id, label: s.display_name }))
+    : form.target_type === "Team" ? targets.teams.map(t => ({ value: t.team_id, label: t.team_name }))
+    : targets.roles.map(r => ({ value: r.role_id, label: r.key }));
+  const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 };
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
+      <div style={{ position: "relative", width: "100%", maxWidth: 560, maxHeight: "88vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+        <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>{editing ? "Edit" : "New"} recurring reminder</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div><div style={lbl}>Title *</div><input className="filter-inp" style={{ width: "100%" }} value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="e.g. Monthly Faction Reviews" /></div>
+          <div><div style={lbl}>Body / description</div><textarea className="filter-inp" style={{ width: "100%" }} rows={4} value={form.body} onChange={e => setForm({ ...form, body: e.target.value })} placeholder="What needs to happen this month…" /></div>
+          <div><div style={lbl}>Reference links (one per line)</div><textarea className="filter-inp" style={{ width: "100%" }} rows={2} value={form.links} onChange={e => setForm({ ...form, links: e.target.value })} placeholder={"https://ecrpfm.com/fm/leadership/reviews\nhttps://ecrpfm.com/fm/factions"} /></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><div style={lbl}>Target type *</div>
+              <select className="filter-inp" style={{ width: "100%" }} value={form.target_type} onChange={e => setForm({ ...form, target_type: e.target.value, target_id: "" })}>
+                <option value="Role">Role</option><option value="Team">Team</option><option value="User">User</option>
+              </select></div>
+            <div><div style={lbl}>Target *</div>
+              <select className="filter-inp" style={{ width: "100%" }} value={form.target_id} onChange={e => setForm({ ...form, target_id: e.target.value })}>
+                <option value="">Select…</option>
+                {targetOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select></div>
+          </div>
+          <div><div style={lbl}>Discord channel *</div>
+            <select className="filter-inp" style={{ width: "100%" }} value={form.channel_id} onChange={e => setForm({ ...form, channel_id: e.target.value })}>
+              <option value="">Select…</option>
+              {channels.map(c => <option key={c.key} value={c.channel_id}>{CHANNEL_LABELS[c.key] || c.key}</option>)}
+            </select></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><div style={lbl}>Ping day (1-31) *</div><input type="number" min="1" max="31" className="filter-inp" style={{ width: "100%" }} value={form.ping_day} onChange={e => setForm({ ...form, ping_day: parseInt(e.target.value) || 1 })} /></div>
+            <div><div style={lbl}>Due day (1-31) *</div><input type="number" min="1" max="31" className="filter-inp" style={{ width: "100%" }} value={form.due_day} onChange={e => setForm({ ...form, due_day: parseInt(e.target.value) || 1 })} /></div>
+          </div>
+          {editing && <label style={{ fontSize: 12.5, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={!!form.active} onChange={e => setForm({ ...form, active: e.target.checked ? 1 : 0 })} /> Active</label>}
+          {err && <div style={{ fontSize: 12, color: "var(--rose)" }}>{err}</div>}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+          <button className="act" onClick={onClose}>Cancel</button>
+          <button className="act primary" disabled={submitting} onClick={submit}>{submitting ? "Saving…" : "Save"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Documents (all staff; L3 CRUD) ── */
+function DocumentsView({ auth }) {
+  const [docs, setDocs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editDoc, setEditDoc] = useState(null);
+  const [form, setForm] = useState({ title: "", category: "General", content: "", level_required: 1 });
+  const [showArchived, setShowArchived] = useState(false);
+  useEffect(() => {
+    getDocuments().then(d => {
+      // Client-side guard: never display a doc above the viewer's level
+      const safe = (d || []).filter(doc => (doc.level_required || 1) <= auth.level);
+      setDocs(safe); setLoading(false);
+      const sop = new URLSearchParams(window.location.search).get("sop");
+      if (sop) {
+        const match = safe.find(doc => doc.title === decodeURIComponent(sop));
+        if (match) {
+          setExpandedId(match.id);
+          setTimeout(() => document.querySelector(`[data-doc-id="${match.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
+        }
+      }
+    });
+  }, []);
+  const refresh = async () => {
+    const d = await getDocuments();
+    setDocs((d || []).filter(doc => (doc.level_required || 1) <= auth.level));
+  };
+  const handleSave = async () => {
+    if (!form.title.trim()) return;
+    if (editDoc) await updateDocument(editDoc.id, form); else await createDocument(form);
+    setShowForm(false); setEditDoc(null); setForm({ title: "", category: "General", content: "", level_required: 1 });
+    refresh();
+  };
+  if (loading) return <div className="empty">Loading documents…</div>;
+  const q = search.toLowerCase();
+  const filtered = docs.filter(d => {
+    if (!showArchived && d.category === "z. Archived") return false;
+    return !q || d.title?.toLowerCase().includes(q) || d.category?.toLowerCase().includes(q);
+  });
+  const grouped = filtered.reduce((a, d) => { const c = d.category || "General"; (a[c] = a[c] || []).push(d); return a; }, {});
+  const archivedCount = docs.filter(d => d.category === "z. Archived").length;
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="filter-inp" style={{ maxWidth: 340 }} placeholder="Search documents…" value={search} onChange={e => setSearch(e.target.value)} />
+        <span style={{ flex: 1 }} />
+        {auth.level >= 3 && <button className="btn" onClick={() => { setEditDoc(null); setForm({ title: "", category: "General", content: "", level_required: 1 }); setShowForm(true); }}>Create +</button>}
+      </div>
+      {Object.keys(grouped).sort().map(cat => (
+        <div className="card" key={cat}>
+          <div className="hd"><div className="t">{cat}</div><div className="meta">{grouped[cat].length}</div></div>
+          {grouped[cat].map(doc => {
+            const open = expandedId === doc.id;
+            return (
+              <div key={doc.id} data-doc-id={doc.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                <div className="row" onClick={() => setExpandedId(open ? null : doc.id)}>
+                  <span className="desc">{doc.title}</span>
+                  <span className="chip role">{doc.created_by}</span>
+                  {doc.level_required > 1 && <span className="chip lock">L{doc.level_required}+</span>}
+                  {auth.level >= 3 && (
+                    <span onClick={e => e.stopPropagation()} style={{ display: "flex", gap: 4 }}>
+                      <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditDoc(doc); setForm({ title: doc.title, category: doc.category, content: doc.content, level_required: doc.level_required || 1 }); setShowForm(true); }}>Edit</button>
+                      <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this document?")) { await deleteDocument(doc.id); refresh(); } }}>Del</button>
+                    </span>
+                  )}
+                  <span className="caret" style={{ transform: open ? "rotate(180deg)" : "none" }}>▼</span>
+                </div>
+                {open && (
+                  <div className="task-detail">
+                    <div className="quill-content" style={{ fontSize: 13.5, color: "var(--ink-1)", lineHeight: 1.6 }}
+                      onClick={e => {
+                        const target = e.target.closest("a[data-doc-link]");
+                        if (target) {
+                          e.preventDefault();
+                          const title = target.getAttribute("data-doc-link");
+                          const targetDoc = docs.find(d => d.title === title);
+                          if (targetDoc) {
+                            setExpandedId(targetDoc.id);
+                            setTimeout(() => document.querySelector(`[data-doc-id="${targetDoc.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+                          } else {
+                            window.alert("Document not found or above your access level: " + title);
+                          }
+                        }
+                      }}
+                      dangerouslySetInnerHTML={{ __html: doc.content }} />
+                    <div style={{ marginTop: 10, fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>Updated: {doc.updated_at}</div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {filtered.length === 0 && !showArchived && <div className="empty">No documents found.</div>}
+      {archivedCount > 0 && (
+        <button className="act" style={{ marginTop: 4 }} onClick={() => setShowArchived(v => !v)}>
+          {showArchived ? "▲ Hide archived" : `▼ Show archived (${archivedCount})`}
+        </button>
+      )}
+      {showForm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => { setShowForm(false); setEditDoc(null); }} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 750, maxHeight: "90vh", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+              <span style={{ fontWeight: 700, color: "var(--ink-0)" }}>{editDoc ? "Edit" : "Create"} document</span>
+              <button className="act" style={{ padding: "2px 8px" }} onClick={() => { setShowForm(false); setEditDoc(null); }}>✕</button>
+            </div>
+            <div style={{ padding: 18, overflowY: "auto", flex: 1 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+                <input className="filter-inp" placeholder="Title" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
+                <input className="filter-inp" placeholder="Category" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
+                <select className="filter-inp" value={form.level_required} onChange={e => setForm({ ...form, level_required: parseInt(e.target.value) })}>
+                  <option value={1}>All FM Staff (L1+)</option>
+                  <option value={2}>Team Leads & Leadership (L2+)</option>
+                  <option value={3}>FM Leadership Only (L3)</option>
+                </select>
+              </div>
+              <QuillEditor value={form.content} onChange={v => setForm({ ...form, content: v })} placeholder="Start writing…" />
+            </div>
+            <div style={{ padding: "12px 18px", borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8, flexShrink: 0 }}>
+              <button className="act" onClick={() => { setShowForm(false); setEditDoc(null); }}>Cancel</button>
+              <button className="act primary" onClick={handleSave}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ── Faction Channels / Bot Server Config (L3) ── */
+function FactionChannels() {
+  const [servers, setServers] = useState([]);
+  const [factions, setFactions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [addForm, setAddForm] = useState(null);
+  useEffect(() => { Promise.all([getBotServerConfigs(), getFactionNames()]).then(([s, f]) => { setServers(s || []); setFactions(f || []); setLoading(false); }); }, []);
+  const refresh = () => getBotServerConfigs().then(s => setServers(s || []));
+  if (loading) return <div className="empty">Loading…</div>;
+  const F_EMPTY = { guild_id: "", guild_name: "", faction: "", access_role_id: "", access_role_name: "", comms_channel_id: "", comms_channel_name: "", faction_channel_id: "", faction_channel_name: "" };
+  const submitAdd = async () => {
+    if (!addForm.guild_id) return;
+    const result = await addBotServerConfig(addForm);
+    if (result?.error) { window.alert(result.error); return; }
+    setAddForm(null); refresh();
+  };
+  const lbl = { fontSize: 10, color: "var(--ink-3)", marginBottom: 3 };
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--v2-mono)", maxWidth: 640 }}>
+          Access Role — login gate for meridiandatabase.net · Command Channel — leadership target for announcements · Faction-Wide Channel — whole-faction target · Monitored Roles — pings shown on the dashboard
+        </div>
+        <button className="btn" onClick={() => setAddForm({ ...F_EMPTY })}>Add server +</button>
+      </div>
+      {servers.length === 0 && <div className="empty">No servers configured yet.</div>}
+      {servers.map(server => <ServerRow key={server.id} server={server} factions={factions} onRefresh={refresh} />)}
+      {addForm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setAddForm(null)} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 560, maxHeight: "88vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>Add bot server</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div><div style={lbl}>Discord Server ID *</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.guild_id} onChange={e => setAddForm({ ...addForm, guild_id: e.target.value })} placeholder="Right-click server → Copy ID" /></div>
+              <div><div style={lbl}>Server Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.guild_name} onChange={e => setAddForm({ ...addForm, guild_name: e.target.value })} placeholder="e.g. Alliance Discord" /></div>
+              <div style={{ gridColumn: "1 / -1" }}><div style={lbl}>Linked Faction</div>
+                <select className="filter-inp" style={{ width: "100%" }} value={addForm.faction} onChange={e => setAddForm({ ...addForm, faction: e.target.value })}>
+                  <option value="">— None —</option>
+                  {factions.map(n => <option key={n} value={n}>{n}</option>)}
+                </select></div>
+              <div><div style={lbl}>Access Role ID</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.access_role_id} onChange={e => setAddForm({ ...addForm, access_role_id: e.target.value })} placeholder="Role required to log into DB site" /></div>
+              <div><div style={lbl}>Access Role Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.access_role_name} onChange={e => setAddForm({ ...addForm, access_role_name: e.target.value })} placeholder="e.g. Ally Member" /></div>
+              <div><div style={lbl}>Command Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.comms_channel_id} onChange={e => setAddForm({ ...addForm, comms_channel_id: e.target.value })} placeholder="Right-click channel → Copy ID" /></div>
+              <div><div style={lbl}>Command Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.comms_channel_name} onChange={e => setAddForm({ ...addForm, comms_channel_name: e.target.value })} placeholder="e.g. #command" /></div>
+              <div><div style={lbl}>Faction-Wide Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.faction_channel_id} onChange={e => setAddForm({ ...addForm, faction_channel_id: e.target.value })} placeholder="Right-click channel → Copy ID" /></div>
+              <div><div style={lbl}>Faction-Wide Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.faction_channel_name} onChange={e => setAddForm({ ...addForm, faction_channel_name: e.target.value })} placeholder="e.g. #announcements" /></div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button className="act" onClick={() => setAddForm(null)}>Cancel</button>
+              <button className="act primary" disabled={!addForm.guild_id.trim()} onClick={submitAdd}>Add</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ServerRow({ server, factions, onRefresh }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [addingWatch, setAddingWatch] = useState(false);
+  const [watchForm, setWatchForm] = useState({ role_id: "", role_name: "" });
+  const startEdit = () => {
+    setForm({
+      guild_name: server.guild_name || "", access_role_id: server.access_role_id || "", access_role_name: server.access_role_name || "",
+      comms_channel_id: server.comms_channel_id || "", comms_channel_name: server.comms_channel_name || "",
+      faction_channel_id: server.faction_channel_id || "", faction_channel_name: server.faction_channel_name || "",
+      faction: server.faction_name || "",
+    });
+    setEditing(true); setCollapsed(false);
+  };
+  const saveEdit = async () => { setSaving(true); await updateBotServerConfig(server.id, form); setSaving(false); setEditing(false); onRefresh(); };
+  const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
+  const submitWatch = async () => {
+    if (!watchForm.role_id.trim()) return;
+    await addBotWatchRole({ config_id: server.id, ...watchForm });
+    setAddingWatch(false); setWatchForm({ role_id: "", role_name: "" });
+    onRefresh();
+  };
+  const lbl = { fontSize: 10, color: "var(--ink-3)", marginBottom: 3 };
+  const KV = ({ label, name, id, missing }) => (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 3 }}>{label}</div>
+      {id ? <><div style={{ fontSize: 13, fontWeight: 500 }}>{name || <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>Unnamed</span>}</div><div style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>{id}</div></>
+        : <div style={{ fontSize: 11, fontStyle: "italic", color: missing ? "var(--rose)" : "var(--ink-3)" }}>Not set</div>}
+    </div>
+  );
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }} onClick={() => { if (!editing) setCollapsed(c => !c); }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 11, color: "var(--ink-3)" }}>{collapsed ? "▶" : "▼"}</span>
+          <div>
+            <span style={{ fontWeight: 700 }}>{server.guild_name || "Unnamed Server"}</span>
+            <span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)", marginLeft: 8 }}>{server.guild_id}</span>
+          </div>
+          {server.faction_name && <span className="chip" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>{server.faction_name}</span>}
+        </div>
+        <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+          {!editing && <button className="act" onClick={startEdit}>Edit</button>}
+          <button className="act" style={{ color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Remove ${server.guild_name || server.guild_id} and all its roles?`)) { await deleteBotServerConfig(server.id); onRefresh(); } }}>Remove</button>
+        </div>
+      </div>
+      {!collapsed && (editing ? (
+        <div style={{ paddingTop: 12 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 8 }}>Editing — {server.guild_id}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><div style={lbl}>Server Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.guild_name} onChange={f("guild_name")} placeholder="e.g. Alliance Discord" /></div>
+            <div><div style={lbl}>Linked Faction</div>
+              <select className="filter-inp" style={{ width: "100%" }} value={form.faction} onChange={f("faction")}>
+                <option value="">— None —</option>
+                {factions.map(n => <option key={n} value={n}>{n}</option>)}
+              </select></div>
+            <div><div style={lbl}>Access Role ID</div><input className="filter-inp" style={{ width: "100%" }} value={form.access_role_id} onChange={f("access_role_id")} placeholder="Role required to log into DB site" /></div>
+            <div><div style={lbl}>Access Role Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.access_role_name} onChange={f("access_role_name")} placeholder="e.g. Ally Member" /></div>
+            <div><div style={lbl}>Command Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={form.comms_channel_id} onChange={f("comms_channel_id")} placeholder="Right-click channel → Copy ID" /></div>
+            <div><div style={lbl}>Command Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.comms_channel_name} onChange={f("comms_channel_name")} placeholder="e.g. #command" /></div>
+            <div><div style={lbl}>Faction-Wide Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={form.faction_channel_id} onChange={f("faction_channel_id")} placeholder="Right-click channel → Copy ID" /></div>
+            <div><div style={lbl}>Faction-Wide Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.faction_channel_name} onChange={f("faction_channel_name")} placeholder="e.g. #announcements" /></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button className="act primary" disabled={saving} onClick={saveEdit}>{saving ? "Saving…" : "Save changes"}</button>
+            <button className="act" onClick={() => setEditing(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, padding: "12px 0", borderBottom: "1px solid var(--line)" }}>
+            <KV label="Access Role" name={server.access_role_name} id={server.access_role_id} missing />
+            <KV label="Command Channel" name={server.comms_channel_name} id={server.comms_channel_id} />
+            <KV label="Faction-Wide Channel" name={server.faction_channel_name} id={server.faction_channel_id} />
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 3 }}>Linked Faction</div>
+              <div style={{ fontSize: 13, color: server.faction_name ? "var(--accent)" : "var(--ink-3)", fontStyle: server.faction_name ? "normal" : "italic" }}>{server.faction_name || "None"}</div>
+            </div>
+          </div>
+          <div style={{ paddingTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)" }}>Monitored roles <span style={{ fontWeight: 400 }}>— pings tracked on the dashboard</span></span>
+              <button className="act" style={{ padding: "2px 8px" }} onClick={() => setAddingWatch(v => !v)}>{addingWatch ? "Cancel" : "+ Add role"}</button>
+            </div>
+            {addingWatch && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+                <input className="filter-inp" style={{ maxWidth: 220 }} placeholder="Role ID the bot watches for pings" value={watchForm.role_id} onChange={e => setWatchForm({ ...watchForm, role_id: e.target.value })} />
+                <input className="filter-inp" style={{ maxWidth: 180 }} placeholder="Role name, e.g. @leadership" value={watchForm.role_name} onChange={e => setWatchForm({ ...watchForm, role_name: e.target.value })} />
+                <button className="act primary" disabled={!watchForm.role_id.trim()} onClick={submitWatch}>Add</button>
+              </div>
+            )}
+            {server.watchRoles.length === 0 ? <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--ink-3)", padding: "4px 0" }}>No roles monitored.</div> : (
+              server.watchRoles.map(r => (
+                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 10px", borderRadius: 8, background: "var(--panel-2)", marginBottom: 4 }}>
+                  <span><span style={{ fontSize: 13, fontWeight: 500 }}>{r.role_name || <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>Unnamed</span>}</span><span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)", marginLeft: 10 }}>{r.role_id}</span></span>
+                  <button className="act" style={{ color: "var(--rose)", padding: "2px 8px" }} onClick={async () => { if (window.confirm(`Remove monitored role ${r.role_name || r.role_id}?`)) { await deleteBotWatchRole(r.id); onRefresh(); } }}>Remove</button>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      ))}
+    </div>
   );
 }
