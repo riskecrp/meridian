@@ -1,18 +1,20 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
+import QuillEditor from "../../../lib/QuillEditor";
 import { getTeamPerformance, getGuideActivity, getMeetingNotes, saveMeetingNote, deleteMeetingNote, getNoteTargets, getAttendeesForTarget, getReviewData, getPendingQueue } from "../../fm/leadership/actions.js";
 import { approveRPChange, denyRPChange, markRPDone, executeRPChange, deleteRPChange, resolveDeletion } from "../../fm/operations/actions.js";
 import { completePromotion, cancelPromotion } from "../../fm/factions/actions.js";
 import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../fm/teams/actions.js";
 import RpChangeForm from "../../fm/teams/RpChangeForm";
 
-function Modal({ title, onClose, onSave, saveDisabled, children }) {
+function Modal({ title, onClose, onSave, saveDisabled, children, wide }) {
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
-      <div style={{ position: "relative", width: "100%", maxWidth: 520, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+      <div style={{ position: "relative", width: "100%", maxWidth: wide ? 720 : 520, maxHeight: "88vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
         <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>{title}</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{children}</div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
@@ -24,17 +26,24 @@ function Modal({ title, onClose, onSave, saveDisabled, children }) {
   );
 }
 
-export default function V2Leadership() {
+export default function V2LeadershipPage() {
+  return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Leadership /></Suspense>;
+}
+
+function V2Leadership() {
   const auth = useAuth();
+  // Section comes from the Leadership nav dropdown via ?tab= (no in-page tab row).
+  const sp = useSearchParams();
   const can = (auth?.level || 0) >= 2 || auth?.isLeadStoryteller;
-  const [tab, setTab] = useState("approvals");
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead or Leadership access required.</div>;
   const TABS = [["approvals", "Approvals"], ["performance", "Performance"], ["notes", "Meeting Notes"], ["reviews", "Reviews"], ...((auth?.level || 0) >= 3 ? [["contacts", "IC Contacts"]] : [])];
+  const tabParam = sp.get("tab");
+  const tab = TABS.some(([v]) => v === tabParam) ? tabParam : "approvals";
+  const sectionLabel = TABS.find(([v]) => v === tab)?.[1] || "";
   return (
     <div className="view">
-      <div className="page-head"><div><p className="eyebrow">Leadership</p><h1>Oversight</h1><div className="sub">Cross-faction approvals, performance and the monthly review roll-up.</div></div></div>
-      <div className="hub-tabs">{TABS.map(([v, l]) => <button key={v} className={`hub-tab${tab === v ? " on" : ""}`} onClick={() => setTab(v)}>{l}</button>)}</div>
+      <div className="page-head"><div><p className="eyebrow">Leadership</p><h1>{sectionLabel}</h1><div className="sub">Switch sections from the Leadership menu in the top bar.</div></div></div>
       {tab === "approvals" && <Approvals auth={auth} />}
       {tab === "performance" && <Performance />}
       {tab === "notes" && <MeetingNotes auth={auth} />}
@@ -175,6 +184,8 @@ function Performance() {
 }
 
 /* ── Meeting Notes ── */
+const stripHtml = (h) => (h || "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ");
+
 function MeetingNotes({ auth }) {
   const [notes, setNotes] = useState([]);
   const [targets, setTargets] = useState({ factions: [], teams: [], groups: [] });
@@ -215,16 +226,19 @@ function MeetingNotes({ auth }) {
                 <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete note?")) { await deleteMeetingNote(n.id); load(); } }}>Del</button>
               </>}
             </div>
-            <div style={{ whiteSpace: "pre-wrap", color: "var(--ink-1)" }}>{n.content}</div>
+            {/* Old notes are plain text; anything written with Quill is HTML — render each accordingly. */}
+            {/<[a-z][^>]*>/i.test(n.content || "")
+              ? <div className="quill-content" style={{ color: "var(--ink-1)", overflowWrap: "anywhere", lineHeight: 1.6 }} dangerouslySetInnerHTML={{ __html: n.content }} />
+              : <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--ink-1)" }}>{n.content}</div>}
           </div>
         ))}
       </div>
-      {form && <Modal title={`${form.id ? "Edit" : "New"} meeting note`} onClose={() => setForm(null)} onSave={save} saveDisabled={!form.targetType || !form.content.trim()}>
+      {form && <Modal wide title={`${form.id ? "Edit" : "New"} meeting note`} onClose={() => setForm(null)} onSave={save} saveDisabled={!form.targetType || !stripHtml(form.content).trim()}>
         <select className="filter-inp" value={form.targetType && form.targetKey ? `${form.targetType}:${form.targetKey}` : ""} onChange={e => { const [tt, ...r] = e.target.value.split(":"); setForm({ ...form, targetType: tt, targetKey: r.join(":") }); }}>
           <option value="">Select target…</option>
           {targetOptions().map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
         </select>
-        <textarea className="filter-inp" rows={6} placeholder="Meeting notes…" value={form.content} onChange={e => setForm({ ...form, content: e.target.value })} />
+        <QuillEditor value={form.content} onChange={v => setForm({ ...form, content: v })} placeholder="Meeting notes…" />
         {attendees.length > 0 && <>
           <div className="lbl" style={{ fontFamily: "var(--v2-mono)", fontSize: 9, textTransform: "uppercase", color: "var(--ink-3)" }}>Attendees</div>
           <div style={{ maxHeight: 150, overflowY: "auto", display: "flex", flexWrap: "wrap", gap: 5 }}>

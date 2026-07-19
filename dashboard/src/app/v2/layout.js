@@ -198,7 +198,15 @@ export default function V2Layout({ children }) {
       ],
     },
     { key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms },
-    { key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2 },
+    {
+      key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2, menu: [
+        { id: "approvals", label: "Approvals" },
+        { id: "performance", label: "Performance" },
+        { id: "notes", label: "Meeting Notes" },
+        { id: "reviews", label: "Reviews" },
+        ...(level >= 3 ? [{ id: "contacts", label: "IC Contacts" }] : []),
+      ],
+    },
     // Admin has per-view gates (Documents = all staff, Catalogs = L2/ET/LST, rest = L3): the dropdown lists only what this user can open.
     {
       key: "admin", label: "Admin", href: "/v2/admin", icon: I.admin,
