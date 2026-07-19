@@ -18,6 +18,37 @@ const Icon = ({ d }) => <svg className="ic" viewBox="0 0 16 16" fill="none" stro
 
 const RISK_ID = "738214924760907907";
 
+/* Nav item whose sections open as a dropdown menu (deep-linked with ?tab=). */
+function NavDropdown({ item, active, cls, inner }) {
+  const [open, setOpen] = useState(false);
+  const currentTab = typeof window !== "undefined" && window.location.pathname.startsWith(item.href)
+    ? new URLSearchParams(window.location.search).get("tab") || item.menu[0].id
+    : null;
+  return (
+    <div style={{ position: "relative", display: "inline-flex" }}>
+      <button className={cls} style={{ background: "none", border: "none", fontFamily: "inherit" }} onClick={() => setOpen(o => !o)}>
+        {inner} <span style={{ fontSize: 8, opacity: 0.6, marginLeft: 1 }}>▾</span>
+      </button>
+      {open && <>
+        <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
+        <div style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 95, minWidth: 185, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 6, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
+          {item.menu.map(m => {
+            const on = active && currentTab === m.id;
+            return (
+              <Link key={m.id} href={`${item.href}?tab=${m.id}`} onClick={() => setOpen(false)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "7px 10px", borderRadius: 7, fontSize: 12.5, fontWeight: on ? 700 : 500, color: on ? "var(--accent)" : "var(--ink-1)", background: on ? "var(--accent-bg)" : "transparent", textDecoration: "none" }}
+                onMouseEnter={e => { if (!on) e.currentTarget.style.background = "var(--panel-2)"; }}
+                onMouseLeave={e => { if (!on) e.currentTarget.style.background = on ? "var(--accent-bg)" : "transparent"; }}>
+                {m.label}{on && <span style={{ fontSize: 10 }}>●</span>}
+              </Link>
+            );
+          })}
+        </div>
+      </>}
+    </div>
+  );
+}
+
 /* View As + Impersonate — port of the /fm sidebar dev tools (same localStorage key, event and cookie API). */
 function ViewAsMenu({ auth }) {
   const [open, setOpen] = useState(false);
@@ -135,11 +166,22 @@ export default function V2Layout({ children }) {
   const roleLabel = isET ? "Event Team" : level >= 3 ? "L3" : level >= 2 ? "L2" : "L1";
   const initial = (auth?.displayName || auth?.name || "?").slice(0, 1).toUpperCase();
 
+  const canNPC = level >= 2 || isET || auth?.isLeadStoryteller;
   const NAV = [
     { key: "home", label: "Home", href: "/v2", icon: I.home },
     { key: "inbox", label: "Inbox", href: "/v2/inbox", icon: I.inbox },
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
-    { key: "story", label: "Storytelling", href: "/v2/story", icon: I.story },
+    // Prototype: sections as a nav dropdown instead of in-page tabs (deep-linked via ?tab=).
+    {
+      key: "story", label: "Storytelling", href: "/v2/story", icon: I.story, menu: [
+        { id: "kb", label: "Knowledge Base" },
+        { id: "scenelogs", label: "Scene Logs" },
+        { id: "scenes", label: "Scene Library" },
+        { id: "arsenal", label: "Arsenal" },
+        ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
+        { id: "changelog", label: "Change Log" },
+      ],
+    },
     { key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms },
     { key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2 },
     // Admin has per-view gates inside (Documents = all staff, Catalogs = L2/ET/LST, rest = L3), so the nav item shows for everyone.
@@ -159,6 +201,7 @@ export default function V2Layout({ children }) {
               const active = it.href && (pathname === it.href || (it.href !== "/v2" && pathname.startsWith(it.href)));
               const cls = `tn-i${active ? " on" : ""}`;
               const inner = <><Icon d={it.icon} /> {it.label}</>;
+              if (it.menu) return <NavDropdown key={it.key} item={it} active={active} cls={cls} inner={inner} />;
               return it.href
                 ? <Link key={it.key} href={it.href} className={cls}>{inner}</Link>
                 : <span key={it.key} className={`${cls} soon`} style={{ cursor: "default" }} title="Coming soon">{inner}</span>;

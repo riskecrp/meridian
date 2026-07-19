@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import {
   getLoreEntries, getCommandEntries, addKBEntry, editKBEntry, deleteKBEntry,
@@ -39,7 +40,11 @@ function Modal({ title, onClose, onSave, saveDisabled, children, wide }) {
   );
 }
 
-export default function V2Story() {
+export default function V2StoryPage() {
+  return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Story /></Suspense>;
+}
+
+function V2Story() {
   const auth = useAuth();
   const level = auth?.level || 0;
   const isET = auth?.isEventTeam;
@@ -47,7 +52,8 @@ export default function V2Story() {
   const canMgmt = level >= 3 || isET;
   const canEditArsenal = level >= 2 || isET;
 
-  const [tab, setTab] = useState("kb");
+  // Section comes from the nav dropdown via ?tab= (no in-page tab row).
+  const sp = useSearchParams();
   const [data, setData] = useState({});
   const [loaded, setLoaded] = useState({});
   const [busy, setBusy] = useState(false);
@@ -67,12 +73,6 @@ export default function V2Story() {
   const ensure = async (t) => { if (loaded[t] || !loaders[t]) return; setBusy(true); const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); setLoaded(l => ({ ...l, [t]: true })); setBusy(false); };
   const reload = async (t) => { const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); };
 
-  useEffect(() => { if (!auth?.loading && auth?.id) ensure("kb"); }, [auth?.id, auth?.loading]);
-  useEffect(() => { if (!auth?.loading && auth?.id) ensure(tab); }, [tab]);
-
-  if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
-  if (!auth?.ok) return <div className="view" style={{ color: "var(--ink-3)" }}>Not authorized.</div>;
-
   const TABS = [
     { id: "kb", label: "Knowledge Base" },
     { id: "scenelogs", label: "Scene Logs" },
@@ -81,18 +81,24 @@ export default function V2Story() {
     ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
     { id: "changelog", label: "Change Log" },
   ];
+  const tabParam = sp.get("tab");
+  const tab = TABS.some(t => t.id === tabParam) ? tabParam : "kb";
+
+  useEffect(() => { if (!auth?.loading && auth?.id) ensure(tab); }, [tab, auth?.id, auth?.loading]);
+
+  if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
+  if (!auth?.ok) return <div className="view" style={{ color: "var(--ink-3)" }}>Not authorized.</div>;
+
+  const sectionLabel = TABS.find(t => t.id === tab)?.label || "";
 
   return (
     <div className="view">
       <div className="page-head">
         <div>
           <p className="eyebrow">Storytelling</p>
-          <h1>Reference library</h1>
-          <div className="sub">Lore, scenes, arsenal and the world — consult and copy while running the server.</div>
+          <h1>{sectionLabel}</h1>
+          <div className="sub">Switch sections from the Storytelling menu in the top bar.</div>
         </div>
-      </div>
-      <div className="hub-tabs">
-        {TABS.map(t => <button key={t.id} className={`hub-tab${tab === t.id ? " on" : ""}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
       </div>
       {busy && !loaded[tab] && <div className="empty">Loading…</div>}
 
