@@ -65,7 +65,6 @@ export default function V2Factions() {
                   <td onClick={e => e.stopPropagation()} style={{ whiteSpace: "nowrap" }}>
                     {f.discord ? <a href={f.discord} target="_blank" rel="noreferrer" style={linkStyle}>Discord ↗</a> : <span style={dim}>Discord</span>}
                     {f.forum ? <a href={f.forum} target="_blank" rel="noreferrer" style={linkStyle}>Forum ↗</a> : <span style={dim}>Forum</span>}
-                    {f.threadId ? <a href={`https://discord.com/channels/${GUILD}/${f.threadId}`} target="_blank" rel="noreferrer" style={linkStyle}>Feedback ↗</a> : <span style={dim}>Feedback</span>}
                   </td>
                 </tr>
               ))}

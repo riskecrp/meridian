@@ -12,6 +12,8 @@ import {
   getSpawnItems, addSpawnItem, editSpawnItem, deleteSpawnItem,
   getNPCs, getTurfs, addNPC, editNPC, deleteNPC, updateTurf, disbandTurf,
 } from "../../fm/storytelling/actions.js";
+import { getSceneLogs, getFactionNames as getSceneFactionNames, getInventoryForScene, getStaffForScene, submitScene, addMyselfToScene, removeAssistantFromScene, editSceneNotes, deleteScene, requestSceneDeletion, getAttentionFactions, getTreasuryStats } from "../../fm/scenes/actions.js";
+import { useDraft, loadDraft, clearDraft } from "../../../lib/useDraft";
 
 const GTAMap = dynamic(() => import("../../../lib/GTAMap"), { ssr: false, loading: () => <div style={{ height: 400, display: "grid", placeItems: "center", color: "var(--ink-3)" }}>Loading map…</div> });
 
@@ -62,7 +64,7 @@ export default function V2Story() {
     }),
     npcs: async () => ({ npcs: await getNPCs().catch(() => []), turfs: await getTurfs().catch(() => []) }),
   };
-  const ensure = async (t) => { if (loaded[t]) return; setBusy(true); const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); setLoaded(l => ({ ...l, [t]: true })); setBusy(false); };
+  const ensure = async (t) => { if (loaded[t] || !loaders[t]) return; setBusy(true); const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); setLoaded(l => ({ ...l, [t]: true })); setBusy(false); };
   const reload = async (t) => { const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); };
 
   useEffect(() => { if (!auth?.loading && auth?.id) ensure("kb"); }, [auth?.id, auth?.loading]);
@@ -73,6 +75,7 @@ export default function V2Story() {
 
   const TABS = [
     { id: "kb", label: "Knowledge Base" },
+    { id: "scenelogs", label: "Scene Logs" },
     { id: "scenes", label: "Scene Library" },
     { id: "arsenal", label: "Arsenal" },
     ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
@@ -96,6 +99,7 @@ export default function V2Story() {
       {tab === "kb" && loaded.kb && <KB auth={auth} canMgmt={canMgmt} lore={data.kb.lore} cmds={data.kb.command} reload={() => reload("kb")} />}
       {tab === "changelog" && loaded.changelog && <ChangeLog auth={auth} rows={data.changelog} reload={() => reload("changelog")} />}
       {tab === "scenes" && loaded.scenes && <Scenes rows={data.scenes} />}
+      {tab === "scenelogs" && <SceneLogs auth={auth} />}
       {tab === "arsenal" && loaded.arsenal && <Arsenal canEdit={canEditArsenal} canMgmt={canMgmt} d={data.arsenal} reload={() => reload("arsenal")} />}
       {tab === "npcs" && loaded.npcs && <NPCs auth={auth} npcs={data.npcs.npcs} turfs={data.npcs.turfs} reload={() => reload("npcs")} />}
     </div>
@@ -484,6 +488,256 @@ function NPCs({ auth, npcs, turfs, reload }) {
         <input className="filter-inp" placeholder="Turf name" value={turfForm.newTurf} onChange={e => setTurfForm({ ...turfForm, newTurf: e.target.value })} />
         <input className="filter-inp" placeholder="Shipment power" value={turfForm.power} onChange={e => setTurfForm({ ...turfForm, power: e.target.value })} />
       </Modal>}
+    </>
+  );
+}
+
+/* ── Scene Logs (port of /fm/scenes Scene Intelligence): record outcomes + distribute rewards ── */
+const BLANK_SCENE = { faction: "", cash: "", items: [], otherRewards: "", notes: "", assistants: [] };
+const sceneIsBlank = (f) => !f || (
+  !f.faction && !String(f.cash ?? "").trim() && (f.items?.length || 0) === 0 &&
+  !String(f.otherRewards ?? "").trim() && !String(f.notes ?? "").trim() && (f.assistants?.length || 0) === 0
+);
+
+function SceneLogs({ auth }) {
+  const [logs, setLogs] = useState([]);
+  const [factions, setFactions] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [staffList, setStaffList] = useState([]);
+  const [attention, setAttention] = useState([]);
+  const [treasury, setTreasury] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [showTreasury, setShowTreasury] = useState(false);
+  const [form, setForm] = useState(BLANK_SCENE);
+  const [hasDraft, setHasDraft] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [addingTo, setAddingTo] = useState(null);
+
+  // Restore any scene draft saved before a reload/crash; persist while the form is open.
+  useEffect(() => {
+    const d = loadDraft("scenes:new");
+    if (d && !sceneIsBlank(d)) { setForm(d); setHasDraft(true); }
+  }, []);
+  useDraft("scenes:new", form, { enabled: showForm, blank: sceneIsBlank });
+
+  useEffect(() => {
+    Promise.all([getSceneLogs(), getSceneFactionNames(), getInventoryForScene(), getStaffForScene(), getAttentionFactions(), auth.level >= 3 ? getTreasuryStats() : Promise.resolve({})])
+      .then(([l, f, i, s, a, t]) => { setLogs(l || []); setFactions(f || []); setInventory(i || []); setStaffList(s || []); setAttention(a || []); setTreasury(t || {}); setLoading(false); });
+  }, []);
+  const refresh = async () => { setLogs(await getSceneLogs()); setAttention(await getAttentionFactions()); setInventory(await getInventoryForScene()); };
+
+  if (loading) return <div className="empty">Loading scenes…</div>;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const res = await submitScene(form);
+    if (res.ok) { setShowForm(false); setForm(BLANK_SCENE); clearDraft("scenes:new"); setHasDraft(false); refresh(); }
+    else window.alert("Error: " + (res.error || "Unknown"));
+  };
+  const toggleAssistant = (s) => setForm(f => {
+    const exists = f.assistants.some(a => a.staff_id === s.discord_id);
+    return { ...f, assistants: exists ? f.assistants.filter(a => a.staff_id !== s.discord_id) : [...f.assistants, { staff_id: s.discord_id, staff_name: s.display_name }] };
+  });
+  const addMyself = async (logId) => {
+    setAddingTo(logId);
+    const res = await addMyselfToScene(logId);
+    setAddingTo(null);
+    if (res.ok) refresh(); else window.alert(res.error || "Could not add yourself to this scene.");
+  };
+
+  const filtered = logs.filter(l => {
+    const matchSearch = !search || l.faction?.toLowerCase().includes(search.toLowerCase()) || l.logged_by?.toLowerCase().includes(search.toLowerCase());
+    const d = new Date(l.date);
+    return matchSearch && (!dateFrom || d >= new Date(dateFrom)) && (!dateTo || d <= new Date(dateTo + "T23:59:59"));
+  }).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const hasFilters = search || dateFrom || dateTo;
+  const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 };
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Record scene outcomes and distribute rewards.</span>
+        <span style={{ flex: 1 }} />
+        {auth.level >= 3 && <button className="act" style={{ color: "var(--amber)" }} onClick={async () => { setTreasury(await getTreasuryStats()); setShowTreasury(true); }}>Treasury</button>}
+        <button className="btn" onClick={() => setShowForm(true)}>Log scene +</button>
+      </div>
+
+      {hasDraft && !showForm && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "10px 14px", borderRadius: 10, background: "var(--amber-bg)", marginBottom: 14 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--amber)" }}>You have an unsaved scene draft from a previous session.</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="act primary" onClick={() => { setShowForm(true); setHasDraft(false); }}>Resume</button>
+            <button className="act" onClick={() => { clearDraft("scenes:new"); setForm(BLANK_SCENE); setHasDraft(false); }}>Discard</button>
+          </div>
+        </div>
+      )}
+
+      {attention.length > 0 && (
+        <div className="card">
+          <div className="hd"><div className="t" style={{ color: "var(--rose)" }}>Attention required</div><div className="meta">{attention.length} faction{attention.length !== 1 ? "s" : ""}</div></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 8, paddingTop: 8 }}>
+            {attention.map(([fac, count], i) => (
+              <div key={i} style={{ padding: "8px 12px", borderRadius: 8, background: "var(--rose-bg)" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--rose)" }}>{fac}</div>
+                <div style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--rose)" }}>{count} scenes 30d</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+        <input className="filter-inp" style={{ flex: 1, minWidth: 180, maxWidth: 340 }} placeholder="Search by faction or staff…" value={search} onChange={e => setSearch(e.target.value)} />
+        <input type="date" className="filter-inp" value={dateFrom} onChange={e => setDateFrom(e.target.value)} title="From" />
+        <input type="date" className="filter-inp" value={dateTo} onChange={e => setDateTo(e.target.value)} title="To" />
+        {hasFilters && <button className="act" onClick={() => { setSearch(""); setDateFrom(""); setDateTo(""); }}>Clear</button>}
+        <span style={{ fontSize: 10.5, fontFamily: "var(--v2-mono)", color: "var(--ink-3)", marginLeft: "auto" }}>{filtered.length} result{filtered.length !== 1 ? "s" : ""}</span>
+      </div>
+
+      {filtered.length === 0 && <div className="empty">No scene logs match your search.</div>}
+      {filtered.map(log => {
+        const isAuthor = log.author_id === auth.id;
+        return (
+          <div key={log.id} className="card">
+            <div className="hd"><div className="t" style={{ textTransform: "none", letterSpacing: 0 }}>{log.faction}</div><div className="meta">{log.date}</div></div>
+            {editId === log.id ? (
+              <div style={{ margin: "8px 0" }}>
+                <textarea className="filter-inp" style={{ width: "100%", minHeight: 100 }} value={editText} onChange={e => setEditText(e.target.value)} />
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button className="act primary" onClick={async () => { await editSceneNotes(editId, editText); setEditId(null); refresh(); }}>Save</button>
+                  <button className="act" onClick={() => setEditId(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "8px 0", color: "var(--ink-1)" }}>{log.notes}</p>
+            )}
+            <div style={{ display: "flex", gap: 18, padding: "8px 12px", borderRadius: 8, background: "var(--panel-2)", marginBottom: 8, flexWrap: "wrap" }}>
+              <div><div style={lbl}>Staff</div><div style={{ fontSize: 12, fontWeight: 600 }}>{log.logged_by}</div></div>
+              {log.assistants?.length > 0 && (
+                <div><div style={lbl}>Also present</div>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {log.assistants.map(a => (
+                      <span key={a.id} className="chip role" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                        {a.staff_name}
+                        {auth.level >= 2 && <button style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 11, lineHeight: 1, padding: 0 }} title="Remove"
+                          onClick={async () => { if (window.confirm(`Remove ${a.staff_name} from this scene?`)) { await removeAssistantFromScene(a.id); refresh(); } }}>✕</button>}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div><div style={lbl}>Rewards</div><div style={{ fontSize: 12, fontFamily: "var(--v2-mono)", color: "var(--good)" }}>{log.rewards}</div></div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 6, borderTop: "1px solid var(--line)" }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                {isAuthor && editId !== log.id && <button className="act" onClick={() => { setEditId(log.id); setEditText(log.notes); }}>Edit</button>}
+                {isAuthor && <button className="act" style={{ color: "var(--amber)" }} onClick={async () => { if (window.confirm("Request deletion?")) { await requestSceneDeletion(log.id, log.notes); window.alert("Deletion requested."); } }}>Req. delete</button>}
+                {!isAuthor && !log.assistants?.some(a => a.staff_id === auth.id) && (
+                  <button className="act good" disabled={addingTo === log.id} onClick={() => addMyself(log.id)}>{addingTo === log.id ? "Adding…" : "+ Add myself"}</button>
+                )}
+              </div>
+              {auth.level >= 3 && <button className="act" style={{ color: "var(--rose)" }} onClick={async () => { if (window.confirm("L3 DELETE: Permanently remove this scene log?")) { await deleteScene(log.id); refresh(); } }}>L3 delete</button>}
+            </div>
+          </div>
+        );
+      })}
+
+      {showForm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setShowForm(false)} />
+          <form onSubmit={submit} style={{ position: "relative", width: "100%", maxWidth: 720, maxHeight: "90vh", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+              <span style={{ fontWeight: 700, color: "var(--ink-0)" }}>Log scene</span>
+              <button type="button" className="act" style={{ padding: "2px 8px" }} onClick={() => setShowForm(false)}>✕</button>
+            </div>
+            <div style={{ padding: 18, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 14 }}>
+              <div><div style={lbl}>Target faction</div>
+                <select required className="filter-inp" style={{ width: "100%" }} value={form.faction} onChange={e => setForm({ ...form, faction: e.target.value })}>
+                  <option value="">Select…</option>
+                  {factions.map(f => <option key={f} value={f}>{f}</option>)}
+                </select></div>
+              <div style={{ padding: 14, borderRadius: 10, background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 6, borderBottom: "1px solid var(--line)" }}>
+                  <span style={lbl}>Rewards & inventory</span>
+                  <button type="button" className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ ...form, items: [...form.items, { name: "", qty: 1 }] })}>+ Add item</button>
+                </div>
+                <div><div style={lbl}>Cash reward ($)</div><input type="number" className="filter-inp" style={{ width: "100%" }} value={form.cash} onChange={e => setForm({ ...form, cash: e.target.value })} /></div>
+                {form.items.map((item, idx) => (
+                  <div key={idx} style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                    <div style={{ flex: 1 }}><div style={lbl}>Item</div>
+                      <input list={`v2inv-${idx}`} className="filter-inp" style={{ width: "100%" }} placeholder="Type to search…" value={item.name}
+                        onChange={e => { const n = [...form.items]; n[idx] = { ...n[idx], name: e.target.value }; setForm({ ...form, items: n }); }} />
+                      <datalist id={`v2inv-${idx}`}>{inventory.map((inv, i) => <option key={i} value={inv.name}>{`Stock: ${inv.current_stock}`}</option>)}</datalist>
+                    </div>
+                    <div style={{ width: 80 }}><div style={lbl}>Qty</div><input type="number" min="1" className="filter-inp" style={{ width: "100%", textAlign: "center" }} value={item.qty}
+                      onChange={e => { const n = [...form.items]; n[idx] = { ...n[idx], qty: e.target.value }; setForm({ ...form, items: n }); }} /></div>
+                    <button type="button" className="act" style={{ color: "var(--rose)" }} onClick={() => setForm({ ...form, items: form.items.filter((_, i) => i !== idx) })}>✕</button>
+                  </div>
+                ))}
+                <div><div style={lbl}>Other rewards</div><input className="filter-inp" style={{ width: "100%" }} placeholder="e.g. 1x Declasse Tulip" value={form.otherRewards} onChange={e => setForm({ ...form, otherRewards: e.target.value })} /></div>
+              </div>
+              <div>
+                <div style={{ ...lbl, display: "flex", justifyContent: "space-between" }}>
+                  <span>Also present (optional)</span>
+                  {form.assistants.length > 0 && <span style={{ color: "var(--accent)", textTransform: "none", letterSpacing: 0 }}>{form.assistants.length} selected</span>}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--panel-2)", maxHeight: 120, overflowY: "auto" }}>
+                  {staffList.filter(s => s.discord_id !== auth.id).map(s => {
+                    const sel = form.assistants.some(a => a.staff_id === s.discord_id);
+                    return (
+                      <button key={s.discord_id} type="button" className="pill" style={sel ? { background: "var(--accent-bg)", color: "var(--accent)", borderColor: "var(--accent)" } : {}} onClick={() => toggleAssistant(s)}>
+                        {sel ? "✓ " : ""}{s.display_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div><div style={lbl}>Notes</div><textarea required rows={5} className="filter-inp" style={{ width: "100%", minHeight: 110 }} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
+            </div>
+            <div style={{ padding: "12px 18px", borderTop: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+              <span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>● {auth.name} · draft auto-saved</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="act" onClick={() => setShowForm(false)}>Cancel</button>
+                <button type="submit" className="act primary">Submit scene</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showTreasury && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setShowTreasury(false)} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 720, maxHeight: "85vh", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+              <span style={{ fontWeight: 700, color: "var(--ink-0)" }}>Treasury & distribution</span>
+              <button className="act" style={{ padding: "2px 8px" }} onClick={() => setShowTreasury(false)}>✕</button>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
+              {Object.entries(treasury).sort((a, b) => b[1].cash - a[1].cash).map(([name, data]) => (
+                <div key={name} style={{ padding: 12, borderRadius: 10, background: "var(--panel-2)", display: "flex", gap: 14, flexWrap: "wrap" }}>
+                  <div style={{ minWidth: 160 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{name}</div>
+                    <div style={{ fontSize: 17, fontFamily: "var(--v2-mono)", color: "var(--good)" }}>${data.cash.toLocaleString()}</div>
+                  </div>
+                  <div style={{ flex: 1, display: "flex", flexWrap: "wrap", gap: 5, alignContent: "flex-start" }}>
+                    {Object.entries(data.items).sort((a, b) => b[1] - a[1]).map(([item, qty]) => (
+                      <span key={item} className="chip role"><b style={{ color: "var(--accent)" }}>{qty}x</b>&nbsp;{item}</span>
+                    ))}
+                    {Object.keys(data.items).length === 0 && <span style={{ fontSize: 10.5, fontStyle: "italic", color: "var(--ink-3)" }}>No items distributed</span>}
+                  </div>
+                </div>
+              ))}
+              {Object.keys(treasury).length === 0 && <div className="empty">No distribution data.</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
