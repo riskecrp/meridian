@@ -4,7 +4,105 @@ import Link from "next/link";
 import { useAuth } from "../../lib/useAuth";
 import { getMyTasks, getMyCreatedTasks, getMyReminders, getMyTeamFactions, getStaffForCreate, getRoleTargetsForCreate, getQACountsForTasks } from "../fm/dashboard/actions.js";
 import { getPendingQueue } from "../fm/leadership/actions.js";
+import { createTask, createReminder } from "../fm/teams/actions.js";
 import TaskList from "./TaskList.js";
+
+/* Port of /fm/teams CreateActionForm: task + event/reminder creation with shared target picker */
+function CreateAction({ mode, setMode, staffList, roleTargets, onDone, onCancel }) {
+  const [desc, setDesc] = useState("");
+  const [targetType, setTargetType] = useState("Role");
+  const [targetId, setTargetId] = useState("");
+  const [enableDM, setEnableDM] = useState(false);
+  const [eventType, setEventType] = useState("OOC Meeting");
+  const [eventDate, setEventDate] = useState("");
+  const [eventNote, setEventNote] = useState("");
+  const [enable30m, setEnable30m] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const roleOptions = [
+    ...(roleTargets.leadershipId ? [{ label: "FM Leadership", value: roleTargets.leadershipId }] : []),
+    ...(roleTargets.leadId ? [{ label: "FM Team Leads", value: roleTargets.leadId }] : []),
+    ...(roleTargets.allFmId ? [{ label: "All Faction Management", value: roleTargets.allFmId }] : []),
+    ...(roleTargets.teams || []).map(t => ({ label: t.team_name, value: t.team_id })),
+  ];
+  const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 };
+
+  const submit = async () => {
+    if (!targetId) { window.alert("Please select a target."); return; }
+    if (mode === "task") {
+      if (!desc.trim()) { window.alert("Description required."); return; }
+      setBusy(true);
+      await createTask({ desc, targetId, targetType, enableDM });
+    } else {
+      if (!eventDate) { window.alert("Date required."); return; }
+      const epochMs = new Date(eventDate).getTime();
+      if (isNaN(epochMs)) { window.alert("Invalid date."); return; }
+      setBusy(true);
+      await createReminder({ message: `[${eventType}] ${eventNote || ""}`.trim(), epochMs, eventType, note: eventNote, targetType, targetId, enable30m });
+    }
+    setBusy(false);
+    onDone(mode);
+  };
+
+  return (
+    <div className="card" style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: 14, marginBottom: 18 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        <button className={`pill${mode === "task" ? " on" : ""}`} onClick={() => setMode("task")}>Task</button>
+        <button className={`pill${mode === "event" ? " on" : ""}`} onClick={() => setMode("event")}>Event / Reminder</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10, marginBottom: 10 }}>
+        <div>
+          <div style={lbl}>Ping type</div>
+          <select className="filter-inp" style={{ width: "100%" }} value={targetType} onChange={e => { setTargetType(e.target.value); setTargetId(""); }}>
+            <option value="Role">Team / Role</option>
+            <option value="User">Individual Member</option>
+          </select>
+        </div>
+        <div>
+          <div style={lbl}>{targetType === "User" ? "Select member" : "Select team / role"}</div>
+          <select className="filter-inp" style={{ width: "100%" }} value={targetId} onChange={e => setTargetId(e.target.value)}>
+            <option value="">{targetType === "User" ? "Select staff member…" : "Select team or role…"}</option>
+            {targetType === "User"
+              ? staffList.map(s => <option key={s.discord_id} value={s.discord_id}>{s.display_name} ({s.team_name})</option>)
+              : roleOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+      </div>
+      {mode === "task" ? <>
+        <div style={lbl}>Task description</div>
+        <textarea className="filter-inp" style={{ width: "100%", minHeight: 76 }} placeholder="Describe the task…" value={desc} onChange={e => setDesc(e.target.value)} />
+        <label style={{ fontSize: 12, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+          <input type="checkbox" checked={enableDM} onChange={e => setEnableDM(e.target.checked)} /> Enable daily DM reminders for assigned member
+        </label>
+      </> : <>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10, marginBottom: 10 }}>
+          <div>
+            <div style={lbl}>Event type</div>
+            <select className="filter-inp" style={{ width: "100%" }} value={eventType} onChange={e => setEventType(e.target.value)}>
+              <option>OOC Meeting</option>
+              <option>RP Op / Scene</option>
+              <option>Internal Meeting</option>
+              <option>Deadline / Reminder</option>
+            </select>
+          </div>
+          <div>
+            <div style={lbl}>Date & time (local)</div>
+            <input type="datetime-local" className="filter-inp" style={{ width: "100%" }} value={eventDate} onChange={e => setEventDate(e.target.value)} />
+          </div>
+        </div>
+        <div style={lbl}>Details (optional)</div>
+        <input className="filter-inp" style={{ width: "100%" }} placeholder="Meeting topic, agenda…" value={eventNote} onChange={e => setEventNote(e.target.value)} />
+        <label style={{ fontSize: 12, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+          <input type="checkbox" checked={enable30m} onChange={e => setEnable30m(e.target.checked)} /> Send 30-minute warning ping before event
+        </label>
+      </>}
+      <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+        <button className="btn" disabled={busy} onClick={submit}>{busy ? "Saving…" : mode === "task" ? "Create task" : "Schedule event"}</button>
+        <button className="act" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
 
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const fmtDay = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }).toUpperCase().replace(" ", "\n");
@@ -20,6 +118,7 @@ export default function V2Home() {
   const [roleTargets, setRoleTargets] = useState({ teams: [] });
   const [qaCounts, setQaCounts] = useState({});
   const [loading, setLoading] = useState(true);
+  const [createMode, setCreateMode] = useState(null); // null | 'task' | 'event'
 
   const isLeader = (auth?.level || 0) >= 2 || auth?.isLeadStoryteller;
 
@@ -75,10 +174,20 @@ export default function V2Home() {
           <div className="sub">{today} · {facs.factions.length} factions in view{teamUnclaimed > 0 ? ` · ${teamUnclaimed} unclaimed on your team` : " · nothing unclaimed"}</div>
         </div>
         <div style={{ display: "flex", gap: 9 }}>
-          <button className="btn ghost">+ New event</button>
-          <button className="btn">+ New task</button>
+          <button className="btn ghost" onClick={() => setCreateMode(m => m === "event" ? null : "event")}>+ New event</button>
+          <button className="btn" onClick={() => setCreateMode(m => m === "task" ? null : "task")}>+ New task</button>
         </div>
       </div>
+
+      {createMode && (
+        <CreateAction mode={createMode} setMode={setCreateMode} staffList={staffList} roleTargets={roleTargets}
+          onDone={(mode) => {
+            setCreateMode(null);
+            if (mode === "task") refreshTasks();
+            else getMyReminders().then(r => setReminders(r || [])).catch(() => {});
+          }}
+          onCancel={() => setCreateMode(null)} />
+      )}
 
       <div className="metrics">
         <div className="metric"><div className="l">Assigned to me</div><div className="v">{tasks.assignedToMe.length}</div></div>
