@@ -30,16 +30,15 @@ function NavDropdown({ item, active, cls, inner }) {
     ? new URLSearchParams(window.location.search).get("tab") || item.menu[0].id
     : null;
   const toggle = (e) => {
-    const r = e.currentTarget.parentElement.getBoundingClientRect();
+    const r = e.currentTarget.getBoundingClientRect();
     setPos({ top: r.bottom + 8, left: Math.max(8, r.left) });
     setOpen(o => !o);
   };
   return (
     <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
-      <Link href={item.href} className={cls} style={{ paddingRight: 3 }}>{inner}</Link>
       <button className={cls} aria-label={`${item.label} sections`} onClick={toggle}
-        style={{ background: "none", border: "none", fontFamily: "inherit", padding: "6px 7px 6px 3px", cursor: "pointer" }}>
-        <span style={{ fontSize: 9, opacity: 0.7 }}>▾</span>
+        style={{ background: active ? undefined : "none", border: "none", fontFamily: "inherit", cursor: "pointer" }}>
+        {inner} <span style={{ fontSize: 9, opacity: 0.7, marginLeft: 2 }}>▾</span>
       </button>
       {open && createPortal(
         <div className="v2-root">
