@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../lib/useAuth";
+import { visibleAdminGroups } from "./adminNav.js";
 
 const I = {
   home: <path d="M2 7l6-5 6 5M3.5 6v7h9V6" />,
@@ -26,8 +27,9 @@ const RISK_ID = "738214924760907907";
 function NavDropdown({ item, active, cls, inner }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
+  const defaultId = item.defaultId || item.menu.find(m => m.id)?.id;
   const currentTab = typeof window !== "undefined" && window.location.pathname.startsWith(item.href)
-    ? new URLSearchParams(window.location.search).get("tab") || item.menu[0].id
+    ? new URLSearchParams(window.location.search).get("tab") || defaultId
     : null;
   const toggle = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -43,8 +45,9 @@ function NavDropdown({ item, active, cls, inner }) {
       {open && createPortal(
         <div className="v2-root">
           <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
-          <div style={{ position: "fixed", top: pos.top, left: pos.left, zIndex: 95, minWidth: 185, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 6, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
-            {item.menu.map(m => {
+          <div style={{ position: "fixed", top: pos.top, left: pos.left, zIndex: 95, minWidth: 185, maxHeight: "calc(100vh - 80px)", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 6, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
+            {item.menu.map((m, mi) => {
+              if (m.heading) return <div key={`h-${mi}`} style={{ padding: "7px 10px 3px", fontFamily: "var(--v2-mono)", fontSize: 9, fontWeight: 700, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--ink-3)", borderTop: mi > 0 ? "1px solid var(--line)" : "none", marginTop: mi > 0 ? 4 : 0 }}>{m.heading}</div>;
               const on = active && currentTab === m.id;
               return (
                 <Link key={m.id} href={`${item.href}?tab=${m.id}`} onClick={() => setOpen(false)}
@@ -196,9 +199,14 @@ export default function V2Layout({ children }) {
     },
     { key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms },
     { key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2 },
-    // Admin has per-view gates inside (Documents = all staff, Catalogs = L2/ET/LST, rest = L3), so the nav item shows for everyone.
-    { key: "admin", label: "Admin", href: "/v2/admin", icon: I.admin },
-  ].filter(it => !it.min || level >= it.min);
+    // Admin has per-view gates (Documents = all staff, Catalogs = L2/ET/LST, rest = L3): the dropdown lists only what this user can open.
+    {
+      key: "admin", label: "Admin", href: "/v2/admin", icon: I.admin,
+      defaultId: (level >= 3 || isET) ? "audit" : undefined,
+      menu: visibleAdminGroups({ level, isET, isLST: auth?.isLeadStoryteller, id: auth?.id })
+        .flatMap(g => [{ heading: g.label }, ...g.items.map(([id, label]) => ({ id, label }))]),
+    },
+  ].filter(it => (!it.min || level >= it.min) && (!it.menu || it.menu.some(m => m.id)));
 
   return (
     <div className="v2-root">

@@ -1,6 +1,8 @@
 "use client";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
+import { visibleAdminGroups } from "../adminNav.js";
 import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction } from "../../fm/operations/actions.js";
 import { getInventory, addInventoryItem, updateStock, deleteInventoryItem, getDistributionStats } from "../../fm/inventory/actions.js";
 import { getLinks, saveLinks, publishLinks } from "../../fm/operations/links/actions.js";
@@ -12,47 +14,35 @@ import { getFactionNames } from "../../fm/factions/actions.js";
 import QuillEditor from "../../../lib/QuillEditor";
 import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, addStaff, updateStaff, createTeam, renameTeam, deleteTeam, commitAllChanges, getAllStaffCOI, getMeridianFactions, addStaffCOI, removeStaffCOI, getStaffFactions, retireStaff, promoteToLead, takeoverTeam, getDashboardAccessList, grantDashboardAccess, revokeDashboardAccess } from "../../fm/operations/staff/actions.js";
 import { getFMStaffWithLinks, setCharacterLink, getFMHoursForPeriod, saveFMHours, getFMScenesForPeriod, getFMMeetingsForPeriod, postFMReport } from "../../fm/operations/fmhours/actions.js";
-const RISK_ID = "738214924760907907"; // hard-coded client-side like the old /fm memberlog page (constants.js is env-overridable server-side)
+export default function V2AdminPage() {
+  return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Admin /></Suspense>;
+}
 
-// access mirrors the old /fm nav: "l1" = all staff, "l2" = L2 / Event Team / Lead Storyteller, "risk" = owner only, default = L3/ET only
-const GROUPS = [
-  { id: "people", label: "People", items: [["staff", "Staff & Teams", false], ["hours", "FM Hours", false, "risk"], ["dbaccess", "DB Site Access", false]] },
-  { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", false, "l2"], ["vehicles", "Vehicle Catalog", false, "l2"], ["imports", "Import Catalog", false, "l2"]] },
-  { id: "config", label: "Config", items: [["links", "Important Links", false], ["reminders", "Recurring Reminders", false, "l2"], ["docs", "Documents", false, "l1"], ["channels", "Faction Channels", false]] },
-  { id: "records", label: "Records", items: [["audit", "Audit Log", false], ["archive", "Archive", false], ["memberlog", "Server Logs", false, "risk"], ["convos", "Conversations", false]] },
-];
-
-export default function V2Admin() {
+function V2Admin() {
   const auth = useAuth();
-  const isL3 = (auth?.level || 0) >= 3 || auth?.isEventTeam;
-  const canL2 = (auth?.level || 0) >= 2 || auth?.isEventTeam || auth?.isLeadStoryteller;
+  // Section comes from the Admin nav dropdown via ?tab= (no in-page tab rows).
+  const sp = useSearchParams();
   const canEditCatalogs = (auth?.level || 0) >= 3 || auth?.isEventTeam;
-  const [group, setGroup] = useState(null);
-  const [view, setView] = useState(null);
 
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
 
-  const visible = GROUPS.map(g => ({ ...g, items: g.items.filter(it => it[3] === "l1" ? true : it[3] === "l2" ? canL2 : it[3] === "risk" ? auth?.id === RISK_ID : isL3) })).filter(g => g.items.length);
+  const visible = visibleAdminGroups({ level: auth?.level || 0, isET: auth?.isEventTeam, isLST: auth?.isLeadStoryteller, id: auth?.id });
   if (!auth?.ok || !visible.length) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead (L2) access required.</div>;
 
-  const activeGroup = visible.find(g => g.id === group) || visible.find(g => g.id === "records") || visible[0];
-  const activeItem = activeGroup.items.find(i => i[0] === view) || activeGroup.items[0];
-  const [viewId, , soon] = activeItem;
+  const tabParam = sp.get("tab");
+  let activeGroup = visible.find(g => g.items.some(i => i[0] === tabParam));
+  let viewId = tabParam;
+  if (!activeGroup) {
+    activeGroup = visible.find(g => g.items.some(i => i[0] === "audit")) || visible[0];
+    viewId = (activeGroup.items.find(i => i[0] === "audit") || activeGroup.items[0])[0];
+  }
+  const viewLabel = activeGroup.items.find(i => i[0] === viewId)[1];
 
   return (
     <div className="view">
-      <div className="page-head"><div><p className="eyebrow">Admin</p><h1>Administration</h1><div className="sub">People, catalogs, configuration and records.</div></div></div>
-      <div className="hub-tabs">
-        {visible.map(g => <button key={g.id} className={`hub-tab${activeGroup.id === g.id ? " on" : ""}`} onClick={() => { setGroup(g.id); setView(g.items[0][0]); }}>{g.label}</button>)}
-      </div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
-        {activeGroup.items.map(([id, label, isSoon]) => (
-          <button key={id} className={`pill${viewId === id ? " on" : ""}`} onClick={() => setView(id)}>{label}{isSoon && <span className="ct">soon</span>}</button>
-        ))}
-      </div>
+      <div className="page-head"><div><p className="eyebrow">Admin · {activeGroup.label}</p><h1>{viewLabel}</h1><div className="sub">Switch sections from the Admin menu in the top bar.</div></div></div>
 
-      {soon ? <div className="empty">“{activeItem[1]}” — porting in the fine-tune pass. Still live at the old dashboard meanwhile.</div>
-        : viewId === "audit" ? <Audit />
+      {viewId === "audit" ? <Audit />
         : viewId === "archive" ? <Archive />
         : viewId === "inventory" ? <Inventory auth={auth} />
         : viewId === "vehicles" ? <Vehicles canEdit={canEditCatalogs} />
