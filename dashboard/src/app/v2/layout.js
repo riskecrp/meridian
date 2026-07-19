@@ -16,6 +16,102 @@ const I = {
 };
 const Icon = ({ d }) => <svg className="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">{d}</svg>;
 
+const RISK_ID = "738214924760907907";
+
+/* View As + Impersonate — port of the /fm sidebar dev tools (same localStorage key, event and cookie API). */
+function ViewAsMenu({ auth }) {
+  const [open, setOpen] = useState(false);
+  const [staff, setStaff] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const isOwner = auth.id === RISK_ID || auth._realId === RISK_ID;
+  const isL3Real = auth.level === 3 || auth._realLevel === 3;
+  if (auth._realId || (!isL3Real && !isOwner)) return null; // cookie-impersonation exits via the banner
+
+  const isViewing = auth._viewAsEventTeam || auth._viewAsLeadStoryteller || (auth._realLevel && auth.level !== auth._realLevel);
+  const activeLabel = auth._viewAsEventTeam ? "ET" : auth._viewAsLeadStoryteller ? "LST" : isViewing ? `L${auth.level}` : "Real";
+  const setLevel = (lvl) => {
+    if (lvl === null) localStorage.removeItem("meridian-view-as");
+    else localStorage.setItem("meridian-view-as", String(lvl));
+    window.dispatchEvent(new Event("meridian-view-as-changed"));
+  };
+  const loadStaff = async () => {
+    if (staff !== null) return;
+    const res = await fetch("/api/staff/impersonate");
+    if (res.ok) setStaff(await res.json());
+  };
+  const impersonate = async (discordId) => {
+    setBusy(true);
+    await fetch("/api/staff/impersonate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ discordId }) });
+    window.location.reload();
+  };
+  const OPTS = [{ lvl: null, label: "Real" }, { lvl: 1, label: "L1" }, { lvl: 2, label: "L2" }, { lvl: 3, label: "L3" }, { lvl: "event_team", label: "ET" }, { lvl: "lead_storyteller", label: "LST" }];
+  const isActive = (o) => o.lvl === null ? !isViewing
+    : o.lvl === "event_team" ? !!auth._viewAsEventTeam
+    : o.lvl === "lead_storyteller" ? !!auth._viewAsLeadStoryteller
+    : isViewing && !auth._viewAsEventTeam && !auth._viewAsLeadStoryteller && auth.level === o.lvl;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button className="tb-btn" title="View as / impersonate"
+        style={{ width: "auto", padding: "0 9px", fontFamily: "var(--v2-mono)", fontSize: 10, fontWeight: 700, letterSpacing: ".06em", color: isViewing ? "var(--amber)" : undefined, background: isViewing ? "var(--amber-bg)" : undefined }}
+        onClick={() => { setOpen(o => !o); if (isOwner) loadStaff(); }}>
+        👁 {activeLabel}
+      </button>
+      {open && <>
+        <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
+        <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 95, width: 240, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 10, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
+          <div style={{ fontFamily: "var(--v2-mono)", fontSize: 9, fontWeight: 700, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 7 }}>
+            View as{isViewing && <span style={{ color: "var(--amber)", marginLeft: 5 }}>· active</span>}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 4 }}>
+            {OPTS.map(o => (
+              <button key={o.label} onClick={() => { setLevel(o.lvl); setOpen(false); }}
+                style={{ padding: "4px 0", borderRadius: 6, fontSize: 9.5, fontWeight: 700, cursor: "pointer", fontFamily: "var(--v2-mono)", background: isActive(o) ? "var(--accent-bg)" : "transparent", color: isActive(o) ? "var(--accent)" : "var(--ink-2)", border: `1px solid ${isActive(o) ? "var(--accent)" : "var(--line)"}` }}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+          {isOwner && <>
+            <div style={{ fontFamily: "var(--v2-mono)", fontSize: 9, fontWeight: 700, letterSpacing: ".12em", textTransform: "uppercase", color: "var(--rose)", margin: "12px 0 6px" }}>Impersonate user</div>
+            <div style={{ maxHeight: 200, overflowY: "auto" }}>
+              {staff === null ? <div style={{ fontSize: 11, color: "var(--ink-3)", padding: "4px 2px" }}>Loading…</div>
+                : staff.map(s => (
+                  <button key={s.discord_id} disabled={busy} onClick={() => impersonate(s.discord_id)}
+                    style={{ width: "100%", textAlign: "left", padding: "5px 8px", borderRadius: 6, fontSize: 11.5, cursor: "pointer", background: "transparent", border: "none", color: "var(--ink-1)", display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: "inherit" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--rose-bg)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span>{s.display_name}</span>
+                    <span style={{ fontSize: 9, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>L{s.clearance}</span>
+                  </button>
+                ))}
+            </div>
+          </>}
+        </div>
+      </>}
+    </div>
+  );
+}
+
+function ViewAsBanner({ auth }) {
+  if (!auth) return null;
+  const bar = (bg, fg, text, onExit, exitLabel) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, padding: "6px 16px", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", background: bg, color: fg, position: "sticky", top: 0, zIndex: 80 }}>
+      <span>{text}</span>
+      <button onClick={onExit} style={{ background: fg, color: bg, border: "none", cursor: "pointer", fontSize: 10, padding: "2px 9px", borderRadius: 4, fontWeight: 700 }}>{exitLabel}</button>
+    </div>
+  );
+  const resetViewAs = () => { localStorage.removeItem("meridian-view-as"); window.dispatchEvent(new Event("meridian-view-as-changed")); };
+  if (auth._realId) return bar("#ef4444", "#fff", `⚠ Impersonating: ${auth.displayName || auth.name} (L${auth.level})`,
+    async () => { await fetch("/api/staff/impersonate", { method: "DELETE" }); window.location.reload(); }, "Exit");
+  if (auth._viewAsEventTeam) return bar("var(--amber)", "#000", `Viewing as Event Team — real level is L${auth._realLevel}`, resetViewAs, "Reset");
+  if (auth._viewAsLeadStoryteller) return bar("var(--amber)", "#000", `Viewing as Lead Storyteller — real level is L${auth._realLevel}`, resetViewAs, "Reset");
+  if (auth._realLevel && auth.level !== auth._realLevel) {
+    const labels = { 1: "L1 (Guide)", 2: "L2 (Lead)", 3: "L3 (Management)" };
+    return bar("var(--amber)", "#000", `Viewing as ${labels[auth.level] || `L${auth.level}`} — real level is ${labels[auth._realLevel] || `L${auth._realLevel}`}`, resetViewAs, "Reset");
+  }
+  return null;
+}
+
 export default function V2Layout({ children }) {
   const auth = useAuth();
   const pathname = usePathname();
@@ -79,6 +175,7 @@ export default function V2Layout({ children }) {
             <button className="tb-btn" onClick={toggleTheme} title="Theme">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3 5.5 5.5 0 1 0 13 9.5z" /></svg>
             </button>
+            {auth?.ok && <ViewAsMenu auth={auth} />}
             <div className="tn-user">
               <div className="avatar">{initial}</div>
               <div className="who"><div className="n">{auth?.displayName || auth?.name || "…"}</div><div className="r">{roleLabel}</div></div>
@@ -86,6 +183,7 @@ export default function V2Layout({ children }) {
           </div>
         </div>
       </header>
+      <ViewAsBanner auth={auth} />
       <main className="v2-main">{children}</main>
     </div>
   );
