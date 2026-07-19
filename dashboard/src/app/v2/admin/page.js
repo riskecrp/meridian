@@ -1,46 +1,56 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../../lib/useAuth";
 import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction } from "../../fm/operations/actions.js";
 import { getInventory, addInventoryItem, updateStock, deleteInventoryItem, getDistributionStats } from "../../fm/inventory/actions.js";
 import { getLinks, saveLinks, publishLinks } from "../../fm/operations/links/actions.js";
+import { listCatalog, createCatalogEntry, updateCatalogEntry, deleteCatalogEntry, listFactionsForAdd, addCatalogVehicleToFaction } from "../../fm/operations/vehicles/actions.js";
+import { getGlobalImports, addImportItem, editImportItem, deleteImportItem } from "../../fm/operations/actions.js";
 
+// access: "l2" = viewable by L2 / Event Team / Lead Storyteller (matches old /fm nav minView:2 + lst), default = L3/ET only
 const GROUPS = [
   { id: "people", label: "People", items: [["staff", "Staff & Teams", true], ["hours", "FM Hours", true], ["dbaccess", "DB Access", true]] },
-  { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", false], ["vehicles", "Vehicle Catalog", true], ["imports", "Import Catalog", true]] },
+  { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", false, "l2"], ["vehicles", "Vehicle Catalog", false, "l2"], ["imports", "Import Catalog", false, "l2"]] },
   { id: "config", label: "Config", items: [["links", "Important Links", false], ["reminders", "Recurring Reminders", true], ["docs", "Documents", true], ["channels", "Faction Channels", true]] },
   { id: "records", label: "Records", items: [["audit", "Audit Log", false], ["archive", "Archive", false], ["memberlog", "Member Log", true], ["convos", "Conversations", true]] },
 ];
 
 export default function V2Admin() {
   const auth = useAuth();
-  const can = (auth?.level || 0) >= 3 || auth?.isEventTeam;
-  const [group, setGroup] = useState("records");
-  const [view, setView] = useState("audit");
+  const isL3 = (auth?.level || 0) >= 3 || auth?.isEventTeam;
+  const canL2 = (auth?.level || 0) >= 2 || auth?.isEventTeam || auth?.isLeadStoryteller;
+  const canEditCatalogs = (auth?.level || 0) >= 3 || auth?.isEventTeam;
+  const [group, setGroup] = useState(null);
+  const [view, setView] = useState(null);
 
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
-  if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Management (L3) access required.</div>;
 
-  const activeGroup = GROUPS.find(g => g.id === group);
-  const soon = activeGroup.items.find(i => i[0] === view)?.[2];
+  const visible = GROUPS.map(g => ({ ...g, items: g.items.filter(it => it[3] === "l2" ? canL2 : isL3) })).filter(g => g.items.length);
+  if (!auth?.ok || !visible.length) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead (L2) access required.</div>;
+
+  const activeGroup = visible.find(g => g.id === group) || visible.find(g => g.id === "records") || visible[0];
+  const activeItem = activeGroup.items.find(i => i[0] === view) || activeGroup.items[0];
+  const [viewId, , soon] = activeItem;
 
   return (
     <div className="view">
       <div className="page-head"><div><p className="eyebrow">Admin</p><h1>Administration</h1><div className="sub">People, catalogs, configuration and records.</div></div></div>
       <div className="hub-tabs">
-        {GROUPS.map(g => <button key={g.id} className={`hub-tab${group === g.id ? " on" : ""}`} onClick={() => { setGroup(g.id); setView(g.items[0][0]); }}>{g.label}</button>)}
+        {visible.map(g => <button key={g.id} className={`hub-tab${activeGroup.id === g.id ? " on" : ""}`} onClick={() => { setGroup(g.id); setView(g.items[0][0]); }}>{g.label}</button>)}
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
         {activeGroup.items.map(([id, label, isSoon]) => (
-          <button key={id} className={`pill${view === id ? " on" : ""}`} onClick={() => setView(id)}>{label}{isSoon && <span className="ct">soon</span>}</button>
+          <button key={id} className={`pill${viewId === id ? " on" : ""}`} onClick={() => setView(id)}>{label}{isSoon && <span className="ct">soon</span>}</button>
         ))}
       </div>
 
-      {soon ? <div className="empty">“{activeGroup.items.find(i => i[0] === view)?.[1]}” — porting in the fine-tune pass. Still live at the old dashboard meanwhile.</div>
-        : view === "audit" ? <Audit />
-        : view === "archive" ? <Archive />
-        : view === "inventory" ? <Inventory auth={auth} />
-        : view === "links" ? <Links />
+      {soon ? <div className="empty">“{activeItem[1]}” — porting in the fine-tune pass. Still live at the old dashboard meanwhile.</div>
+        : viewId === "audit" ? <Audit />
+        : viewId === "archive" ? <Archive />
+        : viewId === "inventory" ? <Inventory auth={auth} />
+        : viewId === "vehicles" ? <Vehicles canEdit={canEditCatalogs} />
+        : viewId === "imports" ? <Imports canEdit={canEditCatalogs} />
+        : viewId === "links" ? <Links />
         : null}
     </div>
   );
@@ -263,5 +273,235 @@ function Links() {
         {status && <span style={{ fontSize: 12, fontWeight: 600, color: status.ok ? "var(--good)" : "var(--rose)" }}>{status.ok ? "✓ " : "⚠ "}{status.msg}</span>}
       </div>
     </div>
+  );
+}
+
+/* ── Vehicle Catalog ── */
+const V_EMPTY = { vehicle_name: "", spawn_name: "", notes: "" };
+function Vehicles({ canEdit }) {
+  const [rows, setRows] = useState([]);
+  const [factions, setFactions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(V_EMPTY);
+  const [copied, setCopied] = useState(null);
+  const [addTo, setAddTo] = useState(null);
+  const [addFaction, setAddFaction] = useState("");
+  const [addQty, setAddQty] = useState(1);
+  const [busy, setBusy] = useState(false);
+  // listFactionsForAdd is L3/ET-only — read-only viewers skip it so they don't trip the clearance check
+  const load = () => Promise.all([listCatalog(), canEdit ? listFactionsForAdd() : Promise.resolve([])]).then(([c, f]) => { setRows(c || []); setFactions(f || []); setLoading(false); });
+  useEffect(() => { load(); }, []);
+  if (loading) return <div className="empty">Loading…</div>;
+  const shown = rows.filter(r => !q || (r.vehicle_name || "").toLowerCase().includes(q.toLowerCase()) || (r.spawn_name || "").toLowerCase().includes(q.toLowerCase()));
+  const submit = async () => {
+    const res = editing ? await updateCatalogEntry(editing.id, form) : await createCatalogEntry(form);
+    if (!res.ok) { window.alert(res.error || "Failed"); return; }
+    setShowNew(false); setEditing(null); setForm(V_EMPTY); load();
+  };
+  const remove = async (r) => {
+    if (!window.confirm(`Delete "${r.vehicle_name}" from the catalog?`)) return;
+    const res = await deleteCatalogEntry(r.id);
+    if (!res.ok) { window.alert(res.error || "Failed"); return; }
+    load();
+  };
+  const submitAdd = async () => {
+    if (!addFaction) { window.alert("Pick a faction"); return; }
+    setBusy(true);
+    const res = await addCatalogVehicleToFaction(addTo.id, parseInt(addFaction), parseInt(addQty));
+    setBusy(false);
+    if (!res.ok) { window.alert(res.error || "Failed"); return; }
+    window.alert(`Added ${res.added}x "${res.vehicle}" to ${res.faction}. New total: ${res.newTotal}/${res.limits.max_total}.`);
+    setAddTo(null); load();
+  };
+  const fields = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <input className="filter-inp" placeholder="Display name * (e.g. Caracara)" value={form.vehicle_name} onChange={e => setForm({ ...form, vehicle_name: e.target.value })} />
+      <input className="filter-inp" placeholder="Spawn name (e.g. caracara)" value={form.spawn_name} onChange={e => setForm({ ...form, spawn_name: e.target.value })} style={{ fontFamily: "var(--v2-mono)" }} />
+      <textarea className="filter-inp" rows={2} placeholder="Notes (optional)" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
+    </div>
+  );
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="filter-inp" placeholder="Search by vehicle or spawn name…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 340 }} />
+        <span style={{ flex: 1 }} />
+        {canEdit && <button className="btn" onClick={() => { setEditing(null); setForm(V_EMPTY); setShowNew(true); }}>New vehicle +</button>}
+      </div>
+      {showNew && !editing && (
+        <div className="card" style={{ border: "1px solid var(--line-2)", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 10 }}>New vehicle</div>
+          {fields}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+            <button className="act" onClick={() => { setShowNew(false); setForm(V_EMPTY); }}>Cancel</button>
+            <button className="act primary" disabled={!form.vehicle_name.trim()} onClick={submit}>Create</button>
+          </div>
+        </div>
+      )}
+      <div className="card"><div style={{ overflowX: "auto" }}>
+        <table className="dtable" style={{ minWidth: 560 }}>
+          <thead><tr><th>Name</th><th>Spawn</th><th style={{ textAlign: "right" }}>Used</th>{canEdit && <th></th>}</tr></thead>
+          <tbody>
+            {shown.length === 0 && <tr><td colSpan={canEdit ? 4 : 3} style={{ color: "var(--ink-3)", fontStyle: "italic", textAlign: "center" }}>No vehicles match.</td></tr>}
+            {shown.map(r => (
+              <React.Fragment key={r.id}>
+                <tr>
+                  <td style={{ fontWeight: 700 }} title={r.notes || r.vehicle_name}>{r.vehicle_name}</td>
+                  <td>
+                    {r.spawn_name ? (
+                      <button className="act" style={{ padding: "1px 6px", fontFamily: "var(--v2-mono)", fontSize: 11, color: copied === r.id ? "var(--good)" : "var(--ink-2)" }} title="Click to copy spawn name"
+                        onClick={() => { navigator.clipboard.writeText(r.spawn_name); setCopied(r.id); setTimeout(() => setCopied(null), 1500); }}>
+                        {copied === r.id ? "✓ copied" : r.spawn_name}
+                      </button>
+                    ) : <span style={{ color: "var(--ink-3)" }}>—</span>}
+                  </td>
+                  <td style={{ textAlign: "right", fontFamily: "var(--v2-mono)", color: r.use_count > 0 ? "var(--ink-1)" : "var(--ink-3)" }}>{r.use_count || 0}</td>
+                  {canEdit && (
+                    <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                      <button className="act" style={{ padding: "2px 7px", color: "var(--accent)" }} title="Add to faction garage" onClick={() => { setAddTo(r); setAddFaction(""); setAddQty(1); }}>+ Faction</button>{" "}
+                      <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setShowNew(false); setEditing(r); setForm({ vehicle_name: r.vehicle_name, spawn_name: r.spawn_name || "", notes: r.notes || "" }); }}>Edit</button>{" "}
+                      <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => remove(r)}>×</button>
+                    </td>
+                  )}
+                </tr>
+                {editing?.id === r.id && (
+                  <tr><td colSpan={4} style={{ background: "var(--panel-2)", borderLeft: "2px solid var(--accent)", padding: 14 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", marginBottom: 8 }}>Editing #{r.id}</div>
+                    {fields}
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+                      <button className="act" onClick={() => { setEditing(null); setForm(V_EMPTY); }}>Cancel</button>
+                      <button className="act primary" disabled={!form.vehicle_name.trim()} onClick={submit}>Save</button>
+                    </div>
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div></div>
+      {addTo && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => !busy && setAddTo(null)} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 460, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontWeight: 700, color: "var(--ink-0)" }}>Add to faction garage</div>
+            <div style={{ margin: "2px 0 14px" }}><span style={{ fontWeight: 700 }}>{addTo.vehicle_name}</span> <span style={{ fontFamily: "var(--v2-mono)", fontSize: 11, color: "var(--ink-3)" }}>{addTo.spawn_name || "(no spawn name set)"}</span></div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <select className="filter-inp" value={addFaction} onChange={e => setAddFaction(e.target.value)}>
+                <option value="">Select faction…</option>
+                {factions.map(f => <option key={f.id} value={f.id}>T{f.tier} · {f.name}</option>)}
+              </select>
+              <input className="filter-inp" type="number" min="1" max="50" value={addQty} onChange={e => setAddQty(parseInt(e.target.value) || 1)} />
+              <div style={{ fontSize: 11, color: "var(--ink-3)" }}>Will be rejected if it would exceed the faction's tier limits (or override).</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button className="act" disabled={busy} onClick={() => setAddTo(null)}>Cancel</button>
+              <button className="act primary" disabled={busy || !addFaction} onClick={submitAdd}>{busy ? "Adding…" : "Add to faction"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ── Import Catalog ── */
+const I_EMPTY = { name: "", category: "General", tier: "1", price: "", importTime: "", shipmentPower: "" };
+function Imports({ canEdit }) {
+  const [data, setData] = useState({ factions: [], items: [] });
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [form, setForm] = useState(null); // {id?, ...fields} — modal for add + edit
+  const [viewItem, setViewItem] = useState(null);
+  const load = () => getGlobalImports().then(d => { setData(d || { factions: [], items: [] }); setLoading(false); });
+  useEffect(() => { load(); }, []);
+  if (loading) return <div className="empty">Loading…</div>;
+  const filtered = data.items.filter(i => !q || i.name.toLowerCase().includes(q.toLowerCase()) || i.category.toLowerCase().includes(q.toLowerCase()));
+  const byTier = filtered.reduce((a, i) => { const t = i.tier || "1"; (a[t] = a[t] || []).push(i); return a; }, {});
+  const submit = async () => {
+    if (!form.name.trim()) return;
+    if (form.id) await editImportItem(form.id, form); else await addImportItem(form);
+    setForm(null); load();
+  };
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="filter-inp" placeholder="Search by item or category…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 340 }} />
+        <span style={{ flex: 1 }} />
+        {canEdit && <button className="btn" onClick={() => setForm({ ...I_EMPTY })}>Add item +</button>}
+      </div>
+      {Object.keys(byTier).sort((a, b) => parseInt(a) - parseInt(b)).map(tier => (
+        <div className="card" key={tier}>
+          <div className="hd"><div className="t">Tier {tier}</div><div className="meta">{byTier[tier].length}</div></div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="dtable" style={{ minWidth: 720 }}>
+              <thead><tr><th>Item</th><th>Class</th><th>Price</th><th>Time</th><th>Power</th><th style={{ textAlign: "center" }}>Factions</th>{canEdit && <th></th>}</tr></thead>
+              <tbody>
+                {byTier[tier].sort((a, b) => a.category.localeCompare(b.category)).map(item => (
+                  <tr key={item.id}>
+                    <td style={{ fontWeight: 700 }}>{item.name}</td>
+                    <td><span className="chip role" style={{ fontFamily: "var(--v2-mono)" }}>{item.category}</span></td>
+                    <td style={{ fontFamily: "var(--v2-mono)", color: "var(--good)" }}>{item.price || "—"}</td>
+                    <td style={{ fontFamily: "var(--v2-mono)", color: "var(--ink-2)" }}>{item.importTime || "—"}</td>
+                    <td style={{ fontFamily: "var(--v2-mono)", color: "var(--accent)" }}>{item.shipmentPower || "—"}</td>
+                    <td style={{ textAlign: "center" }}>
+                      <button className="act" style={{ padding: "1px 8px", color: "var(--accent)", fontWeight: 700, borderBottom: "1px dotted var(--accent)" }} title="Authorized factions" onClick={() => setViewItem(item)}>{item.count}</button>
+                    </td>
+                    {canEdit && (
+                      <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                        <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ id: item.id, name: item.name, category: item.category, tier: item.tier, price: item.price || "", importTime: item.importTime || "", shipmentPower: item.shipmentPower || "" })}>Edit</button>{" "}
+                        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Delete "${item.name}"?`)) { await deleteImportItem(item.id); load(); } }}>Del</button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+      {filtered.length === 0 && <div className="empty">No import items match.</div>}
+      {form && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setForm(null)} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 460, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>{form.id ? `Edit "${form.name}"` : "Add import item"}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input className="filter-inp" placeholder="Name *" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+              <div style={{ display: "flex", gap: 6 }}>
+                <input className="filter-inp" placeholder="Category" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
+                <input className="filter-inp" placeholder="Tier" style={{ flex: "0 0 80px" }} value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })} />
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input className="filter-inp" placeholder="Price (e.g. $5,000)" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} />
+                <input className="filter-inp" placeholder="Import time (e.g. 48 hours)" value={form.importTime} onChange={e => setForm({ ...form, importTime: e.target.value })} />
+                <input className="filter-inp" placeholder="Power (e.g. 500)" value={form.shipmentPower} onChange={e => setForm({ ...form, shipmentPower: e.target.value })} />
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button className="act" onClick={() => setForm(null)}>Cancel</button>
+              <button className="act primary" disabled={!form.name.trim()} onClick={submit}>{form.id ? "Save" : "Add"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {viewItem && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setViewItem(null)} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 400, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18, maxHeight: "70vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <span style={{ fontWeight: 700, color: "var(--ink-0)" }}>{viewItem.name}</span>
+              <button className="act" style={{ padding: "2px 8px" }} onClick={() => setViewItem(null)}>✕</button>
+            </div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 8 }}>Authorized factions</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {viewItem.authorizedFactions.map(f => <span key={f} className="chip role" style={{ justifyContent: "flex-start" }}>{f}</span>)}
+              {viewItem.authorizedFactions.length === 0 && <span style={{ fontSize: 12, fontStyle: "italic", color: "var(--ink-3)" }}>None assigned.</span>}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

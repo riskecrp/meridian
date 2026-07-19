@@ -46,8 +46,9 @@ export default function V2Layout({ children }) {
     { key: "story", label: "Storytelling", href: "/v2/story", icon: I.story },
     { key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms },
     { key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2 },
-    { key: "admin", label: "Admin", href: "/v2/admin", icon: I.admin, min: 3 },
-  ].filter(it => !it.min || level >= it.min);
+    // Admin at L2: the Catalogs group (inventory/vehicles/imports) is L2/ET/LST-viewable, matching the old /fm nav; the page gates the rest to L3.
+    { key: "admin", label: "Admin", href: "/v2/admin", icon: I.admin, min: 2 },
+  ].filter(it => !it.min || level >= it.min || (it.key === "admin" && (isET || auth?.isLeadStoryteller)));
 
   return (
     <div className="v2-root">
