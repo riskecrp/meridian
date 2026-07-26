@@ -68,7 +68,7 @@ function ChannelSelect({ value, channels, onChange, disabled, placeholder }) {
   return (
     <select style={S.select} value={value || ''} disabled={disabled} onChange={e => onChange(e.target.value)}>
       <option value="">{placeholder || '— nowhere —'}</option>
-      {value && !known && <option value={value}>{`Unrecognised channel (${value})`}</option>}
+      {value && !known && <option value={value}>Current channel — no longer exists</option>}
       {grouped.map(([label, list]) => (
         <optgroup key={label} label={label}>
           {list.map(c => <option key={c.id} value={c.id}>#{c.name}</option>)}
@@ -132,7 +132,7 @@ function RolePicker({ value, roles, channelId, channels, onChange }) {
 
 const chanLabel = (id, channels) => {
   const c = channels.find(x => x.id === id);
-  return c ? `#${c.name}` : (id ? 'an unrecognised channel' : 'nowhere');
+  return c ? `#${c.name}` : (id ? 'a channel that no longer exists' : 'nowhere');
 };
 
 // ── one ping ─────────────────────────────────────────────────────────────────
@@ -263,8 +263,8 @@ function ChannelSection({ channelId, channels, primary, confidential, roles, dea
   const [moveTo, setMoveTo] = useState('');
   const [busy, setBusy] = useState(false);
   const chan = channels.find(c => c.id === channelId);
-  const isDead = channelId && deadChannels.includes(channelId);
   const homeGuild = channels.find(c => c.guildId)?.guildName;
+  const nowhere = !channelId;
 
   const doMove = async () => {
     setBusy(true);
@@ -278,11 +278,10 @@ function ChannelSection({ channelId, channels, primary, confidential, roles, dea
   return (
     <div style={S.sect}>
       <div style={S.sectHead}>
-        <span style={{ ...S.chanName, color: isDead ? 'var(--red)' : 'var(--fg-0)' }}>
-          {channelId ? (chan ? `#${chan.name}` : `Unrecognised channel`) : 'Not going anywhere'}
+        <span style={{ ...S.chanName, color: nowhere ? 'var(--red)' : 'var(--fg-0)' }}>
+          {nowhere ? 'Not going anywhere' : `#${chan.name}`}
         </span>
-        {chan && chan.guildName !== homeGuild && <span style={S.guildTag}>in {chan.guildName}</span>}
-        {isDead && <span style={{ ...S.pill, background: 'var(--red-bg)', color: 'var(--red)' }}>⚠ Deleted in Discord</span>}
+        {!nowhere && chan.guildName !== homeGuild && <span style={S.guildTag}>in {chan.guildName}</span>}
         <span style={S.count}>
           {primary.length} ping{primary.length === 1 ? '' : 's'}
           {confidential.length > 0 && ` · ${confidential.length} more when leadership-only`}
@@ -294,6 +293,13 @@ function ChannelSection({ channelId, channels, primary, confidential, roles, dea
           </div>
         )}
       </div>
+
+      {nowhere && (
+        <div style={{ ...S.row, padding: '9px 14px', ...S.soft, color: 'var(--fg-2)' }}>
+          No working channel — either one was never chosen, or the channel it pointed at was deleted in Discord.
+          Open one below and pick a channel to get it working again.
+        </div>
+      )}
 
       {primary.map(r => (
         <PingRow key={r.key} route={r} channels={channels} roles={roles} deadChannels={deadChannels} onSaved={onSaved} toast={toast} />
@@ -348,6 +354,15 @@ export default function PingsView() {
 
   // Group by destination: a route sits under its primary channel, and is listed
   // (not duplicated as an editable row) under its confidential channel too.
+  //
+  // A destination we can't put a name to — deleted, or otherwise unresolvable —
+  // is filed under "Not going anywhere" rather than getting its own section
+  // headed with a placeholder. Skipped entirely if the directory failed to load,
+  // since then we can't name ANY channel and everything would collapse into one
+  // meaningless pile.
+  const canName = channels.length > 0 && !cfg?.directoryError;
+  const destOf = (id) => (canName && id && !channels.some(c => c.id === id)) ? '' : (id || '');
+
   const byChannel = useMemo(() => {
     const map = new Map();
     const bucket = (id) => {
@@ -356,17 +371,15 @@ export default function PingsView() {
     };
     for (const r of visible) {
       if (r.kind === 'dm' || r.kind === 'per_item') continue;
-      bucket(r.channel_id || '').primary.push(r);
-      if (r.alt_channel_id) bucket(r.alt_channel_id).confidential.push(r);
+      bucket(destOf(r.channel_id)).primary.push(r);
+      if (r.alt_channel_id) bucket(destOf(r.alt_channel_id)).confidential.push(r);
     }
     return [...map.entries()].sort((a, b) => {
-      // Broken first, then "nowhere", then busiest.
-      const aDead = a[0] && dead.includes(a[0]), bDead = b[0] && dead.includes(b[0]);
-      if (aDead !== bDead) return aDead ? -1 : 1;
+      // "Not going anywhere" first — it's the one that needs action — then busiest.
       if (!a[0] !== !b[0]) return a[0] ? 1 : -1;
       return b[1].primary.length - a[1].primary.length;
     });
-  }, [visible, dead]);
+  }, [visible, dead, canName]);
 
   const unchannelled = useMemo(
     () => visible.filter(r => r.kind === 'dm' || r.kind === 'per_item'),
