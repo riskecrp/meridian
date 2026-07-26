@@ -2,19 +2,18 @@
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
-import { visibleAdminGroups } from "../adminNav.js";
+import { visibleAdminGroups, ADMIN_TAB_ALIASES } from "../adminNav.js";
 import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction } from "../../fm/operations/actions.js";
 import { getInventory, addInventoryItem, updateStock, deleteInventoryItem, getDistributionStats } from "../../fm/inventory/actions.js";
 import { getLinks, saveLinks, publishLinks } from "../../fm/operations/links/actions.js";
 import { listCatalog, createCatalogEntry, updateCatalogEntry, deleteCatalogEntry, listFactionsForAdd, addCatalogVehicleToFaction } from "../../fm/operations/vehicles/actions.js";
-import { getGlobalImports, addImportItem, editImportItem, deleteImportItem, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels, getBotServerConfigs, addBotServerConfig, updateBotServerConfig, deleteBotServerConfig, addBotWatchRole, deleteBotWatchRole, getMdbAccessRoles, addMdbAccessRole, deleteMdbAccessRole } from "../../fm/operations/actions.js";
+import { getGlobalImports, addImportItem, editImportItem, deleteImportItem, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../fm/operations/actions.js";
 import { listReminders, listChannels, getTargetOptions, createReminder, updateReminder, deleteReminder, getReminderProgress, adminCompleteInstance, forceSendRecurringReminder } from "../../fm/operations/reminders/actions.js";
 import { getDocuments, createDocument, updateDocument, deleteDocument } from "../../fm/documents/actions.js";
-import { getFactionNames } from "../../fm/factions/actions.js";
 import QuillEditor from "../../../lib/QuillEditor";
 import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, addStaff, updateStaff, createTeam, renameTeam, deleteTeam, commitAllChanges, getAllStaffCOI, getMeridianFactions, addStaffCOI, removeStaffCOI, getStaffFactions, retireStaff, promoteToLead, takeoverTeam, getDashboardAccessList, grantDashboardAccess, revokeDashboardAccess } from "../../fm/operations/staff/actions.js";
 import { getFMStaffWithLinks, setCharacterLink, getFMHoursForPeriod, saveFMHours, getFMScenesForPeriod, getFMMeetingsForPeriod, postFMReport } from "../../fm/operations/fmhours/actions.js";
-import PingsView from "../../fm/operations/pings/PingsView.js";
+import DiscordAccessView from "../../fm/operations/discord/DiscordAccessView.js";
 export default function V2AdminPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Admin /></Suspense>;
 }
@@ -30,7 +29,7 @@ function V2Admin() {
   const visible = visibleAdminGroups({ level: auth?.level || 0, isET: auth?.isEventTeam, isLST: auth?.isLeadStoryteller, id: auth?.id });
   if (!auth?.ok || !visible.length) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead (L2) access required.</div>;
 
-  const tabParam = sp.get("tab");
+  const tabParam = ADMIN_TAB_ALIASES[sp.get("tab")] || sp.get("tab");
   let activeGroup = visible.find(g => g.items.some(i => i[0] === tabParam));
   let viewId = tabParam;
   if (!activeGroup) {
@@ -53,11 +52,9 @@ function V2Admin() {
         : viewId === "convos" ? <Conversations />
         : viewId === "reminders" ? <RecurringReminders auth={auth} />
         : viewId === "docs" ? <DocumentsView auth={auth} />
-        : viewId === "channels" ? <FactionChannels />
-        : viewId === "pings" ? <PingsView />
+        : viewId === "discord" ? <DiscordAccessView />
         : viewId === "staff" ? <StaffTeams />
         : viewId === "hours" ? <FMHours />
-        : viewId === "dbaccess" ? <DbSiteAccess />
         : null}
     </div>
   );
@@ -1180,171 +1177,6 @@ function DocumentsView({ auth }) {
 }
 
 /* ── Faction Channels / Bot Server Config (L3) ── */
-function FactionChannels() {
-  const [servers, setServers] = useState([]);
-  const [factions, setFactions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [addForm, setAddForm] = useState(null);
-  useEffect(() => { Promise.all([getBotServerConfigs(), getFactionNames()]).then(([s, f]) => { setServers(s || []); setFactions(f || []); setLoading(false); }); }, []);
-  const refresh = () => getBotServerConfigs().then(s => setServers(s || []));
-  if (loading) return <div className="empty">Loading…</div>;
-  const F_EMPTY = { guild_id: "", guild_name: "", faction: "", access_role_id: "", access_role_name: "", comms_channel_id: "", comms_channel_name: "", faction_channel_id: "", faction_channel_name: "" };
-  const submitAdd = async () => {
-    if (!addForm.guild_id) return;
-    const result = await addBotServerConfig(addForm);
-    if (result?.error) { window.alert(result.error); return; }
-    setAddForm(null); refresh();
-  };
-  const lbl = { fontSize: 10, color: "var(--ink-3)", marginBottom: 3 };
-  return (
-    <>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--v2-mono)", maxWidth: 640 }}>
-          Access Role — login gate for meridiandatabase.net · Command Channel — leadership target for announcements · Faction-Wide Channel — whole-faction target · Monitored Roles — pings shown on the dashboard
-        </div>
-        <button className="btn" onClick={() => setAddForm({ ...F_EMPTY })}>Add server +</button>
-      </div>
-      {servers.length === 0 && <div className="empty">No servers configured yet.</div>}
-      {servers.map(server => <ServerRow key={server.id} server={server} factions={factions} onRefresh={refresh} />)}
-      {addForm && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setAddForm(null)} />
-          <div style={{ position: "relative", width: "100%", maxWidth: 560, maxHeight: "88vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
-            <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>Add bot server</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div><div style={lbl}>Discord Server ID *</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.guild_id} onChange={e => setAddForm({ ...addForm, guild_id: e.target.value })} placeholder="Right-click server → Copy ID" /></div>
-              <div><div style={lbl}>Server Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.guild_name} onChange={e => setAddForm({ ...addForm, guild_name: e.target.value })} placeholder="e.g. Alliance Discord" /></div>
-              <div style={{ gridColumn: "1 / -1" }}><div style={lbl}>Linked Faction</div>
-                <select className="filter-inp" style={{ width: "100%" }} value={addForm.faction} onChange={e => setAddForm({ ...addForm, faction: e.target.value })}>
-                  <option value="">— None —</option>
-                  {factions.map(n => <option key={n} value={n}>{n}</option>)}
-                </select></div>
-              <div><div style={lbl}>Access Role ID</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.access_role_id} onChange={e => setAddForm({ ...addForm, access_role_id: e.target.value })} placeholder="Role required to log into DB site" /></div>
-              <div><div style={lbl}>Access Role Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.access_role_name} onChange={e => setAddForm({ ...addForm, access_role_name: e.target.value })} placeholder="e.g. Ally Member" /></div>
-              <div><div style={lbl}>Command Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.comms_channel_id} onChange={e => setAddForm({ ...addForm, comms_channel_id: e.target.value })} placeholder="Right-click channel → Copy ID" /></div>
-              <div><div style={lbl}>Command Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.comms_channel_name} onChange={e => setAddForm({ ...addForm, comms_channel_name: e.target.value })} placeholder="e.g. #command" /></div>
-              <div><div style={lbl}>Faction-Wide Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.faction_channel_id} onChange={e => setAddForm({ ...addForm, faction_channel_id: e.target.value })} placeholder="Right-click channel → Copy ID" /></div>
-              <div><div style={lbl}>Faction-Wide Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={addForm.faction_channel_name} onChange={e => setAddForm({ ...addForm, faction_channel_name: e.target.value })} placeholder="e.g. #announcements" /></div>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-              <button className="act" onClick={() => setAddForm(null)}>Cancel</button>
-              <button className="act primary" disabled={!addForm.guild_id.trim()} onClick={submitAdd}>Add</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-function ServerRow({ server, factions, onRefresh }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({});
-  const [saving, setSaving] = useState(false);
-  const [addingWatch, setAddingWatch] = useState(false);
-  const [watchForm, setWatchForm] = useState({ role_id: "", role_name: "" });
-  const startEdit = () => {
-    setForm({
-      guild_name: server.guild_name || "", access_role_id: server.access_role_id || "", access_role_name: server.access_role_name || "",
-      comms_channel_id: server.comms_channel_id || "", comms_channel_name: server.comms_channel_name || "",
-      faction_channel_id: server.faction_channel_id || "", faction_channel_name: server.faction_channel_name || "",
-      faction: server.faction_name || "",
-    });
-    setEditing(true); setCollapsed(false);
-  };
-  const saveEdit = async () => { setSaving(true); await updateBotServerConfig(server.id, form); setSaving(false); setEditing(false); onRefresh(); };
-  const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
-  const submitWatch = async () => {
-    if (!watchForm.role_id.trim()) return;
-    await addBotWatchRole({ config_id: server.id, ...watchForm });
-    setAddingWatch(false); setWatchForm({ role_id: "", role_name: "" });
-    onRefresh();
-  };
-  const lbl = { fontSize: 10, color: "var(--ink-3)", marginBottom: 3 };
-  const KV = ({ label, name, id, missing }) => (
-    <div>
-      <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 3 }}>{label}</div>
-      {id ? <><div style={{ fontSize: 13, fontWeight: 500 }}>{name || <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>Unnamed</span>}</div><div style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>{id}</div></>
-        : <div style={{ fontSize: 11, fontStyle: "italic", color: missing ? "var(--rose)" : "var(--ink-3)" }}>Not set</div>}
-    </div>
-  );
-  return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }} onClick={() => { if (!editing) setCollapsed(c => !c); }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 11, color: "var(--ink-3)" }}>{collapsed ? "▶" : "▼"}</span>
-          <div>
-            <span style={{ fontWeight: 700 }}>{server.guild_name || "Unnamed Server"}</span>
-            <span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)", marginLeft: 8 }}>{server.guild_id}</span>
-          </div>
-          {server.faction_name && <span className="chip" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>{server.faction_name}</span>}
-        </div>
-        <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
-          {!editing && <button className="act" onClick={startEdit}>Edit</button>}
-          <button className="act" style={{ color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Remove ${server.guild_name || server.guild_id} and all its roles?`)) { await deleteBotServerConfig(server.id); onRefresh(); } }}>Remove</button>
-        </div>
-      </div>
-      {!collapsed && (editing ? (
-        <div style={{ paddingTop: 12 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 8 }}>Editing — {server.guild_id}</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div><div style={lbl}>Server Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.guild_name} onChange={f("guild_name")} placeholder="e.g. Alliance Discord" /></div>
-            <div><div style={lbl}>Linked Faction</div>
-              <select className="filter-inp" style={{ width: "100%" }} value={form.faction} onChange={f("faction")}>
-                <option value="">— None —</option>
-                {factions.map(n => <option key={n} value={n}>{n}</option>)}
-              </select></div>
-            <div><div style={lbl}>Access Role ID</div><input className="filter-inp" style={{ width: "100%" }} value={form.access_role_id} onChange={f("access_role_id")} placeholder="Role required to log into DB site" /></div>
-            <div><div style={lbl}>Access Role Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.access_role_name} onChange={f("access_role_name")} placeholder="e.g. Ally Member" /></div>
-            <div><div style={lbl}>Command Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={form.comms_channel_id} onChange={f("comms_channel_id")} placeholder="Right-click channel → Copy ID" /></div>
-            <div><div style={lbl}>Command Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.comms_channel_name} onChange={f("comms_channel_name")} placeholder="e.g. #command" /></div>
-            <div><div style={lbl}>Faction-Wide Channel ID</div><input className="filter-inp" style={{ width: "100%" }} value={form.faction_channel_id} onChange={f("faction_channel_id")} placeholder="Right-click channel → Copy ID" /></div>
-            <div><div style={lbl}>Faction-Wide Channel Name</div><input className="filter-inp" style={{ width: "100%" }} value={form.faction_channel_name} onChange={f("faction_channel_name")} placeholder="e.g. #announcements" /></div>
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button className="act primary" disabled={saving} onClick={saveEdit}>{saving ? "Saving…" : "Save changes"}</button>
-            <button className="act" onClick={() => setEditing(false)}>Cancel</button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, padding: "12px 0", borderBottom: "1px solid var(--line)" }}>
-            <KV label="Access Role" name={server.access_role_name} id={server.access_role_id} missing />
-            <KV label="Command Channel" name={server.comms_channel_name} id={server.comms_channel_id} />
-            <KV label="Faction-Wide Channel" name={server.faction_channel_name} id={server.faction_channel_id} />
-            <div>
-              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 3 }}>Linked Faction</div>
-              <div style={{ fontSize: 13, color: server.faction_name ? "var(--accent)" : "var(--ink-3)", fontStyle: server.faction_name ? "normal" : "italic" }}>{server.faction_name || "None"}</div>
-            </div>
-          </div>
-          <div style={{ paddingTop: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)" }}>Monitored roles <span style={{ fontWeight: 400 }}>— pings tracked on the dashboard</span></span>
-              <button className="act" style={{ padding: "2px 8px" }} onClick={() => setAddingWatch(v => !v)}>{addingWatch ? "Cancel" : "+ Add role"}</button>
-            </div>
-            {addingWatch && (
-              <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
-                <input className="filter-inp" style={{ maxWidth: 220 }} placeholder="Role ID the bot watches for pings" value={watchForm.role_id} onChange={e => setWatchForm({ ...watchForm, role_id: e.target.value })} />
-                <input className="filter-inp" style={{ maxWidth: 180 }} placeholder="Role name, e.g. @leadership" value={watchForm.role_name} onChange={e => setWatchForm({ ...watchForm, role_name: e.target.value })} />
-                <button className="act primary" disabled={!watchForm.role_id.trim()} onClick={submitWatch}>Add</button>
-              </div>
-            )}
-            {server.watchRoles.length === 0 ? <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--ink-3)", padding: "4px 0" }}>No roles monitored.</div> : (
-              server.watchRoles.map(r => (
-                <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 10px", borderRadius: 8, background: "var(--panel-2)", marginBottom: 4 }}>
-                  <span><span style={{ fontSize: 13, fontWeight: 500 }}>{r.role_name || <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>Unnamed</span>}</span><span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)", marginLeft: 10 }}>{r.role_id}</span></span>
-                  <button className="act" style={{ color: "var(--rose)", padding: "2px 8px" }} onClick={async () => { if (window.confirm(`Remove monitored role ${r.role_name || r.role_id}?`)) { await deleteBotWatchRole(r.id); onRefresh(); } }}>Remove</button>
-                </div>
-              ))
-            )}
-          </div>
-        </>
-      ))}
-    </div>
-  );
-}
-
 /* ── shared mini form modal (replaces /fm useDialog showForm) ── */
 function FormModal({ title, fields, onCancel, onSubmit }) {
   const [vals, setVals] = useState(() => Object.fromEntries(fields.map(f => [f.name, f.default ?? (f.type === "checkbox" ? false : "")])));
@@ -1377,47 +1209,6 @@ function FormModal({ title, fields, onCancel, onSubmit }) {
         </div>
       </div>
     </div>
-  );
-}
-
-/* ── DB Site Access (L3): meridiandatabase.net login roles ── */
-function DbSiteAccess() {
-  const [roles, setRoles] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
-  useEffect(() => { getMdbAccessRoles().then(r => { setRoles(r || []); setLoading(false); }); }, []);
-  if (loading) return <div className="empty">Loading…</div>;
-  return (
-    <>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>Control which Discord roles can log in to <b>meridiandatabase.net</b>.</div>
-          <div style={{ fontSize: 10.5, fontFamily: "var(--v2-mono)", color: "var(--ink-3)", marginTop: 2 }}>Members must have at least one of these roles. If the list is empty, all guild members are permitted.</div>
-        </div>
-        <button className="btn" onClick={() => setAdding(true)}>Add role +</button>
-      </div>
-      {roles.length === 0 ? <div className="empty">No roles configured — all guild members can currently access the site.</div> : (
-        <div className="card"><div style={{ overflowX: "auto" }}>
-          <table className="dtable" style={{ minWidth: 480 }}>
-            <thead><tr><th>Role name</th><th>Role ID</th><th>Added</th><th></th></tr></thead>
-            <tbody>
-              {roles.map(r => (
-                <tr key={r.id}>
-                  <td style={{ fontWeight: 600 }}>{r.role_name || <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>Unnamed</span>}</td>
-                  <td style={{ fontFamily: "var(--v2-mono)", fontSize: 11, color: "var(--ink-3)" }}>{r.role_id}</td>
-                  <td style={{ fontSize: 11, color: "var(--ink-3)" }}>{r.created_at?.substring(0, 10)}</td>
-                  <td style={{ textAlign: "right" }}><button className="act" style={{ color: "var(--rose)", padding: "2px 8px" }} onClick={async () => { if (window.confirm("Remove this role?")) { await deleteMdbAccessRole(r.id); getMdbAccessRoles().then(x => setRoles(x || [])); } }}>Remove</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div></div>
-      )}
-      {adding && <FormModal title="Add access role" fields={[
-        { name: "role_id", label: "Discord Role ID", type: "text", placeholder: "Right-click role → Copy ID" },
-        { name: "role_name", label: "Role Name (label)", type: "text", placeholder: "e.g. Alliance Member" },
-      ]} onCancel={() => setAdding(false)} onSubmit={async (v) => { if (v.role_id) { await addMdbAccessRole(v); getMdbAccessRoles().then(x => setRoles(x || [])); } setAdding(false); }} />}
-    </>
   );
 }
 

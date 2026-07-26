@@ -51,6 +51,19 @@ export async function getPingConfig() {
   };
 }
 
+// Cheap counts for the collapsed summary line — DB only, no Discord calls, so
+// the merged page opens instantly and the 22-guild sweep is paid for only if
+// someone actually opens the Pings section.
+export async function getPingSummary() {
+  await requireActor(3);
+  const row = queryOne(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END) AS off,
+           COUNT(DISTINCT CASE WHEN kind = 'channel' AND channel_id != '' THEN channel_id END) AS channels
+    FROM ping_routes`);
+  return { total: row?.total || 0, off: row?.off || 0, channels: row?.channels || 0 };
+}
+
 function safeParse(json) {
   try {
     const v = JSON.parse(json || '[]');
