@@ -93,6 +93,27 @@ export async function updatePingRoute(key, data) {
   return { ok: true };
 }
 
+// Move a whole channel's worth of pings somewhere else in one go — the common
+// case when a channel is renamed, replaced or retired.
+export async function movePings(keys, channelId) {
+  const actor = await requireActor(3);
+  if (!Array.isArray(keys) || !keys.length) return { ok: false, error: 'Nothing selected.' };
+  if (!/^\d{17,20}$/.test(String(channelId || ''))) return { ok: false, error: 'Pick a channel to move them to.' };
+
+  let moved = 0;
+  for (const key of keys) {
+    const route = queryOne("SELECT * FROM ping_routes WHERE key = ?", [key]);
+    if (!route || route.kind !== 'channel') continue;
+    run(
+      `UPDATE ping_routes SET channel_id = ?, updated_at = datetime('now'), updated_by = ? WHERE key = ?`,
+      [channelId, actor.name, key]
+    );
+    moved++;
+  }
+  logAudit(actor.id, actor.name, 'EDIT', 'ping_route', null, `${moved} pings`, `Bulk move → ${channelId}`);
+  return { ok: true, moved };
+}
+
 // Fires a clearly-marked test message through the route exactly as a real ping
 // would travel, so a misconfigured channel fails here instead of in production.
 export async function testPing(key, { alt = false } = {}) {
