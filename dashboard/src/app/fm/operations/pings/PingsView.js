@@ -395,7 +395,11 @@ export default function PingsView() {
   );
   if (!cfg) return <div style={{ color: 'var(--fg-3)', fontSize: 13, padding: '20px 0' }}>Loading…</div>;
 
-  const broken = cfg.routes.filter(r => (r.channel_id && dead.includes(r.channel_id)) || (r.alt_channel_id && dead.includes(r.alt_channel_id)));
+  // Only a ping that is switched ON and can't deliver is a problem. One that's
+  // been deliberately turned off isn't "going nowhere" — it's meant to be quiet,
+  // and nagging about it makes the warning worthless.
+  const broken = cfg.routes.filter(r => r.enabled &&
+    ((r.channel_id && dead.includes(r.channel_id)) || (r.alt_channel_id && dead.includes(r.alt_channel_id))));
   const missingChannel = cfg.routes.filter(r => r.kind === 'channel' && r.enabled && !r.channel_id);
   const offCount = cfg.routes.filter(r => !r.enabled).length;
 
