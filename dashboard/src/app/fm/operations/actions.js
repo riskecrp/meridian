@@ -1,7 +1,7 @@
 "use server";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendDiscord, getChannel } from "../../../lib/discord.js";
+import { sendPing, pingChannel } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { today } from "../../../lib/format.js";
 import { GAME_AFFAIRS_ID } from "../../../lib/constants.js";
@@ -221,7 +221,7 @@ export async function approveRPChange(execId) {
     [exec.faction_id, exec.faction_name, `${exec.execution_type}: ${exec.old_value} → ${exec.new_value}`, actor.name]);
   logAudit(actor.id, actor.name, 'APPROVE', 'rp_change', execId, exec.faction_name, `Approved ${exec.execution_type}`);
   if (exec.requester_id) {
-    await sendDiscord(getChannel('team_lead_channel'),
+    await sendPing('rp.approved.requester',
       `<@${exec.requester_id}> ✅ Your RP change request for **${exec.faction_name}** has been approved — **${exec.old_value} → ${exec.new_value}**. Schedule the scene, then click **Mark RP Done** on your dashboard when it's complete.`);
   }
   return { ok: true };
@@ -234,7 +234,7 @@ export async function denyRPChange(execId, reason) {
   run("UPDATE pending_executions SET status='DENIED', deny_reason=? WHERE id=?", [reason || '', execId]);
   logAudit(actor.id, actor.name, 'REJECT', 'rp_change', execId, exec.faction_name, reason || '');
   if (exec.requester_id) {
-    await sendDiscord(getChannel('team_lead_channel'),
+    await sendPing('rp.denied.requester',
       `<@${exec.requester_id}> ❌ Your RP change request for **${exec.faction_name}** was denied.\n**Reason:** ${reason || 'No reason provided.'}\nPlease respond with additional context and resubmit via your dashboard.`);
   }
   return { ok: true };
@@ -247,7 +247,7 @@ export async function resubmitRPChange(execId, note) {
   if (exec.requester_id !== actor.id) return { ok: false, error: 'Not your request.' };
   run("UPDATE pending_executions SET status='PENDING', rp_note=?, deny_reason='' WHERE id=?", [note || '', execId]);
   logAudit(actor.id, actor.name, 'EDIT', 'rp_change', execId, exec.faction_name, 'Resubmitted');
-  await sendDiscord(getChannel('leadership_channel'),
+  await sendPing('rp.resubmitted',
     `🔄 **RP Change Resubmitted** — **${exec.faction_name}**\n**Type:** ${exec.execution_type}\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Requested By:** ${exec.requested_by}${note ? `\n**Additional Context:** ${note}` : ''}`);
   return { ok: true };
 }
@@ -259,7 +259,7 @@ export async function markRPDone(execId, note) {
   if (exec.requester_id !== actor.id && actor.level < 3) return { ok: false, error: 'Not your request.' };
   run("UPDATE pending_executions SET status='RP_DONE', rp_note=? WHERE id=?", [note || '', execId]);
   logAudit(actor.id, actor.name, 'EDIT', 'rp_change', execId, exec.faction_name, 'RP marked done');
-  await sendDiscord(getChannel('leadership_channel'),
+  await sendPing('rp.done',
     `🎬 **RP Scene Complete** — **${exec.faction_name}**\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Confirmed By:** ${actor.name}${note ? `\n**Note:** ${note}` : ''}\n\nReady to execute the ${exec.execution_type} change on the dashboard.`);
   return { ok: true };
 }
@@ -297,10 +297,10 @@ export async function executeRPChange(execId, data) {
   run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by) VALUES (?,?,'RP_CHANGE_EXECUTED',?,?)",
     [exec.faction_id, exec.faction_name, `${exec.execution_type}: ${exec.old_value} → ${exec.new_value}`, actor.name]);
   logAudit(actor.id, actor.name, 'APPROVE', 'rp_change', execId, exec.faction_name, exec.execution_type);
-  await sendDiscord(getChannel('leadership_channel'),
+  await sendPing('rp.executed',
     `✅ **RP Change Executed** — **${exec.faction_name}**\n**Type:** ${exec.execution_type}\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Executed By:** ${actor.name}${exec.execution_type === 'NPC' && data.npcName ? `\n**New NPC:** ${data.npcName}` : ''}`);
   if (exec.requester_id) {
-    await sendDiscord(getChannel('team_lead_channel'),
+    await sendPing('rp.executed.requester',
       `<@${exec.requester_id}> ✅ Your RP change for **${exec.faction_name}** has been executed — **${exec.old_value} → ${exec.new_value}**.`);
   }
   return { ok: true };
@@ -387,9 +387,8 @@ export async function createLeadershipTask(data) {
   const creatorIsLeadership = isLeadershipRank(actor.id);
   const assigneeIsLeadership = (data.targetType === 'Role' && (data.targetId === leadershipRoleId || data.targetId === gameAffairsId))
     || (data.targetType === 'User' && isLeadershipRank(data.targetId));
-  const ch = (creatorIsLeadership && assigneeIsLeadership) ? getChannel('leadership_channel') : getChannel('global_ping_channel');
   const tag = data.targetType === 'Role' ? '<@&' + data.targetId + '>' : '<@' + data.targetId + '>';
-  await sendDiscord(ch, '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Assigned By:** ' + actor.name);
+  await sendPing('task.assigned', '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Assigned By:** ' + actor.name, { alt: creatorIsLeadership && assigneeIsLeadership });
   return { ok: true };
 }
 
@@ -400,13 +399,13 @@ export async function createLeadershipReminder(data) {
   const leadershipRoleId2 = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
   const gameAffairsId2 = GAME_AFFAIRS_ID;
   const routeToLeadership2 = data.targetType === 'Role' && (data.targetId === leadershipRoleId2 || data.targetId === gameAffairsId2);
-  const ch = routeToLeadership2 ? getChannel('leadership_channel') : getChannel('event_announce_channel');
+  const ch = pingChannel('event.created', { alt: routeToLeadership2, ignoreEnabled: true });
   run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, 'ACTIVE')",
     [uuid, actor.id, ch, data.message, data.epochMs.toString(), new Date(data.epochMs).toISOString(), targetTag]);
   logAudit(actor.id, actor.name, 'CREATE', 'reminder', null, data.message.substring(0,50), '');
   const epoch = Math.floor(data.epochMs / 1000);
   const embeds = [{ title: '📌 ' + (data.eventType || 'Event') + ' Scheduled', description: '**Time:** <t:' + epoch + ':F> (<t:' + epoch + ':R>)' + (data.note ? '\n**Details:** ' + data.note : '') + '\n\n*Via Meridian Dashboard*', color: 0x5865F2 }];
-  await sendDiscord(ch, targetTag, embeds);
+  await sendPing('event.created', targetTag, { alt: routeToLeadership2, embeds });
   return { ok: true };
 }
 
@@ -433,7 +432,6 @@ export async function completeLeadershipTask(taskUid) {
     const factionName = task.description.split(' — ')[0].trim();
     const fac = factionName ? queryOne("SELECT lead_discord_id, pending_promo FROM factions WHERE name = ?", [factionName]) : null;
     const leadPing = fac?.lead_discord_id ? `<@${fac.lead_discord_id}> ` : '';
-    const ch = getChannel('team_lead_channel');
 
     let importsLine = '';
     if (fac?.pending_promo) {
@@ -444,12 +442,12 @@ export async function completeLeadershipTask(taskUid) {
         importsLine = imports.length > 0
           ? `\n**Approved imports (${imports.length}):** ${imports.join(', ')}`
           : '\nNo weapon imports were approved.';
-        await sendDiscord(ch, `${leadPing}📋 **Pending Promotion** — **${factionName}** → Tier ${tier}\nStaged by: ${actor.name}${importsLine}`);
+        await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}** → Tier ${tier}\nStaged by: ${actor.name}${importsLine}`);
       } catch {
-        await sendDiscord(ch, `${leadPing}📋 **Pending Promotion** — **${factionName}**\nStaged by: ${actor.name}`);
+        await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}**\nStaged by: ${actor.name}`);
       }
     } else {
-      await sendDiscord(ch, `${leadPing}📋 **Pending Promotion** — **${factionName}**\nReviewed by: ${actor.name}`);
+      await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}**\nReviewed by: ${actor.name}`);
     }
   } else if (task && task.created_by_id && task.created_by_id !== actor.id) {
     const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
@@ -458,8 +456,7 @@ export async function completeLeadershipTask(taskUid) {
     const creatorIsLeadership = isLeadershipRank(task.created_by_id);
     const assigneeIsLeadership = (task.target_type === 'Role' && (task.target_id === leadershipRoleId || task.target_id === gameAffairsId))
       || (task.target_type === 'User' && isLeadershipRank(task.target_id));
-    const ch = (creatorIsLeadership && assigneeIsLeadership) ? getChannel('leadership_channel') : getChannel('global_ping_channel');
-    await sendDiscord(ch, `✅ <@${task.created_by_id}> — your task "${task.description}" has been completed by **${actor.name}**.`);
+    await sendPing('task.completed.creator', `✅ <@${task.created_by_id}> — your task "${task.description}" has been completed by **${actor.name}**.`, { alt: creatorIsLeadership && assigneeIsLeadership });
   }
   return { ok: true };
 }

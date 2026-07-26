@@ -67,6 +67,7 @@ const SECTIONS = [
       { name: "Important Links", href: "/fm/operations/links" },
       { name: "Staff", href: "/fm/operations/staff" },
       { name: "Bot Servers", href: "/fm/operations/botconfig" },
+      { name: "Pings", href: "/fm/operations/pings" },
       { name: "DB Site Access", href: "/fm/operations/mdbaccess" },
       { name: "Member Log",  href: "/fm/operations/memberlog",  userId: "738214924760907907" },
       { name: "FM Hours",    href: "/fm/operations/fmhours",    userId: "738214924760907907" },

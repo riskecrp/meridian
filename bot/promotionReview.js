@@ -5,9 +5,7 @@
 
 import cron from 'node-cron';
 import { query, queryOne, run } from './lib/db.js';
-
-const MANAGEMENT_BOARD   = '1457189620256215083';
-const FM_LEADERSHIP_ROLE = '1457670376745074730';
+import { pingChannel, getRole } from './lib/pings.js';
 
 const GUN_CATEGORIES = [
   'Pistol Light', 'Pistol Medium', 'Pistol Heavy',
@@ -113,7 +111,9 @@ async function runPromotionReview(client) {
   const tName = threadName();
   let thread;
   try {
-    thread = await discordPost(token, `/channels/${MANAGEMENT_BOARD}/threads`, {
+    const boardChannel = pingChannel('promo.review.thread');
+    if (!boardChannel) { console.log('[PROMO] review thread route disabled — skipping'); return; }
+    thread = await discordPost(token, `/channels/${boardChannel}/threads`, {
       name: tName,
       auto_archive_duration: 10080,
       type: 11,
@@ -130,13 +130,13 @@ async function runPromotionReview(client) {
   if (discuss.length > 0)   sections.push(`**Needs Discussion:** ${discuss.map(d => `${d.name} (${d.promote} promote / ${d.hold} hold)`).join(', ')}`);
 
   await discordPost(token, `/channels/${thread.id}/messages`, {
-    content: `<@&${FM_LEADERSHIP_ROLE}> **Promotion Review — ${tName}**\n\n${sections.join('\n')}\n\nWeapon polls for confirmed promotions are below. Polls close in 48 hours.`,
+    content: `<@&${getRole('fm_leadership')}> **Promotion Review — ${tName}**\n\n${sections.join('\n')}\n\nWeapon polls for confirmed promotions are below. Polls close in 48 hours.`,
   }).catch(e => console.error('[PROMO] Opening message error:', e.message));
 
   // Discussion pings
   for (const d of discuss) {
     await discordPost(token, `/channels/${thread.id}/messages`, {
-      content: `<@&${FM_LEADERSHIP_ROLE}> ⚠️ **${d.name}** has a split vote (${d.promote} promote / ${d.hold} hold) — please discuss and reach a decision.`,
+      content: `<@&${getRole('fm_leadership')}> ⚠️ **${d.name}** has a split vote (${d.promote} promote / ${d.hold} hold) — please discuss and reach a decision.`,
     }).catch(e => console.error(`[PROMO] Discussion message error for ${d.name}:`, e.message));
     await new Promise(r => setTimeout(r, 500));
   }
@@ -273,7 +273,7 @@ async function processClosedPolls() {
         const uid = Date.now().toString() + Math.floor(Math.random() * 1000);
         run(`INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, created_at, notify_creator)
              VALUES (?, ?, ?, 'Role', 'None', 'promotion-bot', 'Promotion Bot', ?, 0)`,
-          [uid, `${data.name} — Promote to Tier ${data.nextTier}\n\nNo weapon votes were recorded. Please review poll results and stage the promotion manually in the Factions dashboard.`, FM_LEADERSHIP_ROLE, today()]);
+          [uid, `${data.name} — Promote to Tier ${data.nextTier}\n\nNo weapon votes were recorded. Please review poll results and stage the promotion manually in the Factions dashboard.`, getRole('fm_leadership'), today()]);
       } catch {}
       continue;
     }
@@ -291,7 +291,7 @@ async function processClosedPolls() {
       ].join('\n');
       run(`INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, created_at, notify_creator)
            VALUES (?, ?, ?, 'Role', 'None', 'promotion-bot', 'Promotion Bot', ?, 0)`,
-        [uid, taskDesc, FM_LEADERSHIP_ROLE, today()]);
+        [uid, taskDesc, getRole('fm_leadership'), today()]);
       console.log(`[PROMO] Task created for ${data.name} promotion`);
     } catch (e) {
       console.error(`[PROMO] Error creating task for ${data.name}:`, e.message);
@@ -300,7 +300,7 @@ async function processClosedPolls() {
     // ── Summary in thread ───────────────────────────────────────────────────────
     await discordPost(token, `/channels/${data.threadId}/messages`, {
       content: [
-        `<@&${FM_LEADERSHIP_ROLE}> ✅ **${data.name}** — Polls closed`,
+        `<@&${getRole('fm_leadership')}> ✅ **${data.name}** — Polls closed`,
         `**Approved imports (${approvedWeapons.length}):** ${approvedWeapons.join(', ')}`,
         `A task has been created for FM Leadership to stage the promotion. Team Leads will be notified once it is staged.`,
       ].join('\n'),

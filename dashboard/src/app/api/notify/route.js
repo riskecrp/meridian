@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { sendDiscord } from '../../../lib/discord.js';
+import { getRole } from '../../../lib/discord.js';
+import { sendPing, pingMentions } from '../../../lib/pings.js';
 import { run, queryOne } from '../../../lib/db.js';
 
 function _createLeadershipTask(description) {
-  const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || ROLES.fm_leadership;
+  const leadershipRoleId = getRole('fm_leadership');
   const uid = Date.now().toString();
   const dt = new Date().toISOString();
   run(
@@ -12,20 +13,13 @@ function _createLeadershipTask(description) {
   );
 }
 
-const CHANNEL = '1457571102019555463';
-
-const ROLES = {
-  fm_leadership:     '1457670376745074730',
-  game_affairs:      '1457189093594239147',
-  lfm:               '1457208224435666977',
-  criminal_fm:       '1457229857749729363',
-};
-
+// Destination channel and the role pinged for each form are configured per route
+// in ping_routes (Admin › Pings › Form Submissions), not hardcoded here.
 const FORM_CONFIGS = {
   rcf_application: {
     title: 'Recognized Criminal Faction Application',
     color: 3447003,
-    role: ROLES.fm_leadership,
+    route: 'form.rcf_application',
     build: ({ factionName, sheetUrl }) => ({
       description: `A Recognized Criminal Faction Application has been received from **${factionName}**!\n[View the response sheet here](${sheetUrl})`,
     }),
@@ -33,7 +27,7 @@ const FORM_CONFIGS = {
   staff_application: {
     title: 'Faction Management Staff Application',
     color: 15158332,
-    role: ROLES.fm_leadership,
+    route: 'form.staff_application',
     build: ({ applicantName, sheetUrl }) => ({
       description: `A Faction Management Staff Application has been received from **${applicantName}**!\n[View the response sheet here](${sheetUrl})`,
     }),
@@ -41,7 +35,7 @@ const FORM_CONFIGS = {
   garage_request: {
     title: 'Faction Management Garage Request',
     color: 3547003,
-    role: ROLES.fm_leadership,
+    route: 'form.garage_request',
     build: ({ factionName, requestType, sheetUrl }) => ({
       description: `A **${requestType}** Request has been received from **${factionName}**!\n[View the response sheet here](${sheetUrl})`,
     }),
@@ -49,7 +43,7 @@ const FORM_CONFIGS = {
   ci_application: {
     title: 'New CI Application',
     color: 9807270,
-    role: ROLES.game_affairs,
+    route: 'form.ci_application',
     build: ({ applicantName, sheetUrl }) => ({
       description: `A New CI Application has been received from **${applicantName}**.\n[View the response sheet here](${sheetUrl})`,
     }),
@@ -57,9 +51,17 @@ const FORM_CONFIGS = {
 };
 
 const FEEDBACK_DEPT_MAP = {
-  'Legal Faction Management (LFM)':  { role: ROLES.lfm,          color: 3066993  },
-  'Criminal Faction Management (FM)': { role: ROLES.fm_leadership, color: 15158332 },
+  'Legal Faction Management (LFM)':   { route: 'form.faction_feedback.lfm', color: 3066993  },
+  'Criminal Faction Management (FM)': { route: 'form.faction_feedback.fm',  color: 15158332 },
 };
+
+// A form raises a Leadership task only when FM Leadership is actually among the
+// roles the route pings — so retargeting a form's mention retargets its follow-up.
+function _pingsLeadership(route) {
+  const leadershipId = getRole('fm_leadership');
+  if (!leadershipId) return false; // '' would match every string
+  return pingMentions(route).includes(leadershipId);
+}
 
 export async function POST(req) {
   const secret = req.headers.get('x-notify-secret');
@@ -89,8 +91,8 @@ export async function POST(req) {
       color: mapping.color,
       timestamp: new Date().toISOString(),
     };
-    await sendDiscord(CHANNEL, `<@&${mapping.role}>`, [embed]);
-    if (mapping.role === ROLES.fm_leadership) {
+    await sendPing(mapping.route, null, { embeds: [embed] });
+    if (_pingsLeadership(mapping.route)) {
       _createLeadershipTask(`Faction Feedback — ${entryName}`);
     }
     return NextResponse.json({ ok: true });
@@ -104,8 +106,8 @@ export async function POST(req) {
 
   const { description } = config.build(body);
   const embed = { title: config.title, description, color: config.color };
-  await sendDiscord(CHANNEL, `<@&${config.role}>`, [embed]);
-  if (config.role === ROLES.fm_leadership) {
+  await sendPing(config.route, null, { embeds: [embed] });
+  if (_pingsLeadership(config.route)) {
     _createLeadershipTask(description);
   }
   return NextResponse.json({ ok: true });

@@ -1,7 +1,7 @@
 "use server";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendDiscord, getChannel } from "../../../lib/discord.js";
+import { sendPing } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { today } from "../../../lib/format.js";
 import { GAME_AFFAIRS_ID } from "../../../lib/constants.js";
@@ -503,8 +503,7 @@ export async function stagePromotion(factionId, factionName, tier, importNames) 
     [factionId, factionName, `Staged for Tier ${tier}`, actor.name]);
   logAudit(actor.id, actor.name, 'PROMOTE', 'faction', factionId, factionName, `Staged promotion to T${tier}`);
   const leadPing = await getLeadPing(factionId);
-  const ch = getChannel('team_lead_channel');
-  await sendDiscord(ch, `${leadPing}📋 **Pending Promotion** — **${factionName}** → Tier ${tier}\nStaged by: ${actor.name}\nAwaiting RP confirmation.`);
+  await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}** → Tier ${tier}\nStaged by: ${actor.name}\nAwaiting RP confirmation.`);
   return { ok: true };
 }
 
@@ -529,10 +528,9 @@ export async function completePromotion(factionId, factionName) {
     });
     logAudit(actor.id, actor.name, 'PROMOTE', 'faction', factionId, factionName, `Completed promotion to T${newTier}`);
     const leadPing = await getLeadPing(factionId);
-    const ch = getChannel('team_lead_channel');
     const imports = Array.isArray(payload.imports) && payload.imports.length > 0
       ? `\n**Approved imports:** ${payload.imports.join(', ')}` : '';
-    await sendDiscord(ch, `${leadPing}✅ **Promotion Complete** — **${factionName}** is now Tier ${newTier}\nCompleted by: ${actor.name}${imports}`);
+    await sendPing('promo.completed', `${leadPing}✅ **Promotion Complete** — **${factionName}** is now Tier ${newTier}\nCompleted by: ${actor.name}${imports}`);
     return { ok: true };
   } catch (e) { return { ok: false, error: e.message }; }
 }
@@ -545,8 +543,7 @@ export async function cancelPromotion(factionId, factionName) {
       [factionId, factionName, actor.name]);
     logAudit(actor.id, actor.name, 'EDIT', 'faction', factionId, factionName, 'Promotion cancelled');
     const leadPing = await getLeadPing(factionId);
-    const ch = getChannel('team_lead_channel');
-    await sendDiscord(ch, `${leadPing}❌ **Promotion Cancelled** — **${factionName}**\nCancelled by: ${actor.name}`);
+    await sendPing('promo.cancelled', `${leadPing}❌ **Promotion Cancelled** — **${factionName}**\nCancelled by: ${actor.name}`);
     return { ok: true };
   } catch (e) { return { ok: false }; }
 }
@@ -558,8 +555,7 @@ export async function demoteFaction(factionId, factionName, newTier) {
     [factionId, factionName, `Demoted to Tier ${newTier}`, actor.name]);
   logAudit(actor.id, actor.name, 'DEMOTE', 'faction', factionId, factionName, `Demoted to T${newTier}`);
   const leadPing = await getLeadPing(factionId);
-  const ch = getChannel('team_lead_channel');
-  await sendDiscord(ch, `${leadPing}⬇️ **Demotion** — **${factionName}** → Tier ${newTier}\nBy: ${actor.name}`);
+  await sendPing('promo.demoted', `${leadPing}⬇️ **Demotion** — **${factionName}** → Tier ${newTier}\nBy: ${actor.name}`);
   return { ok: true };
 }
 
@@ -572,12 +568,11 @@ export async function requestRPChange(data) {
   run("INSERT INTO pending_executions (date, faction_id, execution_type, turf, old_value, new_value, requested_by, requester_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [today(), fac.id, data.type, data.turf || 'N/A', data.oldValue || 'N/A', data.newValue, actor.name, actor.id]);
   logAudit(actor.id, actor.name, 'CREATE', 'rp_change', null, data.faction, `${data.type}: ${data.oldValue} → ${data.newValue}`);
-  const ch = getChannel('leadership_channel');
   let msg = `🔔 **RP Change Request**\n**Faction:** ${data.faction}\n**Type:** ${data.type}\n**Requested By:** ${actor.name}`;
   if (data.type === 'NPC') msg += `\n**Turf:** ${data.turf}\n**Current:** ${data.oldValue}\n**New:** ${data.newValue}`;
   else if (data.type === 'HQ') msg += `\n**Old Address:** ${data.oldValue}\n**New Address:** ${data.newValue}`;
   else msg += `\n**Details:** ${data.newValue}`;
-  await sendDiscord(ch, msg);
+  await sendPing('rp.requested', msg);
   return { ok: true };
 }
 

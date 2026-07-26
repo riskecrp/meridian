@@ -1,6 +1,5 @@
 import { query, run } from './lib/db.js';
-
-const FORUM_CHANNEL_ID = '1457671829354451090';
+import { pingChannel } from './lib/pings.js';
 
 function extractFactionName(message) {
   const candidates = [];
@@ -52,7 +51,9 @@ function matchFaction(extractedName, factions) {
 
 export async function syncForumPosts(client) {
   try {
-    const channel = await client.channels.fetch(FORUM_CHANNEL_ID).catch(e => {
+    const forumChannelId = pingChannel('forum.sync.source');
+    if (!forumChannelId) return;
+    const channel = await client.channels.fetch(forumChannelId).catch(e => {
       console.error('[FORUM_SYNC] Cannot fetch channel:', e.message);
       return null;
     });

@@ -1,7 +1,7 @@
 "use server";
 import { query, run } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendDiscord } from "../../../lib/discord.js";
+import { sendPing } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 
 export async function getDocuments() {
@@ -19,7 +19,7 @@ export async function createDocument(data) {
     [data.title, data.category || 'General', data.content, level, actor.name, actor.id]);
   logAudit(actor.id, actor.name, 'CREATE', 'document', null, data.title, `Category: ${data.category}`);
   const baseUrl = process.env.BASE_URL || 'https://ecrpfm.com';
-  await sendDiscord('1457230769951998114', `📄 **New Document Published**\n**Title:** ${data.title}\n**Category:** ${data.category || 'General'}\n**Author:** ${actor.name}\n🔗 ${baseUrl}/fm/documents`);
+  await sendPing('document.published', `📄 **New Document Published**\n**Title:** ${data.title}\n**Category:** ${data.category || 'General'}\n**Author:** ${actor.name}\n🔗 ${baseUrl}/fm/documents`);
   return { ok: true };
 }
 

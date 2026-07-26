@@ -1,6 +1,7 @@
 "use server";
 import { query, queryOne, run } from "../../../../lib/db.js";
 import { requireActor } from "../../../../lib/requireActor.js";
+import { pingChannel } from "../../../../lib/pings.js";
 
 const RISK_ID = "738214924760907907";
 
@@ -121,8 +122,7 @@ export async function getFMMeetingsForPeriod(year, month) {
 }
 
 // ── Post report ────────────────────────────────────────────────
-const PROD_CHANNEL = "1504787244307976285";
-const TEST_CHANNEL = "1504787457407848558";
+
 
 export async function postFMReport({ period, testMode }) {
   await guard();
@@ -183,7 +183,8 @@ export async function postFMReport({ period, testMode }) {
     footer:    { text: "Faction Management · Monthly Report" },
   };
 
-  const channelId = testMode ? TEST_CHANNEL : PROD_CHANNEL;
+  const channelId = pingChannel(testMode ? 'fmhours.report.test' : 'fmhours.report.prod');
+  if (!channelId) return { ok: false, error: "The FM hours report ping is switched off in Admin › Pings." };
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) return { ok: false, error: "Bot token not configured." };
 

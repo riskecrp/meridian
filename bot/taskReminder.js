@@ -1,8 +1,10 @@
 import { query, run } from './lib/db.js';
+import { pingEnabled } from './lib/pings.js';
 
 export function startTaskReminder(client) {
   setInterval(async () => {
     try {
+      if (!pingEnabled('task.reminder.dm')) return;
       const tasks = query("SELECT * FROM tasks WHERE claimed_by != 'None' AND next_reminder IS NOT NULL AND next_reminder != ''");
       const now = Date.now();
       for (const task of tasks) {

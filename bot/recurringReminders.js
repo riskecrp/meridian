@@ -1,4 +1,5 @@
 import { query, run, queryOne } from './lib/db.js';
+import { pingEnabled } from './lib/pings.js';
 
 // Resolves recipients for a definition.
 function resolveRecipients(def) {
@@ -55,6 +56,11 @@ export async function fireReminderDefinition(client, def, year, month, force = f
   const dueText = def.due_day ? `\n\n**Due:** Day ${def.due_day} of this month.` : '';
   const description = `${def.body || ''}${dueText}${linksBlock}\n\n_View on the dashboard: https://ecrpfm.com/fm/dashboard_`;
   const colorInt = (typeof def.color === 'string' && def.color.startsWith('0x')) ? parseInt(def.color, 16) : (parseInt(def.color, 10) || 0xF59E0B);
+
+  if (!pingEnabled('reminder.recurring')) {
+    console.log(`[RECURRING] Skipped "${def.title}" — route disabled in Admin › Pings`);
+    return { ok: false, recipientsCount: recipients.length, sent: false, error: 'Route disabled' };
+  }
 
   try {
     const channel = await client.channels.fetch(def.channel_id);

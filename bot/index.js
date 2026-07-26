@@ -10,13 +10,13 @@ import { syncConversations } from './conversationSync.js';
 import { startTaskReminder } from './taskReminder.js';
 import { startPromotionReview } from './promotionReview.js';
 import { handleDM } from './dmHandler.js';
+import { sendPing, pingChannel, getRole } from './lib/pings.js';
 
 dotenv.config({ path: '/opt/meridian/.env' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const FM_LEADERSHIP_ROLE_ID = '1457670376745074730';
 const GUILD_ID_STR          = process.env.GUILD_ID || '1457188814916423855';
 
 // Dynamically load all FM staff discord IDs, refreshed every 5 minutes.
@@ -133,18 +133,11 @@ client.on(Events.InteractionCreate, async interaction => {
       const token = process.env.DISCORD_BOT_TOKEN;
       const askerStaff = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [q.asked_by_id]);
       const askerIsManagement = (askerStaff?.rank || '').toLowerCase().includes('management');
-      const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-      const routesToLeadership = task.target_type === 'Role' && (task.target_id === leadershipRoleId || task.target_id === '1457189093594239147');
-      const chKey = (askerIsManagement && routesToLeadership) ? 'leadership_channel' : 'global_ping_channel';
-      const ch = queryOne("SELECT channel_id FROM discord_config WHERE key = ?", [chKey])?.channel_id || '';
-      if (ch && token) {
-        const replyUrl = 'https://ecrpfm.com/fm/tasks/' + q.task_uid;
-        await fetch(`https://discord.com/api/v10/channels/${ch}/messages`, {
-          method: 'POST',
-          headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: `💬 <@${q.asked_by_id}> — **${actorName}** answered your question:\n> ${answer.replace(/\n/g, '\n> ')}\n\n📋 ${replyUrl}`, allowed_mentions: { parse: ['users'] } }),
-        }).catch(e => console.error('[TASK_REPLY]', e.message));
-      }
+      const routesToLeadership = task.target_type === 'Role' && (task.target_id === getRole('fm_leadership') || task.target_id === getRole('game_affairs'));
+      const replyUrl = 'https://ecrpfm.com/fm/tasks/' + q.task_uid;
+      await sendPing('task.question.answered',
+        `💬 <@${q.asked_by_id}> — **${actorName}** answered your question:\n> ${answer.replace(/\n/g, '\n> ')}\n\n📋 ${replyUrl}`,
+        { alt: askerIsManagement && routesToLeadership });
       await interaction.reply({ content: '✅ Answer sent!', ephemeral: true });
       return;
     }
@@ -243,7 +236,7 @@ client.on(Events.MessageCreate, async msg => {
     }
 
     // FM Leadership role pings (FM guild only)
-    if (msg.guildId === GUILD_ID_STR && msg.mentions?.roles?.has(FM_LEADERSHIP_ROLE_ID)) {
+    if (msg.guildId === GUILD_ID_STR && msg.mentions?.roles?.has(getRole('fm_leadership'))) {
       run(
         `INSERT OR IGNORE INTO role_mentions
            (message_id, channel_id, channel_name, author_id, author_name, content, guild_id, guild_name, created_at)
@@ -403,25 +396,30 @@ client.on(Events.MessageDelete, async message => {
 });
 
 // Auto-add staff when the main FM role is granted in the FM guild
-const MAIN_FM_ROLE    = '1457229857749729363'; // fm_team_guide — base role every FM member holds
-const FM_RANK_ROLES   = {
-  '1457215385139941456': 'Team Lead',   // fm_team_lead
-  '1457670376745074730': 'Management',  // fm_leadership
-  '1457189093594239147': 'Management',  // game_affairs
-  '1495186160752791562': 'Management',  // founder
-  '1457220952541888666': 'Management',  // executive_admin
-};
+// Rank roles are read from discord_roles so renames/re-IDs don't need a redeploy.
+// fm_team_guide is the base role every FM member holds.
+const mainFmRole = () => getRole('fm_team_guide');
+
+function fmRankRoles() {
+  const map = {};
+  const put = (key, rank) => { const id = getRole(key); if (id) map[id] = rank; };
+  put('fm_team_lead',    'Team Lead');
+  put('fm_leadership',   'Management');
+  put('game_affairs',    'Management');
+  put('founder',         'Management');
+  put('executive_admin', 'Management');
+  return map;
+}
 
 function deriveFMRank(roleIds) {
+  const ranks = fmRankRoles();
   let rank = 'Guide';
   for (const r of roleIds) {
-    if (FM_RANK_ROLES[r] === 'Management') return 'Management';
-    if (FM_RANK_ROLES[r] === 'Team Lead')  rank = 'Team Lead';
+    if (ranks[r] === 'Management') return 'Management';
+    if (ranks[r] === 'Team Lead')  rank = 'Team Lead';
   }
   return rank;
 }
-
-const RANK_ROLES = new Set(Object.keys(FM_RANK_ROLES)); // Team Lead + Management role IDs
 
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   try {
@@ -434,7 +432,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const displayName = newMember.nickname || newMember.user.globalName || newMember.user.username;
 
     // ── New staff: base FM role granted ──────────────────────────────────
-    if (addedRoles.includes(MAIN_FM_ROLE)) {
+    if (addedRoles.includes(mainFmRole())) {
       const existing = queryOne("SELECT id FROM staff WHERE discord_id = ?", [newMember.user.id]);
       if (existing) {
         console.log(`[STAFF_SYNC] ${displayName} already in staff`);
@@ -451,7 +449,8 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     }
 
     // ── Existing staff: rank role granted — update their rank ─────────────
-    const gotRankRole = addedRoles.some(r => RANK_ROLES.has(r));
+    const rankRoleIds = new Set(Object.keys(fmRankRoles()));
+    const gotRankRole = addedRoles.some(r => rankRoleIds.has(r));
     if (!gotRankRole) return;
 
     const existing = queryOne("SELECT id, rank FROM staff WHERE discord_id = ?", [newMember.user.id]);

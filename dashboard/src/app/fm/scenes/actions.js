@@ -2,8 +2,7 @@
 import { query, queryOne, run } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
 import { requireActor } from "../../../lib/requireActor.js";
-
-const MERIDIAN_DB_CHANNEL = '1457201300583485491';
+import { pingChannel } from "../../../lib/pings.js";
 
 function today() { return new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'/').toUpperCase(); }
 
@@ -97,10 +96,11 @@ export async function addMyselfToScene(sceneId) {
   // Ping the original author in the Meridian DB channel
   if (scene.author_id) {
     const token = process.env.DISCORD_BOT_TOKEN;
-    if (token) {
+    const chan = pingChannel('scene.assistant_added');
+    if (token && chan) {
       const msg = `📋 <@${scene.author_id}> — **${actor.name}** has added themselves to your scene log for **${scene.faction}** (${scene.date}).\n> ${(scene.notes || '').substring(0, 150)}${scene.notes?.length > 150 ? '…' : ''}`;
       try {
-        await fetch(`https://discord.com/api/v10/channels/${MERIDIAN_DB_CHANNEL}/messages`, {
+        await fetch(`https://discord.com/api/v10/channels/${chan}/messages`, {
           method: 'POST',
           headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: msg }),

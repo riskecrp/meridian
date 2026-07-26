@@ -4,7 +4,7 @@
 export const ADMIN_GROUPS = [
   { id: "people", label: "People", items: [["staff", "Staff & Teams"], ["hours", "FM Hours", "risk"], ["dbaccess", "DB Site Access"]] },
   { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", "l2"], ["vehicles", "Vehicle Catalog", "l2"], ["imports", "Import Catalog", "l2"]] },
-  { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l2"], ["docs", "Documents", "l1"], ["channels", "Faction Channels"]] },
+  { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l2"], ["docs", "Documents", "l1"], ["channels", "Faction Channels"], ["pings", "Pings"]] },
   { id: "records", label: "Records", items: [["audit", "Audit Log"], ["archive", "Archive"], ["memberlog", "Server Logs", "risk"], ["convos", "Conversations"]] },
 ];
 

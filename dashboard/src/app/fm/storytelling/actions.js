@@ -2,7 +2,7 @@
 import { query, queryOne, run } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
 import { requireActor } from "../../../lib/requireActor.js";
-import { sendDiscord } from "../../../lib/discord.js";
+import { sendPing, pingChannel } from "../../../lib/pings.js";
 
 // ── KNOWLEDGE BASE — Get L1+, Mutate L2+ ──
 export async function getLoreEntries() {
@@ -238,7 +238,7 @@ export async function addChangeLog(data) {
   logAudit(actor.id, actor.name, 'CREATE', 'change_log', null, data.name, data.changeType);
 
   const token = process.env.DISCORD_BOT_TOKEN;
-  const shouldPost = data.changeType === 'black_market_doctor' ? !!data.action : true;
+  const shouldPost = (data.changeType === 'black_market_doctor' ? !!data.action : true) && !!pingChannel('story.changelog');
   if (token && shouldPost) {
     let msg = '';
     if (data.changeType === 'black_market_doctor') {
@@ -255,7 +255,7 @@ export async function addChangeLog(data) {
     }
     msg += '\n*By: ' + actor.name + '*';
     try {
-      await fetch('https://discord.com/api/v10/channels/1464415763577176208/messages', {
+      await fetch('https://discord.com/api/v10/channels/' + pingChannel('story.changelog') + '/messages', {
         method: 'POST',
         headers: { 'Authorization': 'Bot ' + token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: msg, allowed_mentions: { parse: [] } })
@@ -271,7 +271,7 @@ export async function editChangeLog(id, data) {
   logAudit(actor.id, actor.name, 'EDIT', 'change_log', id, data.name, '');
 
   const token = process.env.DISCORD_BOT_TOKEN;
-  if (token && data.changeType === 'black_market_doctor' && data.action) {
+  if (token && data.changeType === 'black_market_doctor' && data.action && pingChannel('story.changelog')) {
     let msg = '🏥 **Black Market Doctor ' + data.action + '** *(edited)*\n';
     msg += '**Name:** ' + data.name + '\n';
     msg += '**Location:** `/tppos ' + (data.position || 'N/A') + '`\n';
@@ -280,7 +280,7 @@ export async function editChangeLog(id, data) {
     if (data.notes) msg += '**Notes:** ' + data.notes;
     msg += '\n*By: ' + actor.name + '*';
     try {
-      await fetch('https://discord.com/api/v10/channels/1464415763577176208/messages', {
+      await fetch('https://discord.com/api/v10/channels/' + pingChannel('story.changelog') + '/messages', {
         method: 'POST',
         headers: { 'Authorization': 'Bot ' + token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: msg, allowed_mentions: { parse: [] } })
@@ -296,13 +296,13 @@ export async function deleteChangeLog(id) {
   logAudit(actor.id, actor.name, 'DELETE', 'change_log', id, entry?.name || '', '');
 
   const token = process.env.DISCORD_BOT_TOKEN;
-  if (token && entry && entry.change_type === 'black_market_doctor') {
+  if (token && entry && entry.change_type === 'black_market_doctor' && pingChannel('story.changelog')) {
     let msg = '🏥 **Black Market Doctor Removed** *(deleted from log)*\n';
     msg += '**Name:** ' + entry.name + '\n';
     msg += '**Location:** `/tppos ' + (entry.position || 'N/A') + '`';
     msg += '\n*By: ' + actor.name + '*';
     try {
-      await fetch('https://discord.com/api/v10/channels/1464415763577176208/messages', {
+      await fetch('https://discord.com/api/v10/channels/' + pingChannel('story.changelog') + '/messages', {
         method: 'POST',
         headers: { 'Authorization': 'Bot ' + token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: msg, allowed_mentions: { parse: [] } })
@@ -339,7 +339,7 @@ export async function addSceneLibraryEntry(data) {
   logAudit(actor.id, actor.name, 'CREATE', 'scene_library', result.lastInsertRowid, data.title, 'idea');
 
   const baseUrl = process.env.BASE_URL || 'https://ecrpfm.com';
-  sendDiscord('1469503845095702692', null, [{
+  sendPing('story.scene_idea', null, { embeds: [{
     title: 'New Scene Library Idea',
     description: `**${data.title}**${data.description ? `\n${data.description.substring(0, 200)}${data.description.length > 200 ? '…' : ''}` : ''}\n\n*Submitted by <@${actor.id}> — awaiting approval.*`,
     color: 0xc084fc,
@@ -352,7 +352,7 @@ export async function addSceneLibraryEntry(data) {
     url: `${baseUrl}/fm/storytelling/library`,
     footer: { text: 'Meridian FM · Scene Library' },
     timestamp: new Date().toISOString(),
-  }]);
+  }] });
 
   return { ok: true, id: result.lastInsertRowid };
 }
@@ -412,7 +412,7 @@ export async function addSceneLibraryFeedback(sceneId, feedbackText) {
 
   if (scene.status !== 'approved' && scene.created_by_id && scene.created_by_id !== actor.id) {
     const baseUrl = process.env.BASE_URL || 'https://ecrpfm.com';
-    sendDiscord('1457201300583485491',
+    sendPing('story.scene_feedback',
       `💬 <@${scene.created_by_id}> — **${actor.name}** left feedback on your scene idea **"${scene.title}"**:\n> ${text.substring(0, 350)}${text.length > 350 ? '…' : ''}\n\n🔗 ${baseUrl}/fm/storytelling/library`
     );
   }

@@ -2,6 +2,7 @@
 import { query, queryOne, run } from "../../../../lib/db.js";
 import { requireActor } from "../../../../lib/requireActor.js";
 import { sendDiscord } from "../../../../lib/discord.js";
+import { pingEnabled } from "../../../../lib/pings.js";
 import { logAudit } from "../../../../lib/audit.js";
 
 // List all reminders.
@@ -157,6 +158,12 @@ export async function forceSendRecurringReminder(reminderId) {
     color: colorInt,
     footer: { text: 'Recurring · Day ' + def.ping_day + ' · Force-sent by ' + actor.name },
   };
+
+  // Destination is per-definition, but the route's toggle still governs whether
+  // recurring reminders fire at all.
+  if (!pingEnabled('reminder.recurring')) {
+    return { ok: false, error: "Recurring reminders are switched off in Admin › Pings." };
+  }
 
   try {
     await sendDiscord(def.channel_id, tag, [embed]);

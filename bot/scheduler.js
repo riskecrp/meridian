@@ -2,6 +2,7 @@ import { checkRecurringReminders } from './recurringReminders.js';
 import cron from "node-cron";
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { query, run } from './lib/db.js';
+import { pingEnabled } from './lib/pings.js';
 
 export function startScheduler(client) {
   console.log("[SCHEDULER] Started — checking every minute");
@@ -17,7 +18,7 @@ export function startScheduler(client) {
         const diffMinutes = (triggerTime - now) / 1000 / 60;
 
         // 30-minute warning
-        if (diffMinutes <= 30 && diffMinutes > 0 && row.status === "ACTIVE") {
+        if (diffMinutes <= 30 && diffMinutes > 0 && row.status === "ACTIVE" && pingEnabled('reminder.warning')) {
           console.log(`[SCHEDULER] 30min warning for: ${row.uuid} in channel ${row.channel_id}`);
           try {
             const channel = await client.channels.fetch(row.channel_id).catch((e) => { console.error(`[SCHEDULER] Cannot fetch channel ${row.channel_id}:`, e.message); return null; });
@@ -37,7 +38,9 @@ export function startScheduler(client) {
         if (now >= triggerTime) {
           console.log(`[SCHEDULER] Firing: ${row.uuid} in channel ${row.channel_id}`);
           try {
-            const channel = await client.channels.fetch(row.channel_id).catch((e) => { console.error(`[SCHEDULER] Cannot fetch channel ${row.channel_id}:`, e.message); return null; });
+            const channel = pingEnabled('reminder.due')
+              ? await client.channels.fetch(row.channel_id).catch((e) => { console.error(`[SCHEDULER] Cannot fetch channel ${row.channel_id}:`, e.message); return null; })
+              : null;
             if (channel) {
               const embed = new EmbedBuilder()
                 .setTitle("📌 Due Now")

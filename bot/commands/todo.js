@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { query, queryOne, run } from '../lib/db.js';
+import { sendPing, getRole } from '../lib/pings.js';
 export default {
   data: new SlashCommandBuilder().setName('todo').setDescription('Manage tasks')
     .addSubcommand(s => s.setName('list').setDescription('List your tasks'))
@@ -46,18 +47,8 @@ export default {
       let posted = false;
       if (!selfAssign) {
         try {
-          const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-          const gameAffairsId = '1457189093594239147';
-          const routeLeadership = targetType === 'Role' && (targetId === leadershipRoleId || targetId === gameAffairsId);
-          const chKey = routeLeadership ? 'leadership_channel' : 'global_ping_channel';
-          const pingChannelId = queryOne("SELECT channel_id FROM discord_config WHERE key = ?", [chKey])?.channel_id;
-          if (pingChannelId) {
-            const ch = await interaction.client.channels.fetch(pingChannelId).catch(() => null);
-            if (ch) {
-              await ch.send({ content: `📋 **NEW TASK ASSIGNED** | ${mention}\n**Assigned By:** ${author}`, allowedMentions: { parse: ['roles', 'users'] } });
-              posted = true;
-            }
-          }
+          const routeLeadership = targetType === 'Role' && (targetId === getRole('fm_leadership') || targetId === getRole('game_affairs'));
+          posted = await sendPing('task.assigned', `📋 **NEW TASK ASSIGNED** | ${mention}\n**Assigned By:** ${author}`, { alt: routeLeadership });
         } catch (e) { console.error('Task ping failed:', e.message); }
       }
       await interaction.reply({ content: posted ? `📋 Task assigned to ${mention} — posted to the ping channel.` : `📋 Task \`${uid}\` created for ${mention}.`, ephemeral: true });
@@ -70,15 +61,9 @@ export default {
         [author, uid, task.description, new Date().toISOString()]);
       await interaction.reply({ content: `✅ Task \`${uid}\` completed.`, ephemeral: true });
       try {
-        const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-        const gameAffairsId = '1457189093594239147';
-        const wasLeadershipTarget = task.target_type === 'Role' && (task.target_id === leadershipRoleId || task.target_id === gameAffairsId);
+        const wasLeadershipTarget = task.target_type === 'Role' && (task.target_id === getRole('fm_leadership') || task.target_id === getRole('game_affairs'));
         if (wasLeadershipTarget && task.created_by_id && task.created_by_id !== interaction.user.id) {
-          const globalPingId = queryOne("SELECT channel_id FROM discord_config WHERE key = 'global_ping_channel'")?.channel_id;
-          if (globalPingId) {
-            const ch = await interaction.client.channels.fetch(globalPingId).catch(() => null);
-            if (ch) await ch.send(`✅ <@${task.created_by_id}> — your task "${task.description}" has been completed by **${author}**.`);
-          }
+          await sendPing('task.completed.creator', `✅ <@${task.created_by_id}> — your task "${task.description}" has been completed by **${author}**.`);
         }
       } catch (e) { console.error('Creator ping failed:', e.message); }
     }

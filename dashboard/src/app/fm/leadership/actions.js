@@ -1,6 +1,7 @@
 "use server";
 import { query, queryOne, run } from "../../../lib/db.js";
-import { sendDiscord, getChannel, getRole } from "../../../lib/discord.js";
+import { getRole } from "../../../lib/discord.js";
+import { sendPing } from "../../../lib/pings.js";
 import { logAudit } from "../../../lib/audit.js";
 import { requireActor } from "../../../lib/requireActor.js";
 
@@ -94,9 +95,8 @@ export async function submitReview(data) {
   // Only ping on first submission, not every save
   if (isNew) {
     const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id = ?", [data.factionId]);
-    const teamLeadCh = getChannel('team_lead_channel');
     if (faction?.lead_discord_id) {
-      await sendDiscord(teamLeadCh,
+      await sendPing('review.submitted',
         `<@${faction.lead_discord_id}> 📋 Feedback has been submitted for **${data.factionName}** for this month. Please incorporate it into your message to the faction on the 15th.\n<https://ecrpfm.com/fm/leadership/reviews>`
       );
     }
@@ -183,10 +183,9 @@ export async function submitPersonalNote(factionId, factionName, note, status) {
   }
   logAudit(actor.id, actor.name, 'CREATE', 'leadership_note', null, factionName, (status ? status + ' — ' : '') + note.substring(0, 80));
   const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id=?", [factionId]);
-  const teamLeadCh = getChannel('team_lead_channel');
   let msg = `📝 **Leadership feedback has been submitted for ${factionName}.** Please review it before the 15th.\n<https://ecrpfm.com/fm/leadership/reviews>`;
   if (faction?.lead_discord_id) msg = `<@${faction.lead_discord_id}> ` + msg;
-  await sendDiscord(teamLeadCh, msg);
+  await sendPing('review.leadership_note', msg);
   return { ok: true };
 }
 
@@ -200,10 +199,9 @@ export async function editPersonalNote(noteId, note, status) {
     const rev = queryOne("SELECT id FROM faction_reviews WHERE faction_id=? AND review_month=?", [existing.faction_id, existing.review_month]);
     if (rev) run("UPDATE faction_reviews SET status=?, updated_at=datetime('now') WHERE id=?", [status, rev.id]);
     const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id=?", [existing.faction_id]);
-    const teamLeadCh = getChannel('team_lead_channel');
     let msg = `📝 **Leadership feedback has been updated for ${existing.faction_name}.** Please review it before the 15th.\n<https://ecrpfm.com/fm/leadership/reviews>`;
     if (faction?.lead_discord_id) msg = `<@${faction.lead_discord_id}> ` + msg;
-    await sendDiscord(teamLeadCh, msg);
+    await sendPing('review.leadership_note', msg);
   }
   logAudit(actor.id, actor.name, 'EDIT', 'leadership_note', noteId, existing.faction_name, (status || '') + ' — ' + note.substring(0, 80));
   return { ok: true };
@@ -394,9 +392,7 @@ export async function sendFeedbackToFaction(factionId, message) {
   );
 
   // Notify FM Leadership that feedback has been delivered
-  const teamLeadCh = getChannel('team_lead_channel');
-  await sendDiscord(
-    teamLeadCh,
+  await sendPing('review.feedback_sent',
     `📨 **${actor.name}** has sent the monthly feedback message to **${faction.name}** via Faction Management comms.`
   );
 
@@ -410,8 +406,7 @@ export async function markFeedbackSent(factionId) {
   if (!accessible.find(f => f.id === factionId)) return { ok: false, error: 'Faction not in your scope.' };
   const faction = queryOne("SELECT name FROM factions WHERE id=?", [factionId]);
   if (!faction) return { ok: false, error: 'Faction not found.' };
-  const teamLeadCh = getChannel('team_lead_channel');
-  await sendDiscord(teamLeadCh, `📨 **${actor.name}** has marked feedback as sent to **${faction.name}** (delivered manually outside the dashboard).`);
+  await sendPing('review.feedback_sent', `📨 **${actor.name}** has marked feedback as sent to **${faction.name}** (delivered manually outside the dashboard).`);
   logAudit(actor.id, actor.name, 'CREATE', 'feedback_sent', null, faction.name, 'Marked as sent manually');
   return { ok: true };
 }

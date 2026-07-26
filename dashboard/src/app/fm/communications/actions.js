@@ -2,9 +2,8 @@
 import { query, queryOne, run } from "../../../lib/db.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { logAudit } from "../../../lib/audit.js";
+import { pingChannel, pingMentions } from "../../../lib/pings.js";
 
-const FM_ANNOUNCE_CHANNEL = '1503178123993157633';
-const FM_IC_CHANNEL       = '1460432301878935725';
 const FM_GUILD_ID         = '1457188814916423855';
 
 // Returns all faction announcement targets accessible to the current user.
@@ -42,8 +41,6 @@ export async function getAnnouncementTargets() {
     ORDER BY f.tier DESC, f.name ASC
   `, teamIds);
 }
-
-const FM_ALL_ROLE = '1457229857749729363'; // fm_team_guide — all FM staff
 
 // Resolve the destination channels for a faction target given the chosen channel type.
 // channelType: 'command' | 'faction' | 'both'. Returns [{ type, id }] for whichever exist.
@@ -182,12 +179,13 @@ export async function sendAnnouncement(configIds, message, postToFM = false, cha
 
   // FM Leadership only — post to FM Discord announcement channel with @all-FM ping
   let postedToFM = false;
-  if (postToFM && actor.level >= 3) {
+  const fmAnnounceChannel = pingChannel('comms.announcement.fm');
+  if (postToFM && actor.level >= 3 && fmAnnounceChannel) {
     try {
-      const res = await fetch(`https://discord.com/api/v10/channels/${FM_ANNOUNCE_CHANNEL}/messages`, {
+      const res = await fetch(`https://discord.com/api/v10/channels/${fmAnnounceChannel}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: `<@&${FM_ALL_ROLE}>`, embeds: [embed] }),
+        body: JSON.stringify({ content: pingMentions('comms.announcement.fm'), embeds: [embed] }),
       });
       postedToFM = res.ok;
       if (!res.ok) console.error('[ANNOUNCE] FM channel post failed:', res.status);
@@ -297,8 +295,9 @@ export async function sendICCommunication(configIds, link, message, channelType 
 
   // Post to FM IC log channel as an embed
   const sentTo = targets.map(t => t.name).join(', ');
+  const fmIcChannel = pingChannel('comms.ic.fm');
   try {
-    await fetch(`https://discord.com/api/v10/channels/${FM_IC_CHANNEL}/messages`, {
+    if (fmIcChannel) await fetch(`https://discord.com/api/v10/channels/${fmIcChannel}/messages`, {
       method: 'POST',
       headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({

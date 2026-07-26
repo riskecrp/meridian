@@ -1,15 +1,10 @@
 import { query, run, queryOne } from './lib/db.js';
 
-const CHANNELS = [
-  { id: '1457201300583485491', name: 'meridian-database' },
-  { id: '1457189620256215083', name: 'management-board' },
-  { id: '1469503845095702692', name: 'team-leads' },
-  { id: '1457277228520964190', name: 'team-cup' },
-  { id: '1457277245851963475', name: 'team-pumpkin' },
-  { id: '1462320570858209331', name: 'team-scarface' },
-  { id: '1457277183407165573', name: 'team-niner' },
-  { id: '1457277206370975785', name: 'team-wolokai' },
-];
+// Team channels get renamed and added/removed with staffing, so the harvest list
+// lives in the DB (Admin › Pings › Conversation sync) rather than in this file.
+function syncChannels() {
+  return query("SELECT channel_id AS id, name FROM conversation_sync_channels WHERE enabled = 1 ORDER BY sort, name");
+}
 
 const RETENTION_DAYS = 90;
 
@@ -18,7 +13,8 @@ export async function syncConversations(client) {
     let totalNew = 0;
     let totalBatches = 0;
 
-    for (const chan of CHANNELS) {
+    const channels = syncChannels();
+    for (const chan of channels) {
       try {
         const channel = await client.channels.fetch(chan.id).catch(e => {
           console.error(`[CONVO_SYNC] Cannot fetch ${chan.name}:`, e.message);
@@ -126,7 +122,7 @@ export async function syncConversations(client) {
     // Clear old summary cache (7+ days old)
     run("DELETE FROM conversation_summaries WHERE created_at < datetime('now', '-7 days')");
 
-    console.log(`[CONVO_SYNC] Complete: ${totalNew} new messages across ${CHANNELS.length} channels, ${totalBatches} API calls`);
+    console.log(`[CONVO_SYNC] Complete: ${totalNew} new messages across ${channels.length} channels, ${totalBatches} API calls`);
   } catch (e) {
     console.error('[CONVO_SYNC] Fatal error:', e.message);
   }

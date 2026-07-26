@@ -17,9 +17,17 @@ import Database from 'better-sqlite3';
 
 const DB_PATH = '/opt/meridian/data/meridian.db';
 
-const ROLE_LEADERSHIP = '1457670376745074730';
-const ROLE_LEADS      = '1457215385139941456';
-const ROLE_ALL_FM     = '1457229857749729363';
+// Target aliases resolve through discord_roles so a role re-ID doesn't silently
+// send DM-created tasks to a dead role.
+function roleId(key) {
+  const d = db();
+  try {
+    return d.prepare("SELECT role_id FROM discord_roles WHERE key = ?").get(key)?.role_id || '';
+  } finally { d.close(); }
+}
+const ROLE_LEADERSHIP = () => roleId('fm_leadership');
+const ROLE_LEADS      = () => roleId('fm_team_lead');
+const ROLE_ALL_FM     = () => roleId('fm_team_guide');
 
 function isAuthorized(discordId) {
   const d = db();
@@ -59,14 +67,14 @@ function getActor(discordId) {
 // ── Task helpers ─────────────────────────────────────────────────────────────
 
 function resolveTarget(raw, actorId, d) {
-  if (!raw) return { id: ROLE_LEADERSHIP, type: 'Role', label: 'FM Leadership' };
+  if (!raw) return { id: ROLE_LEADERSHIP(), type: 'Role', label: 'FM Leadership' };
 
   const r = raw.trim().toLowerCase();
 
   if (r === 'me')                              return { id: actorId,        type: 'User', label: 'yourself'      };
-  if (r === 'leads' || r === 'team leads')     return { id: ROLE_LEADS,     type: 'Role', label: 'Team Leads'    };
-  if (r === 'all'   || r === 'all fm')         return { id: ROLE_ALL_FM,    type: 'Role', label: 'All FM'        };
-  if (r === 'leadership' || r === 'fm leadership') return { id: ROLE_LEADERSHIP, type: 'Role', label: 'FM Leadership' };
+  if (r === 'leads' || r === 'team leads')     return { id: ROLE_LEADS(),   type: 'Role', label: 'Team Leads'    };
+  if (r === 'all'   || r === 'all fm')         return { id: ROLE_ALL_FM(),  type: 'Role', label: 'All FM'        };
+  if (r === 'leadership' || r === 'fm leadership') return { id: ROLE_LEADERSHIP(), type: 'Role', label: 'FM Leadership' };
 
   // Try to match a staff member by name
   const staff = d.prepare(
@@ -84,7 +92,7 @@ function createTask(actor, targetId, targetType, targetLabel, description) {
     const now     = new Date().toISOString();
     const selfAssign = targetType === 'User' && targetId === actor.discord_id;
     // notify_creator: 1 if creator can't see the destination (non-leadership creating leadership task)
-    const notify  = (!selfAssign && targetId === ROLE_LEADERSHIP && actor.clearance < 3) ? 1 : 0;
+    const notify  = (!selfAssign && targetId === ROLE_LEADERSHIP() && actor.clearance < 3) ? 1 : 0;
 
     d.prepare(
       `INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by,
@@ -115,7 +123,7 @@ function listOpenTasks(actorId) {
         AND task_uid NOT IN (SELECT task_uid FROM task_log WHERE action = 'COMPLETED')
       ORDER BY created_at DESC
       LIMIT 10
-    `).all(actorId, actorId, ROLE_LEADERSHIP);
+    `).all(actorId, actorId, ROLE_LEADERSHIP());
     return rows;
   } finally {
     d.close();
@@ -147,9 +155,9 @@ function completeTask(uid, actorId, actorName) {
 
 function labelFor(type, id) {
   if (type === 'Role') {
-    if (id === ROLE_LEADERSHIP) return 'FM Leadership';
-    if (id === ROLE_LEADS)      return 'Team Leads';
-    if (id === ROLE_ALL_FM)     return 'All FM';
+    if (id === ROLE_LEADERSHIP()) return 'FM Leadership';
+    if (id === ROLE_LEADS())      return 'Team Leads';
+    if (id === ROLE_ALL_FM())     return 'All FM';
     return 'Role';
   }
   const d = db();

@@ -14,6 +14,7 @@ import { getFactionNames } from "../../fm/factions/actions.js";
 import QuillEditor from "../../../lib/QuillEditor";
 import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, addStaff, updateStaff, createTeam, renameTeam, deleteTeam, commitAllChanges, getAllStaffCOI, getMeridianFactions, addStaffCOI, removeStaffCOI, getStaffFactions, retireStaff, promoteToLead, takeoverTeam, getDashboardAccessList, grantDashboardAccess, revokeDashboardAccess } from "../../fm/operations/staff/actions.js";
 import { getFMStaffWithLinks, setCharacterLink, getFMHoursForPeriod, saveFMHours, getFMScenesForPeriod, getFMMeetingsForPeriod, postFMReport } from "../../fm/operations/fmhours/actions.js";
+import PingsView from "../../fm/operations/pings/PingsView.js";
 export default function V2AdminPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Admin /></Suspense>;
 }
@@ -53,6 +54,7 @@ function V2Admin() {
         : viewId === "reminders" ? <RecurringReminders auth={auth} />
         : viewId === "docs" ? <DocumentsView auth={auth} />
         : viewId === "channels" ? <FactionChannels />
+        : viewId === "pings" ? <PingsView />
         : viewId === "staff" ? <StaffTeams />
         : viewId === "hours" ? <FMHours />
         : viewId === "dbaccess" ? <DbSiteAccess />

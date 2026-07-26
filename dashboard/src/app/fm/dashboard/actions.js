@@ -1,7 +1,8 @@
 "use server";
 import { query, queryOne, run } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendDiscord, getChannel } from "../../../lib/discord.js";
+import { getChannel, getRole } from "../../../lib/discord.js";
+import { sendPing, pingChannel } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 
 // Returns ALL tasks visible to the current user.
@@ -11,8 +12,8 @@ import { requireActor } from "../../../lib/requireActor.js";
 // Covers: FM Leadership role, Game Affairs role, OR any individual User with rank='Management'.
 function _routesToLeadership(targetType, targetId) {
   if (targetType === 'Role') {
-    const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-    const gameAffairsId = '1457189093594239147';
+    const leadershipRoleId = getRole('fm_leadership');
+    const gameAffairsId = getRole('game_affairs');
     return targetId === leadershipRoleId || targetId === gameAffairsId;
   }
   if (targetType === 'User') {
@@ -22,18 +23,15 @@ function _routesToLeadership(targetType, targetId) {
   return false;
 }
 
-// Returns channel id for where the creator should be pinged for a lifecycle event.
-// If the creator is FM Leadership AND the target routes to leadership, use leadership_channel.
-// Otherwise use global_ping_channel.
-function _creatorPingChannel(createdById, currentTargetType, currentTargetId) {
-  if (!createdById) return null;
+// True when a creator notification should take the confidentiality branch of its
+// route: the creator is Leadership AND the target routes to leadership, so the
+// ping can go to the private channel without hiding it from them.
+function _creatorRoutesAlt(createdById, currentTargetType, currentTargetId) {
+  if (!createdById) return false;
   const staff = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [createdById]);
   const rank = (staff?.rank || '').toLowerCase();
-  const isLeadership = rank.includes('management');
-  if (!isLeadership) return getChannel('global_ping_channel');
-  return _routesToLeadership(currentTargetType, currentTargetId)
-    ? getChannel('leadership_channel')
-    : getChannel('global_ping_channel');
+  if (!rank.includes('management')) return false;
+  return _routesToLeadership(currentTargetType, currentTargetId);
 }
 
 
@@ -137,8 +135,8 @@ export async function claimMyTask(taskUid) {
   logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, 'Claimed');
   if (task && task.created_by_id && task.created_by_id !== actor.id) {
     const _t2 = queryOne("SELECT target_type, target_id FROM tasks WHERE task_uid = ?", [taskUid]);
-    const _ch = _creatorPingChannel(task.created_by_id, _t2?.target_type, _t2?.target_id);
-    if (_ch) await sendDiscord(_ch, '🤚 <@' + task.created_by_id + '> — **' + actor.name + '** claimed a task you assigned.\n📋 https://ecrpfm.com/fm/tasks/' + taskUid);
+    const _alt = _creatorRoutesAlt(task.created_by_id, _t2?.target_type, _t2?.target_id);
+    await sendPing('task.claimed.creator', '🤚 <@' + task.created_by_id + '> — **' + actor.name + '** claimed a task you assigned.\n📋 https://ecrpfm.com/fm/tasks/' + taskUid, { alt: _alt });
   }
   return { ok: true };
 }
@@ -157,8 +155,8 @@ export async function unclaimMyTask(taskUid, note) {
   logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, 'Unclaimed');
   if (task.created_by_id && task.created_by_id !== actor.id) {
     const _t2 = queryOne("SELECT target_type, target_id FROM tasks WHERE task_uid = ?", [taskUid]);
-    const _ch = _creatorPingChannel(task.created_by_id, _t2?.target_type, _t2?.target_id);
-    if (_ch) await sendDiscord(_ch, '↩️ <@' + task.created_by_id + '> — **' + actor.name + '** released a task you assigned — it\'s open again.' + (note ? '\n**Note:** ' + note : '') + '\n📋 https://ecrpfm.com/fm/tasks/' + taskUid);
+    const _alt = _creatorRoutesAlt(task.created_by_id, _t2?.target_type, _t2?.target_id);
+    await sendPing('task.unclaimed.creator', '↩️ <@' + task.created_by_id + '> — **' + actor.name + '** released a task you assigned — it\'s open again.' + (note ? '\n**Note:** ' + note : '') + '\n📋 https://ecrpfm.com/fm/tasks/' + taskUid, { alt: _alt });
   }
   return { ok: true };
 }
@@ -176,12 +174,11 @@ export async function requestTaskInfo(taskUid, question) {
   const insertRes = run("INSERT INTO task_questions (task_uid, asked_by_id, asked_by_name, question, asked_at) VALUES (?, ?, ?, ?, ?)",
     [taskUid, actor.id, actor.name, question.trim(), now]);
 
-  const ch = _creatorPingChannel(task.created_by_id, task.target_type, task.target_id);
-  if (!ch) return { ok: false, error: "Could not determine notification channel" };
+  const alt = _creatorRoutesAlt(task.created_by_id, task.target_type, task.target_id);
   const replyUrl = 'https://ecrpfm.com/fm/tasks/' + taskUid;
   const questionId = insertRes.lastInsertRowid;
   const replyBtn = [{ type: 1, components: [{ type: 2, style: 1, label: 'Reply via Discord', custom_id: `task_info_btn_${questionId}` }] }];
-  await sendDiscord(ch, '❓ <@' + task.created_by_id + '> — **' + actor.name + '** has a question about a task you created:\n> ' + question.trim().replace(/\n/g, '\n> ') + '\n\n📋 ' + replyUrl, null, replyBtn);
+  await sendPing('task.question.asked', '❓ <@' + task.created_by_id + '> — **' + actor.name + '** has a question about a task you created:\n> ' + question.trim().replace(/\n/g, '\n> ') + '\n\n📋 ' + replyUrl, { alt, components: replyBtn });
 
   run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('INFO_REQUEST', ?, ?, ?, ?, ?)",
     [actor.name, taskUid, (task.description || '').substring(0, 200), question.substring(0, 300), now]);
@@ -212,7 +209,7 @@ export async function getTaskByUid(taskUid) {
   } else if (task.target_type === 'Role') {
     const leadershipId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
     if (task.target_id === leadershipId) task.targetLabel = 'FM Leadership';
-    else if (task.target_id === '1457189093594239147') task.targetLabel = 'Game Affairs Management';
+    else if (task.target_id === getRole('game_affairs')) task.targetLabel = 'Game Affairs Management';
     else task.targetLabel = task.target_id;
   } else {
     task.targetLabel = task.target_id;
@@ -244,10 +241,10 @@ export async function answerTaskQuestion(questionId, answer) {
     [answer.trim(), actor.id, actor.name, now, questionId]);
 
   // Ping asker in their visible channel — same routing rule as creator pings.
-  const ch = _creatorPingChannel(q.asked_by_id, task.target_type, task.target_id);
-  if (ch) {
+  if (q.asked_by_id) {
+    const alt = _creatorRoutesAlt(q.asked_by_id, task.target_type, task.target_id);
     const replyUrl = 'https://ecrpfm.com/fm/tasks/' + q.task_uid;
-    await sendDiscord(ch, '💬 <@' + q.asked_by_id + '> — **' + actor.name + '** answered your question:\n> ' + answer.trim().replace(/\n/g, '\n> ') + '\n\n📋 ' + replyUrl);
+    await sendPing('task.question.answered', '💬 <@' + q.asked_by_id + '> — **' + actor.name + '** answered your question:\n> ' + answer.trim().replace(/\n/g, '\n> ') + '\n\n📋 ' + replyUrl, { alt });
   }
 
   run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('INFO_ANSWER', ?, ?, ?, ?, ?)",
@@ -265,8 +262,8 @@ export async function completeMyTask(taskUid, note) {
     [actor.name, taskUid, task?.description || '', new Date().toISOString()]);
   logAudit(actor.id, actor.name, 'DELETE', 'task', null, taskUid, 'Completed');
   if (task && task.created_by_id && task.created_by_id !== actor.id) {
-    const _ch = _creatorPingChannel(task.created_by_id, task.target_type, task.target_id);
-    if (_ch) await sendDiscord(_ch, '✅ <@' + task.created_by_id + '> — **' + actor.name + '** completed a task you created.' + (note ? '\n**Note:** ' + note : ''));
+    const _alt = _creatorRoutesAlt(task.created_by_id, task.target_type, task.target_id);
+    await sendPing('task.completed.creator', '✅ <@' + task.created_by_id + '> — **' + actor.name + '** completed a task you created.' + (note ? '\n**Note:** ' + note : ''), { alt: _alt });
   }
   return { ok: true };
 }
@@ -303,7 +300,7 @@ export async function reassignMyTask(taskUid, newTargetId, newTargetType, note) 
   if (!newTargetId) return { ok: false, error: "Missing target" };
 
   const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsId = '1457189093594239147';
+  const gameAffairsId = getRole('game_affairs');
 
   // L2 escalation guard
   if (actor.level < 3) {
@@ -359,14 +356,13 @@ export async function reassignMyTask(taskUid, newTargetId, newTargetType, note) 
   logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, 'Reassigned to ' + targetLabel);
 
   // Notification
-  const ch = _routesToLeadership(newTargetType, newTargetId) ? getChannel('leadership_channel') : getChannel('global_ping_channel');
   const tag = newTargetType === 'Role' ? '<@&' + newTargetId + '>' : (newTargetType === 'User' ? '<@' + newTargetId + '>' : '@' + targetLabel);
-  await sendDiscord(ch, '📋 **TASK REASSIGNED** | ' + tag + '\n**Reassigned By:** ' + actor.name + '\n**Task:** ' + (task.description || '').substring(0, 200));
+  await sendPing('task.reassigned', '📋 **TASK REASSIGNED** | ' + tag + '\n**Reassigned By:** ' + actor.name + '\n**Task:** ' + (task.description || '').substring(0, 200), { alt: _routesToLeadership(newTargetType, newTargetId) });
 
   // Notify creator if they should now be looped in (notify_creator just (re)computed).
   if (task.created_by_id && task.created_by_id !== actor.id) {
-    const _ch = _creatorPingChannel(task.created_by_id, newTargetType, newTargetId);
-    if (_ch) await sendDiscord(_ch, '🔁 <@' + task.created_by_id + '> — **' + actor.name + '** reassigned a task you created to ' + targetLabel + '.' + (note ? '\n**Note:** ' + note : '') + '\n📋 https://ecrpfm.com/fm/tasks/' + taskUid);
+    const _alt = _creatorRoutesAlt(task.created_by_id, newTargetType, newTargetId);
+    await sendPing('task.reassigned.creator', '🔁 <@' + task.created_by_id + '> — **' + actor.name + '** reassigned a task you created to ' + targetLabel + '.' + (note ? '\n**Note:** ' + note : '') + '\n📋 https://ecrpfm.com/fm/tasks/' + taskUid, { alt: _alt });
   }
 
   return { ok: true };
@@ -386,9 +382,8 @@ export async function createMyTask(data) {
   logAudit(actor.id, actor.name, 'CREATE', 'task', null, data.desc.substring(0,50), 'Personal workspace task');
   const selfAssign = actor.level >= 3 && data.targetType === 'User' && data.targetId === actor.id;
   if (!selfAssign) {
-    const ch = _routesToLeadership(data.targetType, data.targetId) ? getChannel('leadership_channel') : getChannel('global_ping_channel');
     const tag = data.targetType === 'Role' ? '<@&' + data.targetId + '>' : '<@' + data.targetId + '>';
-    await sendDiscord(ch, '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Assigned By:** ' + actor.name);
+    await sendPing('task.assigned', '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Assigned By:** ' + actor.name, { alt: _routesToLeadership(data.targetType, data.targetId) });
   }
   return { ok: true };
 }
@@ -397,13 +392,14 @@ export async function createMyReminder(data) {
   const actor = await requireActor(1, {allowEventTeam: true});
   const uuid = Math.random().toString(36).substring(2, 8);
   const targetTag = data.targetType === 'Role' ? '<@&' + data.targetId + '>' : '<@' + data.targetId + '>';
-  const ch = _routesToLeadership(data.targetType, data.targetId) ? getChannel('leadership_channel') : getChannel('event_announce_channel');
+  const eventAlt = _routesToLeadership(data.targetType, data.targetId);
+  const ch = pingChannel('event.created', { alt: eventAlt, ignoreEnabled: true });
   run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, 'ACTIVE')",
     [uuid, actor.id, ch, data.message, data.epochMs.toString(), new Date(data.epochMs).toISOString(), targetTag]);
   logAudit(actor.id, actor.name, 'CREATE', 'reminder', null, data.message.substring(0,50), '');
   const epoch = Math.floor(data.epochMs / 1000);
   const embeds = [{ title: '📌 ' + (data.eventType || 'Event') + ' Scheduled', description: '**Time:** <t:' + epoch + ':F> (<t:' + epoch + ':R>)' + (data.note ? '\n**Details:** ' + data.note : '') + '\n\n*Via Meridian Dashboard*', color: 0x5865F2 }];
-  await sendDiscord(ch, targetTag, embeds);
+  await sendPing('event.created', targetTag, { alt: eventAlt, embeds });
   return { ok: true };
 }
 
@@ -534,7 +530,7 @@ export async function getAllServerTasks() {
   await requireActor(3);
 
   const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsRoleId = '1457189093594239147';
+  const gameAffairsRoleId = getRole('game_affairs');
   const leadRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_lead'")?.role_id || '';
   const allFmRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_guide'")?.role_id || '';
 
@@ -576,7 +572,7 @@ export async function getMyCreatedTasks() {
   const actor = await requireActor(1);
 
   const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsRoleId = '1457189093594239147';
+  const gameAffairsRoleId = getRole('game_affairs');
   const leadRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_lead'")?.role_id || '';
   const allFmRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_guide'")?.role_id || '';
 
