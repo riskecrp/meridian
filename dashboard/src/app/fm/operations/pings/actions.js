@@ -4,20 +4,10 @@ import { logAudit } from "../../../../lib/audit.js";
 import { requireActor } from "../../../../lib/requireActor.js";
 import { sendDiscord } from "../../../../lib/discord.js";
 import { getDiscordDirectory, resolveChannelIds } from "../../../../lib/discordDirectory.js";
+import { PING_GROUPS } from "./pingGroups.js";
 
 // Ping configuration is L3-only: retargeting a route changes where confidential
 // leadership traffic lands.
-
-export const PING_GROUPS = [
-  { key: 'tasks',        label: 'Tasks',              blurb: 'Assignment, claims, completions and questions.' },
-  { key: 'events',       label: 'Events & Reminders', blurb: 'Scheduled events and reminder firing.' },
-  { key: 'promotions',   label: 'Promotions & Reviews', blurb: 'Tier changes and the monthly review cycle.' },
-  { key: 'rp',           label: 'RP Changes',         blurb: 'NPC, HQ and turf change requests.' },
-  { key: 'forms',        label: 'Form Submissions',   blurb: 'Applications and feedback arriving from external forms.' },
-  { key: 'comms',        label: 'Communications',     blurb: 'Copies of announcements filed in FM channels.' },
-  { key: 'storytelling', label: 'Storytelling',       blurb: 'Change log, scene ideas and scene logs.' },
-  { key: 'records',      label: 'Records & Reports',  blurb: 'Documents, hours reports and the forum feed.' },
-];
 
 export async function getPingConfig() {
   await requireActor(3);
@@ -160,14 +150,18 @@ export async function addSyncChannel(channelId, name) {
 
 export async function setSyncChannelEnabled(channelId, enabled) {
   const actor = await requireActor(3);
+  const row = queryOne("SELECT name FROM conversation_sync_channels WHERE channel_id = ?", [String(channelId || '')]);
+  if (!row) return { ok: false, error: 'That channel is not in the sync list.' };
   run("UPDATE conversation_sync_channels SET enabled = ? WHERE channel_id = ?", [enabled ? 1 : 0, channelId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'conversation_sync', null, channelId, enabled ? 'Enabled' : 'Disabled');
+  logAudit(actor.id, actor.name, 'EDIT', 'conversation_sync', null, row.name || channelId, enabled ? 'Enabled' : 'Disabled');
   return { ok: true };
 }
 
 export async function removeSyncChannel(channelId) {
   const actor = await requireActor(3);
+  const row = queryOne("SELECT name FROM conversation_sync_channels WHERE channel_id = ?", [String(channelId || '')]);
+  if (!row) return { ok: false, error: 'That channel is not in the sync list.' };
   run("DELETE FROM conversation_sync_channels WHERE channel_id = ?", [channelId]);
-  logAudit(actor.id, actor.name, 'DELETE', 'conversation_sync', null, channelId, 'Removed from harvest list');
+  logAudit(actor.id, actor.name, 'DELETE', 'conversation_sync', null, row.name || channelId, 'Removed from harvest list');
   return { ok: true };
 }

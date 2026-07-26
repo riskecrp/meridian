@@ -310,15 +310,33 @@ function SyncChannels({ rows, channels, onSaved, toast }) {
 
 export default function PingsView() {
   const [cfg, setCfg] = useState(null);
+  const [loadError, setLoadError] = useState('');
   const [toastMsg, setToastMsg] = useState(null);
 
-  const load = async () => setCfg(await getPingConfig());
+  // Surface failures rather than sitting on the loading state — a rejected
+  // action would otherwise look like an endless spinner with no clue why.
+  const load = async () => {
+    try {
+      setLoadError('');
+      setCfg(await getPingConfig());
+    } catch (e) {
+      setLoadError(e?.message || 'Could not load ping configuration.');
+    }
+  };
   useEffect(() => { load(); }, []);
 
   const toast = (msg, isError) => {
     setToastMsg({ msg, isError });
     setTimeout(() => setToastMsg(null), isError ? 5000 : 2200);
   };
+
+  if (loadError) return (
+    <div style={{ ...S.warn, background: 'var(--red-bg)', borderColor: 'var(--red)', color: 'var(--red)' }}>
+      <strong>Could not load ping configuration.</strong>
+      <div style={{ marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: 11 }}>{loadError}</div>
+      <button style={{ ...S.btn, marginTop: 10 }} onClick={load}>Retry</button>
+    </div>
+  );
 
   if (!cfg) return <div style={{ color: 'var(--fg-3)', fontSize: 13, padding: '20px 0' }}>Loading ping configuration…</div>;
 
