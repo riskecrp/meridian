@@ -9,6 +9,7 @@ import { checkRecurringReminders } from './recurringReminders.js';
 import { syncConversations } from './conversationSync.js';
 import { startTaskReminder } from './taskReminder.js';
 import { startPromotionReview } from './promotionReview.js';
+import { startFactionFeedback, handleFeedbackButton } from './factionFeedback.js';
 import { handleDM } from './dmHandler.js';
 import { sendPing, pingChannel, getRole } from './lib/pings.js';
 
@@ -80,7 +81,8 @@ client.once(Events.ClientReady, c => {
   startPromotionReview(client);
   startChannelPurge(client);
   startReminderPurge(client);
-  console.log("[SYSTEM] Scheduler + Task Reminders + Promotion Review + Channel Purge + Reminder Purge started.");
+  startFactionFeedback();
+  console.log("[SYSTEM] Scheduler + Task Reminders + Promotion Review + Channel Purge + Reminder Purge + Faction Feedback started.");
   setTimeout(() => syncForumPosts(client).catch(e => console.error("[FORUM_SYNC]", e.message)), 10000);
   setInterval(() => syncForumPosts(client).catch(e => console.error("[FORUM_SYNC]", e.message)), 3600000);
   console.log("[FORUM_SYNC] Scheduled every hour, first run in 10s");
@@ -156,6 +158,9 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   } else if (interaction.isButton()) {
     const { customId } = interaction;
+    // Faction feedback (fbk:*) owns its own permission check — a button press
+    // carries none of a slash command's gating with it.
+    if (await handleFeedbackButton(interaction)) return;
     if (customId === "dismiss") {
       await interaction.update({ content: "✅ **Acknowledged.**", components: [] });
       return;

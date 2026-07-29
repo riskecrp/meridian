@@ -14,6 +14,10 @@ const SECTIONS = [
       { name: "Factions", href: "/fm/factions", eventTeam: true },
       { name: "Teams", href: "/fm/teams" },
       { name: "Scenes", href: "/fm/scenes", eventTeam: true },
+      // L2: the same floor as the three roles that can work an item in Discord
+      // (Team Leads, Leadership, Game Affairs). The section itself has no
+      // minLevel, so this item carries its own.
+      { name: "Faction Feedback", href: "/fm/feedback", level: 2 },
       { name: "Documents", href: "/fm/documents", eventTeam: true },
     ],
   },
