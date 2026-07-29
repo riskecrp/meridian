@@ -1,6 +1,6 @@
 -- Meridian schema — GENERATED from the live DB, do not hand-edit.
 -- Regenerate after migrations: sqlite3 data/meridian.db .schema > schema.sql
--- Generated: 2026-07-18T02:05:22Z
+-- Generated: 2026-07-29T21:27:41Z
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -774,3 +774,70 @@ CREATE TABLE announcement_deliveries (
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_announcement_deliveries_log ON announcement_deliveries(log_id);
+CREATE TABLE _migrations (
+  name       TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE ping_routes (
+  key              TEXT PRIMARY KEY,
+  group_key        TEXT NOT NULL,
+  label            TEXT NOT NULL,
+  description      TEXT NOT NULL DEFAULT '',
+  source_hint      TEXT NOT NULL DEFAULT '',
+  kind             TEXT NOT NULL DEFAULT 'channel',
+  channel_id       TEXT NOT NULL DEFAULT '',
+  alt_channel_id   TEXT NOT NULL DEFAULT '',
+  alt_label        TEXT NOT NULL DEFAULT '',
+  mention_roles    TEXT NOT NULL DEFAULT '[]',
+  dynamic_mentions TEXT NOT NULL DEFAULT '',
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  sort             INTEGER NOT NULL DEFAULT 0,
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_ping_routes_group ON ping_routes(group_key, sort);
+CREATE TABLE conversation_sync_channels (
+  channel_id TEXT PRIMARY KEY,
+  name       TEXT NOT NULL DEFAULT '',
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  sort       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE faction_feedback (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  sheet_row         INTEGER NOT NULL UNIQUE,
+  faction           TEXT    NOT NULL DEFAULT '',
+  character_name    TEXT    NOT NULL DEFAULT '',
+  discord_username  TEXT    NOT NULL DEFAULT '',
+  occurred          TEXT    NOT NULL DEFAULT '',
+  submitted_at      TEXT    NOT NULL DEFAULT '',
+  payload           TEXT    NOT NULL DEFAULT '{}',
+  thread_id         TEXT,
+  ack_message_id    TEXT,
+  -- new -> claimed (the submitter has been contacted) -> completed / cancelled
+  status            TEXT    NOT NULL DEFAULT 'new',
+  claimed_by_id     TEXT,
+  claimed_by_name   TEXT,
+  claimed_at        TEXT,
+  -- When the next nudge is due. Rolled forward on every nudge so an item that
+  -- stays open keeps being chased instead of going quiet after one message.
+  due_at            TEXT,
+  last_reminder_at  TEXT,
+  concluded_by_name TEXT,
+  concluded_at      TEXT,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_faction_feedback_status ON faction_feedback(status);
+CREATE TABLE faction_feedback_state (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  last_row    INTEGER NOT NULL DEFAULT 0,
+  initialized INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE faction_feedback_failures (
+  sheet_row       INTEGER PRIMARY KEY,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  skipped         INTEGER NOT NULL DEFAULT 0,
+  first_failed_at TEXT,
+  last_failed_at  TEXT,
+  last_error      TEXT
+);
