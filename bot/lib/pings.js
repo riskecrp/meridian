@@ -25,6 +25,19 @@ export function pingEnabled(key) {
   return !!route && !!route.enabled;
 }
 
+// The raw snowflakes behind pingMentions, for callers that need to hand Discord
+// an explicit allow-list rather than "any role mention in this message may fire".
+// That distinction matters whenever a message carries text somebody outside FM
+// wrote: a form answer containing <@&…> would otherwise ping for real.
+export function pingRoleIds(key) {
+  const route = getPingRoute(key);
+  if (!route || !route.enabled) return [];
+  try {
+    const ids = JSON.parse(route.mention_roles || '[]');
+    return Array.isArray(ids) ? ids.filter(Boolean).map(String) : [];
+  } catch { return []; }
+}
+
 export function pingMentions(key) {
   const route = getPingRoute(key);
   if (!route || !route.enabled) return '';

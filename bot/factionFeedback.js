@@ -31,7 +31,7 @@
 
 import cron from 'node-cron';
 import { query, queryOne, run } from './lib/db.js';
-import { pingChannel, pingMentions, pingEnabled } from './lib/pings.js';
+import { pingChannel, pingMentions, pingRoleIds, pingEnabled } from './lib/pings.js';
 
 // Responses sheet of the ECRP roleplay feedback form (link-viewable, read as
 // CSV). The same sheet api/notify links to when a submission arrives.
@@ -111,9 +111,27 @@ async function discordFetch(method, path, body) {
 const discordPost = (path, body) => discordFetch('POST', path, body);
 const discordPatch = (path, body) => discordFetch('PATCH', path, body);
 
-// Roles only. Nothing here should ever be able to @everyone or ping a player,
-// and submissions contain text players wrote.
-const ROLE_MENTIONS = { parse: ['roles'] };
+/**
+ * What a message from this module is allowed to ping: the route's three roles by
+ * id, and nothing else.
+ *
+ * An explicit list rather than `parse: ['roles']`, because every message we send
+ * carries text a player typed into the form. "Allow role mentions" would allow
+ * THEIRS too — a submitter who put `<@&…>` in the character-name box would have
+ * the bot ping that role on their behalf, borrowing a reach they don't have
+ * themselves. With ids listed, our pings fire and anything they typed renders as
+ * inert text. (LFM's version allows the broad form; this is a deliberate
+ * difference, not a porting slip.)
+ */
+const allowedMentions = (routeKey) => ({ parse: [], roles: pingRoleIds(routeKey) });
+
+// Nothing a player wrote may ping anything at all.
+const NO_MENTIONS = { parse: [] };
+
+// The form's closing tickbox ("I understand"), not something the player told us.
+// It is the last column, but matched on its text rather than its index so adding
+// a question to the form doesn't start posting it.
+const SKIP_QUESTION = /^this form is for/i;
 
 // ── Small helpers ──────────────────────────────────────────────────────────────
 
@@ -364,7 +382,7 @@ async function postFeedback(header, row, sheetRow) {
       `**When did this occur?** ${col(COL_OCCURRED) || 'not provided'}`,
       `**Submitted:** ${col(COL_TIMESTAMP)}`,
     ].filter(Boolean).join('\n'),
-    allowed_mentions: ROLE_MENTIONS,
+    allowed_mentions: allowedMentions('feedback.new'),
   });
 
   // One section per long-form question, split to fit the message limit. The
@@ -372,12 +390,12 @@ async function postFeedback(header, row, sheetRow) {
   for (let i = FIRST_QUESTION_COL; i < header.length; i++) {
     const question = String(header[i] || '').trim();
     const answer = col(i);
-    if (!question || !answer) continue;
+    if (!question || !answer || SKIP_QUESTION.test(question)) continue;
     const parts = chunks(answer);
     for (let n = 0; n < parts.length; n++) {
       await discordPost(`/channels/${threadId}/messages`, {
         content: (n === 0 ? `​\n**${question}**\n` : '') + parts[n],
-        allowed_mentions: { parse: [] },
+        allowed_mentions: NO_MENTIONS,
       });
     }
   }
@@ -394,7 +412,7 @@ async function postFeedback(header, row, sheetRow) {
       footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed or cancelled.` },
     }],
     components: [ackRow(feedbackId)],
-    allowed_mentions: ROLE_MENTIONS,
+    allowed_mentions: allowedMentions('feedback.new'),
   });
 
   run('UPDATE faction_feedback SET ack_message_id = ? WHERE id = ?', [String(ack.id), feedbackId]);
@@ -435,7 +453,7 @@ async function checkReminders() {
           color: EMBED_COLOR,
         }],
         components: [nudgeRow(item.id)],
-        allowed_mentions: ROLE_MENTIONS,
+        allowed_mentions: allowedMentions('feedback.nudge'),
       });
     } catch (e) {
       // One unreachable thread must not stop the others being chased.
