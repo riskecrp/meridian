@@ -47,7 +47,10 @@ const S = {
 // Buckets for pings that have no channel of their own to sit under.
 const SPECIAL = {
   dm:       { title: 'Sent as a direct message', blurb: 'Goes straight to the person, so there is no channel to choose. You can still switch it off.' },
-  per_item: { title: 'Uses whatever channel the reminder was made in', blurb: 'The destination is picked when the reminder is created, not here. You can still switch these off.' },
+  // Two things land here now: a reminder posts where it was created, and a
+  // feedback nudge posts in that item's own thread. Both take their destination
+  // from the record, so neither has a channel to set here.
+  per_item: { title: 'Posts wherever the item itself lives', blurb: 'The destination comes from the record — the channel a reminder was made in, or the thread a feedback item owns. You can still switch these off.' },
   source:   { title: 'Channels the bot reads', blurb: 'Not a notification — the bot watches this channel. Changing it changes what gets counted.' },
 };
 
