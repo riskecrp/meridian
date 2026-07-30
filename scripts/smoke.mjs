@@ -36,7 +36,7 @@
  * calls client.login() at module level — so it gets the syntax check only.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -181,12 +181,21 @@ say('\n[3/4] Migrations — apply cleanly to a copy of the live database');
 say('\n[4/4] Dashboard — server libs load, compiled build is current');
 {
   const libDir = path.join(DASH, 'src', 'lib');
-  // Only the plain modules. Anything importing next/headers or JSX cannot be
-  // loaded outside a Next request, and pretending otherwise would make this
-  // phase fail for reasons that are not bugs.
-  const NEXT_ONLY = /requireActor|verifySession|useAuth|AuthContext|useDialog|useDraft|QuillEditor|GTAMap|SopLink|backfillPings/;
+  // Only the modules that CAN load outside Next. A browser component or anything
+  // reaching for next/* needs the framework's compiler and request context, and
+  // importing one here fails for a reason that is not a bug.
+  //
+  // Decided by reading each file rather than by a list of names: a list is one
+  // more thing to remember when a file is added, and forgetting shows up as a
+  // false alarm that trains people to ignore this test.
+  const frameworkOnly = (file) => {
+    const src = readFileSync(path.join(libDir, file), 'utf8');
+    return /^\s*["']use client["']/m.test(src)     // browser component
+      || /from\s+["']next\//.test(src)             // next/headers, next/navigation…
+      || /^\s*return\s*\(?\s*</m.test(src);        // returns JSX
+  };
   const libs = existsSync(libDir)
-    ? readdirSync(libDir).filter(f => f.endsWith('.js') && !NEXT_ONLY.test(f)).sort()
+    ? readdirSync(libDir).filter(f => f.endsWith('.js') && !frameworkOnly(f)).sort()
     : [];
   const probe = `
     import path from 'node:path';
