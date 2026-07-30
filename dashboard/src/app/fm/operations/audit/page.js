@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../../../lib/useAuth";
 import { useDialog } from "../../../../lib/useDialog";
-import { getAuditLog, deleteAuditLogEntry } from "../actions";
+import { getAuditLog, deleteAuditLogEntry, getSyncStatus } from "../actions";
 import { st } from "../_shared/styles";
 import OperationsShell from "../_shared/Shell";
 
@@ -12,13 +12,31 @@ export default function AuditPage() {
   const [auditLog, setAuditLog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [auditSearch, setAuditSearch] = useState('');
+  const [jobs, setJobs] = useState([]);
 
   useEffect(() => {
     if (auth.loading || (auth.level < 3 && !auth.isEventTeam)) return;
     refresh();
   }, [auth.loading, auth.level]);
 
-  const refresh = async () => { setLoading(true); setAuditLog(await getAuditLog(200)); setLoading(false); };
+  const refresh = async () => {
+    setLoading(true);
+    const [log, status] = await Promise.all([getAuditLog(200), getSyncStatus()]);
+    setAuditLog(log); setJobs(status); setLoading(false);
+  };
+
+  // A job is judged against its own cadence: no success in three times the
+  // interval it claims to run at means it has stopped, whether or not it ever
+  // reported an error. A silent stall is the failure journald cannot show you.
+  const jobState = (j) => {
+    if (!j.last_ok_at) return { tone: 'var(--red)', dot: '●', text: j.last_error ? 'failing, never succeeded' : 'never run' };
+    const okAgo = (Date.now() - new Date(j.last_ok_at.replace(' ', 'T') + 'Z').getTime()) / 60000;
+    if (j.consecutive_failures > 0) return { tone: 'var(--red)', dot: '●', text: `${j.consecutive_failures} failure${j.consecutive_failures === 1 ? '' : 's'} in a row` };
+    if (j.expected_every_minutes > 0 && okAgo > j.expected_every_minutes * 3) {
+      return { tone: 'var(--amber)', dot: '●', text: `nothing for ${okAgo < 120 ? Math.round(okAgo) + 'm' : Math.round(okAgo / 60) + 'h'}` };
+    }
+    return { tone: 'var(--green)', dot: '●', text: okAgo < 90 ? `${Math.max(0, Math.round(okAgo))}m ago` : `${Math.round(okAgo / 60)}h ago` };
+  };
 
   if (auth.loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
   if (auth.level < 3 && !auth.isEventTeam) return <div className="p-10" style={{color:'var(--red)'}}>Access denied.</div>;
@@ -27,6 +45,37 @@ export default function AuditPage() {
   return (
     <OperationsShell title="Audit Log" docs={[{"title": "Staff Management", "label": "Staff Management Guide", "minLevel": 3}]} authLevel={auth?.level || 3}>
       <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+        {/* Background job health. Sits above the log because this is the page
+            people open when something looks wrong, and a stalled sync is the most
+            likely answer. */}
+        {jobs.length > 0 && (
+          <div className="sec-card" style={{ padding:'10px 14px' }}>
+            <div style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.18em', color:'var(--fg-4)', fontFamily:'var(--font-mono)', marginBottom:8 }}>
+              Background jobs
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', gap:'8px 18px' }}>
+              {jobs.map(j => {
+                const s = jobState(j);
+                return (
+                  <div key={j.job} style={{ display:'flex', alignItems:'baseline', gap:8, minWidth:0 }}>
+                    <span style={{ color:s.tone, fontSize:11 }}>{s.dot}</span>
+                    <div style={{ minWidth:0 }}>
+                      <div style={{ fontSize:12, color:'var(--fg-1)' }}>
+                        {j.label || j.job}{' '}
+                        <span style={{ color:s.tone, fontSize:11 }}>{s.text}</span>
+                      </div>
+                      <div style={{ fontSize:10.5, color:'var(--fg-3)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}
+                        title={j.last_error || j.last_detail}>
+                        {j.last_error || j.last_detail || '—'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.18em', color:'var(--fg-4)', fontFamily:'var(--font-mono)' }}>Last 200 Entries</div>
           <input style={{ ...st.input, maxWidth: 300 }} placeholder="Search actor, action, target..." value={auditSearch} onChange={e => setAuditSearch(e.target.value)} />

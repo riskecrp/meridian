@@ -1,4 +1,5 @@
 import { query, run, queryOne } from './lib/db.js';
+import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 
 // Team channels get renamed and added/removed with staffing, so the harvest list
 // lives in the DB (Admin › Pings › Conversation sync) rather than in this file.
@@ -123,7 +124,9 @@ export async function syncConversations(client) {
     run("DELETE FROM conversation_summaries WHERE created_at < datetime('now', '-7 days')");
 
     console.log(`[CONVO_SYNC] Complete: ${totalNew} new messages across ${channels.length} channels, ${totalBatches} API calls`);
+    recordSyncOk('conversation_sync', `${totalNew} new messages across ${channels.length} channels`);
   } catch (e) {
     console.error('[CONVO_SYNC] Fatal error:', e.message);
+    recordSyncFail('conversation_sync', e);
   }
 }

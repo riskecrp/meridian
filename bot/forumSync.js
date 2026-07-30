@@ -1,4 +1,5 @@
 import { query, run } from './lib/db.js';
+import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import { pingChannel } from './lib/pings.js';
 
 function extractFactionName(message) {
@@ -106,6 +107,7 @@ export async function syncForumPosts(client) {
     }
 
     console.log(`[FORUM_SYNC] Scanned ${total} messages, matched ${matched}`);
+    recordSyncOk('forum_sync', `${total} messages scanned, ${matched} matched to factions`);
     const unmatchedEntries = Object.entries(unmatched).sort((a,b) => b[1] - a[1]);
     if (unmatchedEntries.length > 0) {
       console.log('[FORUM_SYNC] Unmatched names:');
@@ -113,5 +115,6 @@ export async function syncForumPosts(client) {
     }
   } catch (e) {
     console.error('[FORUM_SYNC] Error:', e.message);
+    recordSyncFail('forum_sync', e);
   }
 }

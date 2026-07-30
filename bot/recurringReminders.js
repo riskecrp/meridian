@@ -1,4 +1,5 @@
 import { query, run, queryOne } from './lib/db.js';
+import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import { pingEnabled } from './lib/pings.js';
 
 // Resolves recipients for a definition.
@@ -82,7 +83,10 @@ export async function checkRecurringReminders(client) {
   try {
     const now = new Date();
     const utcHour = now.getUTCHours();
-    if (utcHour < 18) return; // Wait until 18:00 UTC; idempotency handles repeat checks after that.
+    if (utcHour < 18) {
+      recordSyncOk('recurring_reminders', 'checked; holding until 18:00 UTC');
+      return; // idempotency handles repeat checks after that
+    }
 
     const day = now.getUTCDate();
     const month = now.getUTCMonth() + 1;
@@ -93,5 +97,6 @@ export async function checkRecurringReminders(client) {
       try { await fireReminderDefinition(client, def, year, month, false); }
       catch (e) { console.error(`[RECURRING] definition ${def.id} failed:`, e.message); }
     }
-  } catch (e) { console.error('[RECURRING] Outer error:', e.message); }
+    recordSyncOk('recurring_reminders', `${definitions.length} definition(s) due today`);
+  } catch (e) { console.error('[RECURRING] Outer error:', e.message); recordSyncFail('recurring_reminders', e); }
 }

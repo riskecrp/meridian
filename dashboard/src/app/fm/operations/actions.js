@@ -307,6 +307,18 @@ export async function executeRPChange(execId, data) {
 }
 
 // ── AUDIT LOG ──
+/**
+ * Health of the bot's background jobs (bot/lib/syncStatus.js writes it).
+ *
+ * Shown above the audit log because that is where someone lands when something
+ * looks wrong. Before this, a job that stopped working said so only in journald,
+ * so the first sign of a broken sync was stale numbers days later.
+ */
+export async function getSyncStatus() {
+  await requireActor(3, {allowEventTeam: true});
+  return query("SELECT * FROM sync_status ORDER BY label, job");
+}
+
 export async function getAuditLog(limit) {
   await requireActor(3, {allowEventTeam: true});
   return query("SELECT * FROM site_audit_log ORDER BY timestamp DESC LIMIT ?", [limit || 200]);

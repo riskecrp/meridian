@@ -33,6 +33,7 @@ import cron from 'node-cron';
 import { query, queryOne, run } from './lib/db.js';
 import { pingChannel, pingMentions, pingRoleIds, pingEnabled } from './lib/pings.js';
 import { logAudit } from './lib/audit.js';
+import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 
 // Responses sheet of the ECRP roleplay feedback form (link-viewable, read as
 // CSV). The same sheet api/notify links to when a submission arrives.
@@ -254,29 +255,42 @@ async function fetchRows() {
   return parseCsv(text);
 }
 
+// Health is recorded inside this function rather than by the caller, because the
+// interesting outcomes are all early returns: an unreadable sheet returns exactly
+// like a poll with nothing new, and a caller wrapping this in .then() would call
+// that a success.
 async function pollSheet() {
   const rows = await fetchRows();
-  if (!rows || !rows.length) return;
+  if (!rows || !rows.length) {
+    recordSyncFail('feedback_poll', rows ? 'the sheet returned no rows' : 'could not read the response sheet');
+    return;
+  }
   const header = rows[0];
   const data = rows.slice(1);
 
   const state = queryOne('SELECT last_row, initialized FROM faction_feedback_state WHERE id = 1');
-  if (!state) return;
+  if (!state) {
+    recordSyncFail('feedback_poll', 'faction_feedback_state row is missing');
+    return;
+  }
   if (!state.initialized) {
     // First run: everything already in the sheet is history. Those rows predate
     // the feature and would otherwise arrive as a wall of threads, each with its
     // own ping and its own 48-hour nudge cycle.
     run('UPDATE faction_feedback_state SET last_row = ?, initialized = 1 WHERE id = 1', [data.length]);
     console.log(`[FEEDBACK] initialised at row ${data.length}; watching for new submissions`);
+    recordSyncOk('feedback_poll', `initialised at sheet row ${data.length}; no backfill`);
     return;
   }
 
+  let posted = 0;
   for (let idx = state.last_row; idx < data.length; idx++) {
     const row = data[idx];
     const sheetRow = idx + 2;   // 1-based, plus the header
     try {
       if ((row[COL_TEAM] || '').trim() === TEAM_VALUE) {
         await postFeedback(header, row, sheetRow);
+        posted++;
       }
     } catch (e) {
       const attempts = recordFailure(sheetRow, e);
@@ -284,6 +298,10 @@ async function pollSheet() {
         // Probably transient. Stop WITHOUT advancing, so this row is retried next
         // cycle and submissions keep arriving in the order they were sent.
         console.error(`[FEEDBACK] row ${sheetRow} attempt ${attempts}/${MAX_POST_ATTEMPTS} failed, retrying next cycle:`, e.message);
+        // The job itself is working — it read the sheet and is holding position on
+        // purpose. The row's own trouble is recorded in faction_feedback_failures
+        // and shown on the feedback page, so this stays a success with a note.
+        recordSyncOk('feedback_poll', `holding at sheet row ${sheetRow}, attempt ${attempts}/${MAX_POST_ATTEMPTS}`);
         return;
       }
       // Out of retries. Advance past it so everything queued behind it can still
@@ -293,6 +311,7 @@ async function pollSheet() {
     }
     run('UPDATE faction_feedback_state SET last_row = ? WHERE id = 1', [idx + 1]);
   }
+  recordSyncOk('feedback_poll', posted ? `${posted} new submission(s) posted` : 'checked, nothing new');
 }
 
 /**
@@ -423,7 +442,12 @@ async function postFeedback(header, row, sheetRow) {
 // ── Nudges ─────────────────────────────────────────────────────────────────────
 
 async function checkReminders() {
-  if (!pingEnabled('feedback.nudge')) return;
+  if (!pingEnabled('feedback.nudge')) {
+    // Switched off in Discord & Access is a state, not a fault — worth showing as
+    // such, so "why is nothing being chased" has a visible answer.
+    recordSyncOk('feedback_nudge', 'nudges are switched off for this route');
+    return 0;
+  }
 
   const due = query(
     `SELECT id, thread_id, faction, character_name, status FROM faction_feedback
@@ -434,6 +458,7 @@ async function checkReminders() {
     [nowStr()],
   );
 
+  let nudged = 0;
   for (const item of due) {
     try {
       // A thread that auto-archived has to be reopened before it can be posted
@@ -462,7 +487,9 @@ async function checkReminders() {
     // item that stays open keeps being chased on the same cadence.
     run('UPDATE faction_feedback SET last_reminder_at = ?, due_at = ? WHERE id = ?',
       [nowStr(), plusHours(REMINDER_HOURS), item.id]);
+    nudged++;
   }
+  return nudged;
 }
 
 // ── Button handling (called from index.js) ─────────────────────────────────────
@@ -619,16 +646,18 @@ export async function handleFeedbackButton(interaction) {
 
 export function startFactionFeedback() {
   cron.schedule('*/15 * * * *', () => {
-    pollSheet().catch((e) => console.error('[FEEDBACK] poll error:', e.message));
+    pollSheet().catch((e) => { console.error('[FEEDBACK] poll error:', e.message); recordSyncFail('feedback_poll', e); });
   }, { timezone: 'UTC' });
 
   cron.schedule('*/30 * * * *', () => {
-    checkReminders().catch((e) => console.error('[FEEDBACK] reminder error:', e.message));
+    checkReminders()
+      .then((n) => recordSyncOk('feedback_nudge', n ? `${n} item(s) nudged` : 'checked, nothing due'))
+      .catch((e) => { console.error('[FEEDBACK] reminder error:', e.message); recordSyncFail('feedback_nudge', e); });
   }, { timezone: 'UTC' });
 
   // Read the sheet once on boot as well, so a restart picks up anything that
   // arrived while the bot was down instead of waiting out the cron interval.
-  pollSheet().catch((e) => console.error('[FEEDBACK] initial poll error:', e.message));
+  pollSheet().catch((e) => { console.error('[FEEDBACK] initial poll error:', e.message); recordSyncFail('feedback_poll', e); });
 
   console.log(`[FEEDBACK] Faction feedback intake running — sheet every 15m, nudges every ${REMINDER_HOURS}h.`);
 }
