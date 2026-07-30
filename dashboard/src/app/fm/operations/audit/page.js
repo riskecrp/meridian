@@ -5,6 +5,7 @@ import { useDialog } from "../../../../lib/useDialog";
 import { getAuditLog, deleteAuditLogEntry, getSyncStatus } from "../actions";
 import { st } from "../_shared/styles";
 import OperationsShell from "../_shared/Shell";
+import TableSkeleton from "../../../../lib/TableSkeleton";
 
 export default function AuditPage() {
   const auth = useAuth();
@@ -40,7 +41,7 @@ export default function AuditPage() {
 
   if (auth.loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
   if (auth.level < 3 && !auth.isEventTeam) return <div className="p-10" style={{color:'var(--red)'}}>Access denied.</div>;
-  if (loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
+  if (loading) return <TableSkeleton cols={['1fr','0.7fr','0.7fr','1.4fr','0.8fr','0.3fr']} rows={8} />;
 
   return (
     <OperationsShell title="Audit Log" docs={[{"title": "Staff Management", "label": "Staff Management Guide", "minLevel": 3}]} authLevel={auth?.level || 3}>

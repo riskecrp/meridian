@@ -6,6 +6,7 @@ import { useDialog } from "../../../lib/useDialog";
 import { getFactions, addFaction, completePromotion } from "./actions";
 import { s, tierColor } from "./_shared/styles";
 import RowMenu from "./_shared/RowMenu";
+import TableSkeleton from "../../../lib/TableSkeleton";
 
 const th = { padding: "9px 12px", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--fg-4)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", userSelect: "none", cursor: "pointer", borderBottom: "1px solid var(--border)" };
 const td = { padding: "10px 12px", fontSize: 13, color: "var(--fg-2)", whiteSpace: "nowrap", borderBottom: "1px solid var(--border)" };
@@ -72,7 +73,7 @@ export default function FactionsPage() {
     return f[key] ?? 0; // tier, scenes30d, allTime, forumPosts
   };
 
-  if (auth.loading || loading) return <div className="p-10 text-sm animate-pulse" style={{ color: "var(--accent)" }}>Loading factions...</div>;
+  if (auth.loading || loading) return <TableSkeleton cols={['1.4fr','0.5fr','1fr','1fr','0.8fr']} rows={8} />;
 
   const filtered = factions.filter((f) => f.name.toLowerCase().includes(search.toLowerCase()) || f.leadName.toLowerCase().includes(search.toLowerCase()) || f.guidesText.toLowerCase().includes(search.toLowerCase()));
   const sorted = [...filtered].sort((a, b) => {

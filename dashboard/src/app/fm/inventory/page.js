@@ -4,14 +4,10 @@ import { useDialog } from "../../../lib/useDialog";
 import { useAuth } from "../../../lib/useAuth";
 import { getInventory, addInventoryItem, updateStock, deleteInventoryItem, getDistributionStats } from "./actions";
 import SopLink from "../../../lib/SopLink";
+import { ui } from "../../../lib/ui.js";
 
 const st = {
-  btn: { background:'var(--accent)',color:'white',border:'none',padding:'8px 16px',borderRadius:8,fontSize:11,fontWeight:800,cursor:'pointer',textTransform:'uppercase',letterSpacing:'0.1em' },
-  btnGhost: { background:'transparent',color:'var(--fg-3)',border:'1px solid var(--border)',padding:'6px 14px',borderRadius:8,fontSize:10,fontWeight:700,cursor:'pointer',textTransform:'uppercase' },
-  input: { width:'100%',background:'var(--bg-2)',border:'1px solid var(--border)',borderRadius:8,padding:'10px 14px',fontSize:13,color:'var(--fg-0)',outline:'none' },
-  label: { fontSize:10,fontWeight:700,color:'var(--fg-4)',textTransform:'uppercase',letterSpacing:'0.12em',marginBottom:4 },
-  modal: { position:'fixed',inset:0,zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:24 },
-  modalBg: { position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',backdropFilter:'blur(8px)' },
+  ...ui,
 };
 
 export default function InventoryPage() {

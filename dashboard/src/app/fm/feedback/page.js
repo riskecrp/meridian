@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "../../../lib/useAuth";
 import { getFeedbackList, getFeedbackFailures } from "./actions";
+import { ui } from "../../../lib/ui.js";
 
 // Player feedback about FM factions, taken from the roleplay feedback form. The
 // bot opens a thread per submission in #fm-feedback and the outcome is worked
@@ -21,10 +22,10 @@ const STATUS_META = {
 const FILTERS = ["new", "claimed", "completed", "cancelled"];
 
 const st = {
+  ...ui,
   chip: { background:'transparent', color:'var(--fg-3)', border:'1px solid var(--border)', padding:'6px 14px', borderRadius:999, fontSize:10, fontWeight:700, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.1em' },
   chipOn: { borderColor:'var(--accent)', color:'var(--accent)' },
   link: { color:'var(--accent)', fontSize:11, fontWeight:700, textDecoration:'none', whiteSpace:'nowrap' },
-  input: { width:'100%', background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:8, padding:'8px 12px', fontSize:12, color:'var(--fg-0)', outline:'none' },
 };
 
 export default function FeedbackPage() {
@@ -114,9 +115,13 @@ export default function FeedbackPage() {
               </tr>
             </thead>
             <tbody>
-              {loading && (
-                <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--fg-4)', padding:24 }}>Loading...</td></tr>
-              )}
+              {loading && Array.from({ length: 5 }, (_, r) => (
+                <tr key={`sk${r}`}>
+                  {Array.from({ length: 7 }, (_, c) => (
+                    <td key={c}><span className="sk-bar" style={{ height:9, borderRadius:3, width:`${[80,60,70,55,75,50,40][c]}%` }} /></td>
+                  ))}
+                </tr>
+              ))}
               {!loading && shown.map(r => {
                 const meta = STATUS_META[r.status] || STATUS_META.new;
                 return (

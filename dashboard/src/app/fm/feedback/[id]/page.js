@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useAuth } from "../../../../lib/useAuth";
 import { getFeedbackItem, getFeedbackDiscussion } from "../actions";
+import { ui } from "../../../../lib/ui.js";
 
 // One submission: what the player wrote, and what the team said about it in the
 // thread. The thread half is fetched live from Discord rather than mirrored —
@@ -23,6 +24,7 @@ const DISCORD_HOSTS = ["cdn.discordapp.com", "media.discordapp.net"];
 const URL_RE = /https?:\/\/[^\s<>"')]+/g;
 
 const st = {
+  ...ui,
   card: { padding:'16px 18px' },
   h3: { margin:'0 0 6px', fontSize:13, fontWeight:800, textTransform:'uppercase', letterSpacing:'0.12em', color:'var(--fg-3)' },
   question: { fontWeight:700, fontSize:13, color:'var(--fg-0)' },
@@ -31,7 +33,6 @@ const st = {
   note: { fontSize:11, color:'var(--fg-4)' },
   img: { maxHeight:240, maxWidth:'100%', borderRadius:6, border:'1px solid var(--border)', margin:'8px 0', display:'block' },
   meta: { fontSize:11, color:'var(--fg-4)', fontFamily:'var(--font-mono)' },
-  btn: { background:'transparent', color:'var(--fg-3)', border:'1px solid var(--border)', padding:'6px 14px', borderRadius:8, fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', textDecoration:'none' },
 };
 
 /** A media link that falls back to a plain link if the image won't load. */
@@ -146,9 +147,9 @@ export default function FeedbackDetailPage() {
             <div className="page-hdr-sub">{parts.join(' · ')}</div>
           </div>
           <div style={{ display:'flex', gap:8, marginTop:4 }}>
-            <Link href="/fm/feedback" style={st.btn}>← All feedback</Link>
+            <Link href="/fm/feedback" style={st.btnGhost}>← All feedback</Link>
             {item.thread_id && (
-              <a href={`https://discord.com/channels/${GUILD_ID}/${item.thread_id}`} target="_blank" rel="noopener noreferrer" style={st.btn}>
+              <a href={`https://discord.com/channels/${GUILD_ID}/${item.thread_id}`} target="_blank" rel="noopener noreferrer" style={st.btnGhost}>
                 Open thread ↗
               </a>
             )}

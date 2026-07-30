@@ -10,69 +10,69 @@ const SECTIONS = [
   {
     label: "Overview",
     items: [
-      { name: "Dashboard", href: "/fm/dashboard", eventTeam: true },
-      { name: "Factions", href: "/fm/factions", eventTeam: true },
-      { name: "Teams", href: "/fm/teams" },
-      { name: "Scenes", href: "/fm/scenes", eventTeam: true },
+      { name: "Dashboard", href: "/fm/dashboard", blurb: "Everything needing attention right now", eventTeam: true },
+      { name: "Factions", href: "/fm/factions", blurb: "Every faction, tier and current standing", eventTeam: true },
+      { name: "Teams", href: "/fm/teams", blurb: "Team rosters and their assigned factions" },
+      { name: "Scenes", href: "/fm/scenes", blurb: "Scene logs and rewards handed out", eventTeam: true },
       // L2: the same floor as the three roles that can work an item in Discord
       // (Team Leads, Leadership, Game Affairs). The section itself has no
       // minLevel, so this item carries its own.
-      { name: "Faction Feedback", href: "/fm/feedback", level: 2 },
-      { name: "Documents", href: "/fm/documents", eventTeam: true },
+      { name: "Faction Feedback", href: "/fm/feedback", blurb: "Player feedback from the roleplay form", level: 2 },
+      { name: "Documents", href: "/fm/documents", blurb: "Written guidance and reference docs", eventTeam: true },
     ],
   },
   {
     label: "Communications",
     items: [
-      { name: "Announcements",    href: "/fm/communications" },
-      { name: "IC Communication", href: "/fm/communications/ic" },
-      { name: "Meeting Notes",    href: "/fm/leadership/notes" },
-      { name: "IC Contacts",      href: "/fm/leadership/contacts", level: 3 },
+      { name: "Announcements",    href: "/fm/communications", blurb: "Announcements out to faction Discords" },
+      { name: "IC Communication", href: "/fm/communications/ic", blurb: "In-character memos to factions" },
+      { name: "Meeting Notes",    href: "/fm/leadership/notes", blurb: "Minutes from leadership meetings" },
+      { name: "IC Contacts",      href: "/fm/leadership/contacts", blurb: "In-character contact details", level: 3 },
     ],
   },
   {
     label: "Leadership",
     minLevel: 2,
     items: [
-      { name: "Reviews", href: "/fm/leadership/reviews" },
-      { name: "Performance", href: "/fm/leadership/performance" },
+      { name: "Reviews", href: "/fm/leadership/reviews", blurb: "Monthly faction review rounds" },
+      { name: "Performance", href: "/fm/leadership/performance", blurb: "How the staff team is tracking" },
     ],
   },
   {
     label: "Storytelling",
     items: [
-      { name: "Knowledge Base", href: "/fm/storytelling/kb", eventTeam: true },
-      { name: "Scene Library", href: "/fm/storytelling/library", eventTeam: true },
-      { name: "Arsenal", href: "/fm/storytelling/loadouts", eventTeam: true },
-      { name: "Change Log", href: "/fm/storytelling/changelog", eventTeam: true },
-      { name: "NPC Ecosystem", href: "/fm/storytelling/network", level: 2, eventTeam: true, lst: true },
+      { name: "Knowledge Base", href: "/fm/storytelling/kb", blurb: "Lore and setting reference", eventTeam: true },
+      { name: "Scene Library", href: "/fm/storytelling/library", blurb: "Reusable scene ideas and write-ups", eventTeam: true },
+      { name: "Arsenal", href: "/fm/storytelling/loadouts", blurb: "Weapon and gear sets for scenes", eventTeam: true },
+      { name: "Change Log", href: "/fm/storytelling/changelog", blurb: "What changed in the world, and when", eventTeam: true },
+      { name: "NPC Ecosystem", href: "/fm/storytelling/network", blurb: "NPCs, turf and who controls what", level: 2, eventTeam: true, lst: true },
     ],
   },
   {
     label: "Handover",
     minLevel: 3,
     items: [
-      { name: "Server Handover", href: "/fm/handover" },
+      { name: "Server Handover", href: "/fm/handover", blurb: "Shift handover between staff" },
     ],
   },
   {
     label: "Operations",
     minLevel: 3,
     items: [
-      { name: "Inventory", href: "/fm/inventory", minView: 2, lst: true },
-      { name: "Properties", href: "/fm/operations/properties", eventTeam: true, minView: 2, lst: true },
-      { name: "Imports", href: "/fm/operations/imports", eventTeam: true, minView: 2, lst: true },
-      { name: "Fleet", href: "/fm/operations/fleet" },
-      { name: "Vehicle Catalog", href: "/fm/operations/vehicles", eventTeam: true, minView: 2, lst: true },
-      { name: "Conversations", href: "/fm/operations/conversations" },
-      { name: "Archive", href: "/fm/operations/archive" },
-      { name: "Audit Log", href: "/fm/operations/audit", eventTeam: true },
-      { name: "Recurring Reminders", href: "/fm/operations/reminders", level: 2 },
-      { name: "Important Links", href: "/fm/operations/links" },
-      { name: "Staff", href: "/fm/operations/staff" },
-      { name: "Discord & Access", href: "/fm/operations/discord" },
-      { name: "Member Log",  href: "/fm/operations/memberlog",  userId: "738214924760907907" },
-      { name: "FM Hours",    href: "/fm/operations/fmhours",    userId: "738214924760907907" },
+      { name: "Inventory", href: "/fm/inventory", blurb: "Stock held for scenes and rewards", minView: 2, lst: true },
+      { name: "Properties", href: "/fm/operations/properties", blurb: "Faction HQs and confiscated property", eventTeam: true, minView: 2, lst: true },
+      { name: "Imports", href: "/fm/operations/imports", blurb: "What each faction may import", eventTeam: true, minView: 2, lst: true },
+      { name: "Fleet", href: "/fm/operations/fleet", blurb: "Faction vehicles on the books" },
+      { name: "Vehicle Catalog", href: "/fm/operations/vehicles", blurb: "Catalogue of vehicles by tier", eventTeam: true, minView: 2, lst: true },
+      { name: "Conversations", href: "/fm/operations/conversations", blurb: "Harvested team channel history" },
+      { name: "Archive", href: "/fm/operations/archive", blurb: "Retired factions and old records" },
+      { name: "Audit Log", href: "/fm/operations/audit", blurb: "Who changed what, site and bot", eventTeam: true },
+      { name: "Recurring Reminders", href: "/fm/operations/reminders", blurb: "Reminders that repeat on a schedule", level: 2 },
+      { name: "Important Links", href: "/fm/operations/links", blurb: "Shortcuts staff need often" },
+      { name: "Staff", href: "/fm/operations/staff", blurb: "Staff records, ranks and clearance" },
+      { name: "Discord & Access", href: "/fm/operations/discord", blurb: "Pings, bot servers and who can log in" },
+      { name: "Member Log",  href: "/fm/operations/memberlog", blurb: "Joins and leaves across the server",  userId: "738214924760907907" },
+      { name: "FM Hours",    href: "/fm/operations/fmhours", blurb: "Staff activity totals",    userId: "738214924760907907" },
       { name: "Staff Mgmt View", href: "/api/auth/verify-impersonate", userId: "738214924760907907", external: true },
     ],
   },
@@ -157,6 +157,10 @@ function SidebarInner({ mobile, setMobile, theme, toggleTheme, auth }) {
                   rel={item.external ? "noopener noreferrer" : undefined}
                   onClick={() => setMobile(false)}
                   className={active ? "nav-active" : ""}
+                  // On hover rather than inline: thirty blurbs would double the
+                  // rail's height for people who already know their own sidebar,
+                  // while the ones who need it are new staff hovering to find out.
+                  title={item.blurb || undefined}
                   style={{
                     display: "flex",
                     alignItems: "center",

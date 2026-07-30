@@ -5,15 +5,10 @@ import { useDialog } from "../../../../lib/useDialog";
 import StorytellingShell from "../_shared/Shell";
 import { getSceneLibrary, addSceneLibraryEntry, editSceneLibraryEntry, deleteSceneLibraryEntry, getSceneLibraryFeedback, addSceneLibraryFeedback } from "../actions";
 import { getFactionNames, getInventoryForScene, getStaffForScene, submitScene } from "../../scenes/actions";
+import { ui } from "../../../../lib/ui.js";
 
 const st = {
-  btn:      { background:'var(--accent)', color:'white', border:'none', padding:'8px 16px', borderRadius:8, fontSize:11, fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.1em' },
-  btnGhost: { background:'transparent', color:'var(--fg-3)', border:'1px solid var(--border)', padding:'6px 14px', borderRadius:8, fontSize:10, fontWeight:700, cursor:'pointer', textTransform:'uppercase' },
-  btnSm:    { background:'none', border:'none', cursor:'pointer', fontSize:10, fontWeight:700, padding:'2px 6px', textTransform:'uppercase', letterSpacing:'0.06em' },
-  input:    { width:'100%', background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:8, padding:'10px 14px', fontSize:13, color:'var(--fg-0)', outline:'none' },
-  label:    { fontSize:10, fontWeight:700, color:'var(--fg-4)', textTransform:'uppercase', letterSpacing:'0.12em', marginBottom:4, display:'block' },
-  modal:    { position:'fixed', inset:0, zIndex:50, display:'flex', alignItems:'center', justifyContent:'center', padding:24 },
-  modalBg:  { position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', backdropFilter:'blur(8px)' },
+  ...ui,
   chip:     (active) => ({ padding:'4px 12px', borderRadius:20, fontSize:10, fontWeight:700, cursor:'pointer', border:'1px solid', textTransform:'uppercase', letterSpacing:'0.08em',
     background: active ? 'rgba(192,132,252,0.18)' : 'transparent',
     color: active ? 'var(--storytelling)' : 'var(--fg-4)',

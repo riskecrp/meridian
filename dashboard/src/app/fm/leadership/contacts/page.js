@@ -4,6 +4,7 @@ import { useAuth } from "../../../../lib/useAuth";
 import LeadershipShell from "../_shared/Shell";
 import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../teams/actions";
 import RpChangeForm from "../../teams/RpChangeForm";
+import { ui } from "../../../../lib/ui.js";
 
 const STATUS_META = {
   pending_discussion: { label: 'Pending Discussion', color: 'var(--amber)', bg: 'var(--amber-bg)' },
@@ -12,9 +13,7 @@ const STATUS_META = {
 };
 
 const st = {
-  btn:      { background:'var(--accent)', color:'white', border:'none', padding:'7px 14px', borderRadius:8, fontSize:11, fontWeight:800, cursor:'pointer', textTransform:'uppercase', letterSpacing:'0.08em' },
-  btnGhost: { background:'transparent', color:'var(--fg-3)', border:'1px solid var(--border)', padding:'5px 11px', borderRadius:7, fontSize:10, fontWeight:700, cursor:'pointer' },
-  input:    { background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:8, padding:'8px 12px', fontSize:12, color:'var(--fg-0)', outline:'none', width:'100%' },
+  ...ui,
 };
 
 function ThreadMessages({ threadId }) {
