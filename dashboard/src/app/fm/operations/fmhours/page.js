@@ -420,6 +420,16 @@ export default function FMHoursPage() {
         <h1 style={{ fontSize: 22, fontWeight: 800, color: "var(--fg-0)", letterSpacing: "-0.02em", marginBottom: 4 }}>FM Hours & Activity</h1>
         <p style={{ fontSize: 12, color: "var(--fg-4)" }}>Monthly activity tracking for Faction Management — visible only to you</p>
       </div>
+      {/* Two ends of one job: the report is built here, and this opens the
+          read-only view that gets sent out. It used to be a separate sidebar
+          entry, which made them look like unrelated pages. The route re-checks
+          the session itself, so this only ever works for the owner. */}
+      {auth?.id === RISK_ID && (
+        <a href="/api/auth/verify-impersonate" target="_blank" rel="noopener noreferrer"
+          style={{ ...s.ghost, alignSelf: "flex-start", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          Open the view that gets sent out ↗
+        </a>
+      )}
       <div style={{ display: "flex", borderBottom: "1px solid var(--border)" }}>
         {tabs.map(t => <button key={t.id} style={s.tab(tab === t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}
       </div>

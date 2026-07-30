@@ -14,10 +14,6 @@ const SECTIONS = [
       { name: "Factions", href: "/fm/factions", blurb: "Every faction, tier and current standing", eventTeam: true },
       { name: "Teams", href: "/fm/teams", blurb: "Team rosters and their assigned factions" },
       { name: "Scenes", href: "/fm/scenes", blurb: "Scene logs and rewards handed out", eventTeam: true },
-      // L2: the same floor as the three roles that can work an item in Discord
-      // (Team Leads, Leadership, Game Affairs). The section itself has no
-      // minLevel, so this item carries its own.
-      { name: "Faction Feedback", href: "/fm/feedback", blurb: "Player feedback from the roleplay form", level: 2 },
       { name: "Documents", href: "/fm/documents", blurb: "Written guidance and reference docs", eventTeam: true },
     ],
   },
@@ -36,6 +32,9 @@ const SECTIONS = [
     items: [
       { name: "Reviews", href: "/fm/leadership/reviews", blurb: "Monthly faction review rounds" },
       { name: "Performance", href: "/fm/leadership/performance", blurb: "How the staff team is tracking" },
+      // Section minLevel 2 already matches the three roles that work feedback in
+      // Discord (Team Leads, Leadership, Game Affairs), so no per-item level.
+      { name: "Faction Feedback", href: "/fm/feedback", blurb: "Player feedback from the roleplay form" },
     ],
   },
   {
@@ -46,13 +45,6 @@ const SECTIONS = [
       { name: "Arsenal", href: "/fm/storytelling/loadouts", blurb: "Weapon and gear sets for scenes", eventTeam: true },
       { name: "Change Log", href: "/fm/storytelling/changelog", blurb: "What changed in the world, and when", eventTeam: true },
       { name: "NPC Ecosystem", href: "/fm/storytelling/network", blurb: "NPCs, turf and who controls what", level: 2, eventTeam: true, lst: true },
-    ],
-  },
-  {
-    label: "Handover",
-    minLevel: 3,
-    items: [
-      { name: "Server Handover", href: "/fm/handover", blurb: "Shift handover between staff" },
     ],
   },
   {
@@ -72,8 +64,17 @@ const SECTIONS = [
       { name: "Staff", href: "/fm/operations/staff", blurb: "Staff records, ranks and clearance" },
       { name: "Discord & Access", href: "/fm/operations/discord", blurb: "Pings, bot servers and who can log in" },
       { name: "Member Log",  href: "/fm/operations/memberlog", blurb: "Joins and leaves across the server",  userId: "738214924760907907" },
-      { name: "FM Hours",    href: "/fm/operations/fmhours", blurb: "Staff activity totals",    userId: "738214924760907907" },
-      { name: "Staff Mgmt View", href: "/api/auth/verify-impersonate", userId: "738214924760907907", external: true },
+      // FM Hours is where the report is built; the view that gets sent out is a
+      // link on that page rather than a second nav entry, since they are two ends
+      // of one job.
+      { name: "FM Hours", href: "/fm/operations/fmhours", blurb: "Build and send the staff activity report", userId: "738214924760907907" },
+    ],
+  },
+  {
+    label: "Handover",
+    minLevel: 3,
+    items: [
+      { name: "Server Handover", href: "/fm/handover", blurb: "Shift handover between staff" },
     ],
   },
 ];
