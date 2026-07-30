@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { visibleAdminGroups, ADMIN_TAB_ALIASES } from "../adminNav.js";
 import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction } from "../../fm/operations/actions.js";
-import { getInventory, addInventoryItem, updateStock, deleteInventoryItem, getDistributionStats } from "../../fm/inventory/actions.js";
+import { getInventory, addInventoryItem, deleteInventoryItem, getDistributionStats } from "../../fm/inventory/actions.js";
 import { getLinks, saveLinks, publishLinks } from "../../fm/operations/links/actions.js";
 import { listCatalog, createCatalogEntry, updateCatalogEntry, deleteCatalogEntry, listFactionsForAdd, addCatalogVehicleToFaction } from "../../fm/operations/vehicles/actions.js";
 import { getGlobalImports, addImportItem, editImportItem, deleteImportItem, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../fm/operations/actions.js";
@@ -154,27 +154,21 @@ function Inventory({ auth }) {
   const load = () => getInventory().then(i => { setItems(i || []); setLoading(false); });
   useEffect(() => { Promise.all([getInventory(), isL3 ? getDistributionStats() : Promise.resolve({})]).then(([i, s]) => { setItems(i || []); setStats(s || {}); setLoading(false); }); }, []);
   if (loading) return <div className="empty">Loading…</div>;
-  const critical = items.filter(i => i.current_stock <= i.threshold && i.purchaseable === 0);
   const cats = items.reduce((a, i) => { (a[i.category] = a[i.category] || []).push(i); return a; }, {});
-  const adjust = async (i) => { const v = window.prompt(`Set stock for ${i.name}:`, i.current_stock); if (v !== null && !isNaN(parseInt(v))) { await updateStock(i.id, parseInt(v)); load(); } };
-  const saveAdd = async () => { if (!add.name.trim()) return; await addInventoryItem({ name: add.name, category: add.category, stock: parseInt(add.stock) || 0, threshold: parseInt(add.threshold) || 0, purchaseable: add.purchaseable }); setAdd(null); load(); };
+  const remove = async (i) => { if (window.confirm(`Remove "${i.name}" from the item list?`)) { await deleteInventoryItem(i.id); load(); } };
+  const saveAdd = async () => { if (!add.name.trim()) return; await addInventoryItem({ name: add.name, category: add.category }); setAdd(null); load(); };
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
-        {isL3 && <div className="sub-tabs" style={{ padding: 0 }}><button className={`tab${tab === "stock" ? " on" : ""}`} onClick={() => setTab("stock")}>Stock</button><button className={`tab${tab === "analytics" ? " on" : ""}`} onClick={() => setTab("analytics")}>Analytics</button></div>}
+        {isL3 && <div className="sub-tabs" style={{ padding: 0 }}><button className={`tab${tab === "stock" ? " on" : ""}`} onClick={() => setTab("stock")}>Items</button><button className={`tab${tab === "analytics" ? " on" : ""}`} onClick={() => setTab("analytics")}>Given out</button></div>}
         <span style={{ flex: 1 }} />
-        {isL3 && <button className="btn" onClick={() => setAdd({ name: "", category: "", stock: "", threshold: "", purchaseable: true })}>Register +</button>}
+        {isL3 && <button className="btn" onClick={() => setAdd({ name: "", category: "" })}>Add item +</button>}
       </div>
       {tab === "stock" ? <>
-        {critical.length > 0 && <div className="card"><div className="hd"><div className="t" style={{ color: "var(--rose)" }}>Active shortages</div><div className="meta">{critical.length}</div></div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 6, paddingTop: 8 }}>
-            {critical.map(i => <div key={i.id} onClick={() => isL3 && adjust(i)} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, background: "var(--rose-bg)", cursor: isL3 ? "pointer" : "default" }}><span style={{ fontSize: 11, fontWeight: 700, color: "var(--rose)" }}>{i.name}</span><span style={{ fontFamily: "var(--v2-mono)", fontWeight: 700, color: "var(--rose)" }}>{i.current_stock}</span></div>)}
-          </div>
-        </div>}
         {Object.entries(cats).sort((a, b) => a[0].localeCompare(b[0])).map(([cat, list]) => (
           <div className="card" key={cat}><div className="hd"><div className="t">{cat}</div><div className="meta">{list.length}</div></div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 6, paddingTop: 6 }}>
-              {list.map(i => <div key={i.id} onClick={() => isL3 && adjust(i)} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, background: "var(--panel-2)", cursor: isL3 ? "pointer" : "default" }}><span style={{ fontSize: 11, fontWeight: 600, color: (i.current_stock <= i.threshold && i.purchaseable === 0) ? "var(--rose)" : "var(--ink-1)" }}>{i.name}</span><span style={{ fontFamily: "var(--v2-mono)", color: "var(--good)" }}>{i.current_stock}</span></div>)}
+              {list.map(i => <div key={i.id} style={{ display: "flex", justifyContent: "space-between", gap: 6, padding: "8px 10px", borderRadius: 8, background: "var(--panel-2)" }}><span style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-1)" }}>{i.name}</span>{isL3 && <button onClick={() => remove(i)} title={`Remove ${i.name}`} style={{ background: "none", border: 0, cursor: "pointer", color: "var(--ink-3)", fontSize: 11, padding: 0 }}>✕</button>}</div>)}
             </div>
           </div>
         ))}
@@ -194,12 +188,10 @@ function Inventory({ auth }) {
         <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setAdd(null)} />
           <div style={{ position: "relative", width: "100%", maxWidth: 460, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
-            <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>Register item</div>
+            <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>Add item</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <input className="filter-inp" placeholder="Name" value={add.name} onChange={e => setAdd({ ...add, name: e.target.value })} />
               <input className="filter-inp" placeholder="Category" value={add.category} onChange={e => setAdd({ ...add, category: e.target.value })} />
-              <div style={{ display: "flex", gap: 6 }}><input className="filter-inp" placeholder="Starting stock" value={add.stock} onChange={e => setAdd({ ...add, stock: e.target.value })} /><input className="filter-inp" placeholder="Threshold" value={add.threshold} onChange={e => setAdd({ ...add, threshold: e.target.value })} /></div>
-              <label style={{ fontSize: 12.5, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={add.purchaseable} onChange={e => setAdd({ ...add, purchaseable: e.target.checked })} /> Purchasable in-store</label>
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}><button className="act" onClick={() => setAdd(null)}>Cancel</button><button className="act primary" disabled={!add.name.trim()} onClick={saveAdd}>Save</button></div>
           </div>

@@ -51,7 +51,7 @@ const SECTIONS = [
     label: "Operations",
     minLevel: 3,
     items: [
-      { name: "Inventory", href: "/fm/inventory", blurb: "Stock held for scenes and rewards", minView: 2, lst: true },
+      { name: "Scene Items", href: "/fm/inventory", blurb: "Items offered on the scene form, and what has been given out", minView: 2, lst: true },
       { name: "Properties", href: "/fm/operations/properties", blurb: "Faction HQs and confiscated property", eventTeam: true, minView: 2, lst: true },
       { name: "Imports", href: "/fm/operations/imports", blurb: "What each faction may import", eventTeam: true, minView: 2, lst: true },
       { name: "Fleet", href: "/fm/operations/fleet", blurb: "Faction vehicles on the books" },

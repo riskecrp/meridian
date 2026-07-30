@@ -23,7 +23,11 @@ export async function getFactionNames() {
 
 export async function getInventoryForScene() {
   await requireActor(1, {allowEventTeam: true});
-  return query("SELECT id, name, category, current_stock FROM inventory_stock WHERE current_stock > 0 ORDER BY category, name");
+  // Every item in the catalogue, whatever it is. This used to filter on
+  // current_stock > 0; with stock counts retired that test would hide the whole
+  // list. What is handed out is still recorded — see the inventory_logs write in
+  // submitScene — it is only the running total that has gone.
+  return query("SELECT id, name, category FROM inventory_stock ORDER BY category, name");
 }
 
 export async function getStaffForScene() {
@@ -62,11 +66,12 @@ export async function submitScene(data) {
 
     if (data.items?.length > 0) {
       for (const sel of data.items) {
-        const item = queryOne("SELECT id, current_stock FROM inventory_stock WHERE name = ?", [sel.name]);
         const qty = parseInt(sel.qty);
-        if (item && qty > 0) {
-          const newStock = item.current_stock - qty;
-          run("UPDATE inventory_stock SET current_stock = ?, updated_at = datetime('now') WHERE id = ?", [newStock, item.id]);
+        // The log is the point: who gave out what, and how much of it. The stock
+        // balance this used to decrement is no longer kept, so an item that has
+        // been removed from the catalogue can still be logged against a scene
+        // rather than being silently dropped.
+        if (sel.name && qty > 0) {
           run("INSERT INTO inventory_logs (date, item_name, quantity, distributed_by) VALUES (?, ?, ?, ?)", [dt, sel.name, qty, actor.name]);
         }
       }
