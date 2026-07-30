@@ -27,6 +27,16 @@ if changed "^package-lock.json";           then npm ci; fi
 if [ "$BOT"  = 1 ] && changed "^bot/package-lock.json";       then (cd bot && npm ci); fi
 if [ "$DASH" = 1 ] && changed "^dashboard/package-lock.json"; then (cd dashboard && npm ci); fi
 
+# Gate before anything touches production. Deliberately ahead of the migrate
+# below: the smoke test applies migrations to a throwaway copy first, so a broken
+# one aborts the deploy with the live database untouched. It also loads every bot
+# module, which nothing else here does — index.js imports bot/commands/*.js with
+# no try/catch, so one bad file means a restart loop.
+# --no-build-check because the source is legitimately newer than the build at this
+# point; the build below is what resolves that.
+echo "==> smoke test"
+node scripts/smoke.mjs --no-build-check
+
 node scripts/migrate.mjs
 
 if [ "$DASH" = 1 ]; then

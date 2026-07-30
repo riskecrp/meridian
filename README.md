@@ -28,11 +28,33 @@ Secrets live in `/opt/meridian/.env` (see `.env.example`).
 ## Deploying a change
 
 ```
-cd /opt/meridian && ./scripts/deploy.sh            # pull + migrate + build + restart both
+cd /opt/meridian && ./scripts/deploy.sh            # smoke + pull + migrate + build + restart both
 ./scripts/deploy.sh --dashboard | --bot | --no-pull
 ```
 
 NOTE: never run multiple `next build`s in parallel on this box (2–4 GiB VM, OOMs).
+
+## Smoke test — run before restarting
+
+```
+node scripts/smoke.mjs            # exit 0 = safe to restart
+node scripts/smoke.mjs --build    # also runs next build (the only real JSX check)
+```
+
+`deploy.sh` runs it automatically before it migrates, so a failure aborts the
+deploy with the live database and the running services untouched.
+
+It checks, without connecting to Discord and without writing to the live DB
+(every phase runs in a child process against a temp `.backup` copy, with a dummy
+bot token): every bot file parses; every bot module resolves its imports; every
+command exposes the `data` + `execute` shape and a unique name that `index.js`
+requires at boot; all migrations apply cleanly to the copy; the dashboard's
+server-side libs load; and `.next` is not older than `src/`.
+
+Why the bot half matters: `bot/index.js` imports every file in `bot/commands/`
+with no `try`/`catch`, so one broken file exits the process — and with
+`Restart=always` + `RestartSec=5` that is a crash loop nothing catches before the
+restart. The dashboard has `next build` as its gate; the bot had none.
 
 ## Migrations
 
