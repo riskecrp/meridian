@@ -1,0 +1,13 @@
+-- 005_audit_source.sql
+-- Say which half of Meridian performed an audited action.
+--
+-- site_audit_log was written only by the dashboard, so everything in it was
+-- implicitly "someone on the website". The bot changes the same records — tasks
+-- created with /todo, scenes logged with /logscene, notes, reminders, feedback
+-- worked from a thread — and none of it appeared on the Audit Log page at all.
+-- Now that both halves write here, a row has to say where it came from.
+--
+-- Existing rows and every dashboard write default to 'site', so nothing that
+-- already works changes: the dashboard's logAudit() does not set this column and
+-- does not need to. The bot's helper sets 'bot'.
+ALTER TABLE site_audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'site';

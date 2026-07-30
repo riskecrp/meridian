@@ -14,6 +14,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { logAudit } from './lib/audit.js';
 
 const DB_PATH = '/opt/meridian/data/meridian.db';
 
@@ -104,6 +105,7 @@ function createTask(actor, targetId, targetType, targetLabel, description) {
       `INSERT INTO task_log (action, actor, task_uid, description, target, created_at)
        VALUES ('CREATED', ?, ?, ?, ?, ?)`
     ).run(actor.display_name, taskId, description, `${targetType}: ${targetId}`, now);
+    logAudit(actor.discord_id, actor.display_name, 'CREATE', 'task', taskId, description.slice(0, 120), `via DM · ${targetType}: ${targetId}`);
 
     return { ok: true, uid: taskId, label: targetLabel };
   } catch (e) {
@@ -144,6 +146,7 @@ function completeTask(uid, actorId, actorName) {
       `INSERT INTO task_log (action, actor, task_uid, description, target, created_at)
        VALUES ('COMPLETED', ?, ?, ?, 'Completed via DM', ?)`
     ).run(actorName, uid, task.description, now);
+    logAudit('', actorName, 'COMPLETE', 'task', uid, task.description?.slice(0, 120), 'via DM');
 
     return { ok: true, description: task.description };
   } finally {

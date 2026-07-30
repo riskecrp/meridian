@@ -1,5 +1,6 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { queryOne, run } from '../lib/db.js';
+import { logAudit, actorOf } from '../lib/audit.js';
 export default {
   data: new SlashCommandBuilder().setName('adddossier').setDescription('Add a member to a faction dossier')
     .addStringOption(o => o.setName('faction').setDescription('Faction name').setRequired(true).setAutocomplete(true))
@@ -20,6 +21,7 @@ export default {
     const f = queryOne("SELECT id FROM factions WHERE name = ?", [factionName]);
     if (!f) return interaction.reply({ content: `Faction "${factionName}" not found.`, ephemeral: true });
     run("INSERT INTO faction_members (faction_id, character_name, phone, residence) VALUES (?, ?, ?, ?)", [f.id, charName, phone, residence]);
+    logAudit(interaction.user.id, actorOf(interaction), 'CREATE', 'faction_member', f.id, `${charName} (${factionName})`, 'via /adddossier');
     await interaction.reply({ content: `✅ **${charName}** added to **${factionName}** dossier.\n📞 ${phone} | 🏠 ${residence}`, ephemeral: true });
   }
 };

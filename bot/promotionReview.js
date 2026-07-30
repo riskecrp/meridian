@@ -6,6 +6,7 @@
 import cron from 'node-cron';
 import { query, queryOne, run } from './lib/db.js';
 import { pingChannel, getRole } from './lib/pings.js';
+import { logAudit } from './lib/audit.js';
 
 const GUN_CATEGORIES = [
   'Pistol Light', 'Pistol Medium', 'Pistol Heavy',
@@ -274,6 +275,7 @@ async function processClosedPolls() {
         run(`INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, created_at, notify_creator)
              VALUES (?, ?, ?, 'Role', 'None', 'promotion-bot', 'Promotion Bot', ?, 0)`,
           [uid, `${data.name} — Promote to Tier ${data.nextTier}\n\nNo weapon votes were recorded. Please review poll results and stage the promotion manually in the Factions dashboard.`, getRole('fm_leadership'), today()]);
+        logAudit('', 'Promotion Bot', 'CREATE', 'task', uid, `${data.name} — promote to Tier ${data.nextTier}`, 'no weapon votes recorded; needs manual review');
       } catch {}
       continue;
     }
@@ -292,6 +294,7 @@ async function processClosedPolls() {
       run(`INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, created_at, notify_creator)
            VALUES (?, ?, ?, 'Role', 'None', 'promotion-bot', 'Promotion Bot', ?, 0)`,
         [uid, taskDesc, getRole('fm_leadership'), today()]);
+      logAudit('', 'Promotion Bot', 'CREATE', 'task', uid, `${data.name} — stage promotion to Tier ${data.nextTier}`, `${approvedWeapons.length} imports approved by poll`);
       console.log(`[PROMO] Task created for ${data.name} promotion`);
     } catch (e) {
       console.error(`[PROMO] Error creating task for ${data.name}:`, e.message);

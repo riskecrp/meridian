@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { query, queryOne, run } from '../lib/db.js';
 import { sendPing, getRole } from '../lib/pings.js';
+import { logAudit } from '../lib/audit.js';
 export default {
   data: new SlashCommandBuilder().setName('todo').setDescription('Manage tasks')
     .addSubcommand(s => s.setName('list').setDescription('List your tasks'))
@@ -40,6 +41,7 @@ export default {
         [uid, desc, targetId, targetType, interaction.user.id, author, now]);
       run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('CREATED', ?, ?, ?, ?, ?)",
         [author, uid, desc, `${targetType}: ${targetId}`, now]);
+      logAudit(interaction.user.id, author, 'CREATE', 'task', uid, desc.slice(0, 120), `via /todo · ${targetType}: ${targetId}`);
       // Route the notification through the configured ping channel (mirrors the
       // dashboard) so the assignee is notified where everyone watches and role
       // mentions actually resolve. Personal self-assignments just confirm quietly.
@@ -59,6 +61,7 @@ export default {
       run("DELETE FROM tasks WHERE task_uid = ?", [uid]);
       run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('COMPLETED', ?, ?, ?, 'Done', ?)",
         [author, uid, task.description, new Date().toISOString()]);
+      logAudit(interaction.user.id, author, 'COMPLETE', 'task', uid, task.description?.slice(0, 120), 'via /todo complete');
       await interaction.reply({ content: `✅ Task \`${uid}\` completed.`, ephemeral: true });
       try {
         const wasLeadershipTarget = task.target_type === 'Role' && (task.target_id === getRole('fm_leadership') || task.target_id === getRole('game_affairs'));

@@ -1,5 +1,6 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { queryOne, run } from '../lib/db.js';
+import { logAudit } from '../lib/audit.js';
 export default {
   data: new SlashCommandBuilder().setName('addnote').setDescription('Add an intelligence note to a faction')
     .addStringOption(o => o.setName('faction').setDescription('Faction name').setRequired(true).setAutocomplete(true))
@@ -19,6 +20,7 @@ export default {
     const author = interaction.user.globalName || interaction.user.username;
     run("INSERT INTO intel_notes (faction_id, text, author, author_id, date) VALUES (?, ?, ?, ?, ?)",
       [f.id, note, author, interaction.user.id, today]);
+    logAudit(interaction.user.id, author, 'CREATE', 'intel_note', f.id, factionName, note.slice(0, 120));
     await interaction.reply({ content: `📝 Note added to **${factionName}**`, ephemeral: true });
   }
 };

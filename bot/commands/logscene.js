@@ -1,5 +1,6 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { queryOne, run } from '../lib/db.js';
+import { logAudit } from '../lib/audit.js';
 export default {
   data: new SlashCommandBuilder().setName('logscene').setDescription('Quickly log a faction scene')
     .addStringOption(o => o.setName('faction').setDescription('Faction name').setRequired(true).setAutocomplete(true))
@@ -21,6 +22,8 @@ export default {
     const author = interaction.user.globalName || interaction.user.username;
     run("INSERT INTO scene_logs (date, faction_id, rewards, logged_by, notes, author_id) VALUES (?, ?, ?, ?, ?, ?)",
       [today, f.id, rewards, author, notes, interaction.user.id]);
+    logAudit(interaction.user.id, author, 'CREATE', 'scene', f.id, factionName,
+      `via /logscene${rewards !== 'None' ? ` · rewards: ${rewards}` : ''}`);
     await interaction.reply({ content: `✅ Scene logged for **${factionName}**\n> ${notes.substring(0, 200)}${rewards !== 'None' ? `\n**Rewards:** ${rewards}` : ''}` });
   }
 };

@@ -47,14 +47,25 @@ export default function AuditPage() {
               {auditLog.filter(log => {
                 if (!auditSearch) return true;
                 const q = auditSearch.toLowerCase();
-                return (log.actor_name||'').toLowerCase().includes(q)||(log.action||'').toLowerCase().includes(q)||(log.target_type||'').toLowerCase().includes(q)||(log.target_label||'').toLowerCase().includes(q)||(log.details||'').toLowerCase().includes(q);
+                // 'bot' is searchable too, so "show me what the bot did" is one word.
+                return (log.actor_name||'').toLowerCase().includes(q)||(log.action||'').toLowerCase().includes(q)||(log.target_type||'').toLowerCase().includes(q)||(log.target_label||'').toLowerCase().includes(q)||(log.details||'').toLowerCase().includes(q)||(log.source||'').toLowerCase().includes(q);
               }).map(log => (
                 <tr key={log.id} className="group">
                   <td style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'var(--fg-4)', whiteSpace:'nowrap' }}>{log.timestamp}</td>
                   <td style={{ fontWeight:700, whiteSpace:'nowrap', color:log.action.includes('DELETE')||log.action==='REJECT'?'var(--red)':log.action.includes('CREATE')?'var(--green)':'var(--accent)' }}>{log.action}</td>
                   <td style={{ color:'var(--fg-3)', whiteSpace:'nowrap' }}>{log.target_type}</td>
                   <td style={{ maxWidth:320, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{log.target_label||log.details}</td>
-                  <td style={{ color:'var(--fg-4)', whiteSpace:'nowrap' }}>{log.actor_name}</td>
+                  {/* Both halves write here now. The badge says which, because
+                      "Promotion Bot created a task" and "someone created a task"
+                      are different events and used to look identical. */}
+                  <td style={{ color:'var(--fg-3)', whiteSpace:'nowrap' }}>
+                    {log.actor_name}
+                    {log.source === 'bot' && (
+                      <span style={{ marginLeft:6, fontSize:9, fontWeight:700, letterSpacing:'0.1em',
+                        padding:'1px 5px', borderRadius:4, background:'var(--accent-bg)', color:'var(--accent)',
+                        fontFamily:'var(--font-mono)' }} title="Performed through the Discord bot">BOT</span>
+                    )}
+                  </td>
                   <td><button onClick={async()=>{if(await showConfirm('Delete this audit entry?')){await deleteAuditLogEntry(log.id);refresh();}}} className="opacity-0 group-hover:opacity-100 transition-opacity" style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10,fontWeight:700}}>Del</button></td>
                 </tr>
               ))}

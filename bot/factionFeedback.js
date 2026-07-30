@@ -32,6 +32,7 @@
 import cron from 'node-cron';
 import { query, queryOne, run } from './lib/db.js';
 import { pingChannel, pingMentions, pingRoleIds, pingEnabled } from './lib/pings.js';
+import { logAudit } from './lib/audit.js';
 
 // Responses sheet of the ECRP roleplay feedback form (link-viewable, read as
 // CSV). The same sheet api/notify links to when a submission arrives.
@@ -200,14 +201,11 @@ function parseCsv(text) {
   return rows;
 }
 
-function logAudit(actorId, actorName, action, targetId, targetLabel, details) {
-  try {
-    run(
-      "INSERT INTO site_audit_log (actor_id, actor_name, action, target_type, target_id, target_label, details) VALUES (?, ?, ?, 'Feedback', ?, ?, ?)",
-      [actorId || '', actorName || '', action, String(targetId), targetLabel || '', details || ''],
-    );
-  } catch (e) { console.error('[FEEDBACK] audit:', e.message); }
-}
+// Audit entries use the shared vocabulary: an uppercase verb, with the noun in
+// target_type. `feedback` is lowercase to match `task`, `document` and the rest.
+const audit = (interaction, action, id, label, details) => logAudit(
+  interaction?.user?.id || '', interaction ? actorName(interaction) : 'Feedback bot',
+  action, 'feedback', id, label, details);
 
 // ── Buttons ────────────────────────────────────────────────────────────────────
 //
@@ -350,7 +348,7 @@ async function postFeedback(header, row, sheetRow) {
     );
     feedbackId = res.lastInsertRowid;
     threadId = null;
-    logAudit('', 'Feedback bot', 'FEEDBACK_RECEIVED', feedbackId, `${faction} — ${character}`, '');
+    audit(null, 'CREATE', feedbackId, `${faction} — ${character}`, 'Submission received from the form');
   }
 
   const channelId = pingChannel('feedback.new');
@@ -524,7 +522,7 @@ async function handleDone(interaction, id) {
   const who = actorName(interaction);
   run("UPDATE faction_feedback SET status = 'claimed', claimed_by_id = ?, claimed_by_name = ?, claimed_at = ? WHERE id = ?",
     [interaction.user.id, who, nowStr(), id]);
-  logAudit(interaction.user.id, who, 'FEEDBACK_ACKNOWLEDGED', id, `${row.faction} — ${row.character_name}`, '');
+  audit(interaction, 'ACKNOWLEDGE', id, `${row.faction} — ${row.character_name}`, `Submitter ${row.discord_username} contacted`);
 
   const unix = Math.floor(Date.now() / 1000);
   await interaction.update({
@@ -548,7 +546,7 @@ async function handleEnd(interaction, id, status) {
   const verb = status === 'completed' ? 'Completed' : 'Cancelled';
   run('UPDATE faction_feedback SET status = ?, concluded_by_name = ?, concluded_at = ? WHERE id = ?',
     [status, who, nowStr(), id]);
-  logAudit(interaction.user.id, who, `FEEDBACK_${verb.toUpperCase()}`, id, `${row.faction} — ${row.character_name}`, '');
+  audit(interaction, verb.toUpperCase(), id, `${row.faction} — ${row.character_name}`, '');
 
   const unix = Math.floor(Date.now() / 1000);
   await interaction.update({
@@ -570,7 +568,7 @@ async function handleSnooze(interaction, id) {
   const who = actorName(interaction);
   const nextDue = plusDays(SNOOZE_DAYS);
   run('UPDATE faction_feedback SET due_at = ? WHERE id = ?', [nextDue, id]);
-  logAudit(interaction.user.id, who, 'FEEDBACK_SNOOZED', id, `${row.faction} — ${row.character_name}`, `${SNOOZE_DAYS} days`);
+  audit(interaction, 'SNOOZE', id, `${row.faction} — ${row.character_name}`, `Next reminder pushed out ${SNOOZE_DAYS} days`);
 
   const unix = Math.floor(new Date(nextDue.replace(' ', 'T') + 'Z').getTime() / 1000);
   await interaction.update({

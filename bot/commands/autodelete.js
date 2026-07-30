@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
 import { query, queryOne, run } from '../lib/db.js';
+import { logAudit, actorOf } from '../lib/audit.js';
 
 export default {
   data: new SlashCommandBuilder()
@@ -30,6 +31,7 @@ export default {
          VALUES (?, ?, ?, ?, ?, datetime('now'))`,
         [channel.id, channel.name, delay, interaction.user.id, interaction.user.globalName || interaction.user.username]
       );
+      logAudit(interaction.user.id, actorOf(interaction), 'EDIT', 'auto_delete_channel', channel.id, '#' + channel.name, `auto-delete on, delay ${delay}s`);
       const label = delay === 0 ? 'immediately' : `after ${delay}s`;
       await interaction.reply({
         content: `✅ Auto-delete enabled in <#${channel.id}> — messages will be deleted **${label}**.`,
@@ -46,6 +48,7 @@ export default {
         return;
       }
       run("DELETE FROM auto_delete_channels WHERE channel_id = ?", [channel.id]);
+      logAudit(interaction.user.id, actorOf(interaction), 'DELETE', 'auto_delete_channel', channel.id, '#' + channel.name, 'auto-delete off');
       await interaction.reply({ content: `✅ Auto-delete disabled for <#${channel.id}>.`, ephemeral: true });
       return;
     }

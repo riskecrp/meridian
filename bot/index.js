@@ -12,6 +12,7 @@ import { startPromotionReview } from './promotionReview.js';
 import { startFactionFeedback, handleFeedbackButton } from './factionFeedback.js';
 import { handleDM } from './dmHandler.js';
 import { sendPing, pingChannel, getRole } from './lib/pings.js';
+import { logAudit, actorOf } from './lib/audit.js';
 
 dotenv.config({ path: '/opt/meridian/.env' });
 
@@ -131,6 +132,7 @@ client.on(Events.InteractionCreate, async interaction => {
         [answer, interaction.user.id, actorName, now, questionId]);
       run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('INFO_ANSWER', ?, ?, '', 'Answered via Discord', ?)",
         [actorName, q.task_uid, now]);
+      logAudit(interaction.user.id, actorName, 'ANSWER', 'task', q.task_uid, answer.slice(0, 120), 'question answered via Discord');
       // Notify the asker
       const token = process.env.DISCORD_BOT_TOKEN;
       const askerStaff = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [q.asked_by_id]);
@@ -154,6 +156,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const author = interaction.user.globalName || interaction.user.username;
       run("INSERT INTO scene_logs (date, faction_id, rewards, logged_by, notes, author_id) VALUES (?, ?, ?, ?, ?, ?)",
         [today, f.id, rewards, author, notes, interaction.user.id]);
+      logAudit(interaction.user.id, author, 'CREATE', 'scene', f.id, factionName, `via /feedback${rewards !== 'None' ? ` · rewards: ${rewards}` : ''}`);
       await interaction.reply({ content: '✅ **Scene Feedback Logged** for **' + factionName + '**\n> ' + notes.substring(0, 200) + (rewards !== 'None' ? '\n**Rewards:** ' + rewards : '') });
     }
   } else if (interaction.isButton()) {
@@ -190,6 +193,7 @@ client.on(Events.InteractionCreate, async interaction => {
       try {
         run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, ?)",
           [uuid, interaction.user.id, interaction.channelId, `(Snoozed) ${originalMsg}`, newTime.toString(), new Date(newTime).toISOString(), `<@${interaction.user.id}>`, initialStatus]);
+        logAudit(interaction.user.id, actorOf(interaction), 'CREATE', 'reminder', uuid, originalMsg?.slice(0, 120), `snoozed ${duration} from a reminder`);
         await interaction.update({ content: `💤 **Snoozed for ${duration}.**`, components: [] });
       } catch (err) {
         console.error("[SNOOZE ERROR]", err);
