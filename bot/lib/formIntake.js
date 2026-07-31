@@ -51,6 +51,8 @@ export const discordPatch = (path, body) => discordFetch('PATCH', path, body);
 
 const THREAD_NAME_LIMIT = 100;
 
+// Faction feedback, where contacting the submitter is a tracked step of its own
+// because it is the part nobody sees if it is skipped.
 export const STATUS_TAGS = {
   new: '[Pending Acknowledgement]',   // nobody has picked it up yet
   claimed: '[Pending Review]',        // acknowledged, the outcome is outstanding
@@ -58,9 +60,20 @@ export const STATUS_TAGS = {
   cancelled: '[Cancelled]',
 };
 
-// Longest first, so '[Pending Acknowledgement]' is never half-matched by a
-// shorter tag when a title is being re-tagged.
-const ALL_TAGS = [...new Set(Object.values(STATUS_TAGS))].sort((a, b) => b.length - a.length);
+// The four FM intake forms, which have no acknowledgement step: an item is open
+// until the work is done and someone says so.
+export const OPEN_STATUS_TAGS = {
+  new: '[Open]',
+  completed: '[Completed]',
+  cancelled: '[Cancelled]',
+};
+
+// Every tag any intake can put on a thread. Retagging has to be able to strip a
+// tag written by a ladder other than its own, or a thread whose form later
+// changes shape keeps its old prefix and gains a second one. Longest first, so
+// '[Pending Acknowledgement]' is never half-matched by a shorter tag.
+const ALL_TAGS = [...new Set([...Object.values(STATUS_TAGS), ...Object.values(OPEN_STATUS_TAGS)])]
+  .sort((a, b) => b.length - a.length);
 
 /** '<tag> <base>', trimming the base so the whole thing fits Discord's limit. */
 export function titled(base, tag) {

@@ -6,15 +6,16 @@
  * thread in the configured channel: the submission laid out for reading, a ping,
  * and a workflow that ends with the item explicitly closed.
  *
- *   new -> claimed (acknowledged) -> completed / cancelled
+ *   new -> completed
  *
  * The thread title carries the status, so the channel list shows where every
  * item stands without opening any of them:
  *
- *   [Pending Acknowledgement] -> [Pending Review] -> [Completed] / [Cancelled]
+ *   [Open] -> [Completed]
  *
- * While an item is open it is nudged in-thread every REMINDER_HOURS, with
- * Complete / Snooze / Cancel on the nudge.
+ * There is no acknowledgement step: the thread is where the work and the
+ * discussion happen, and Complete is the statement that they are finished. While
+ * an item is open it is nudged in-thread every REMINDER_HOURS.
  *
  * This is the same process as bot/factionFeedback.js, generalised to four forms;
  * the shared plumbing lives in lib/formIntake.js. Feedback keeps its own module
@@ -40,7 +41,7 @@ import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import {
   nowStr, plusHours, plusDays,
   discordFetch, discordPost, discordPatch,
-  STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
+  OPEN_STATUS_TAGS as STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
   TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers, rowPayload,
 } from './lib/formIntake.js';
 
@@ -64,7 +65,6 @@ const FORMS = [
     // leader is who we actually talk to.
     title: [/^faction name/i, /^faction leader name/i],
     contact: [/leader.*discord|discord.*(username|handle|tag)/i, /discord/i],
-    submitter: 'the faction leader',
     color: 3447003,
     sheet: { id: '1_CWtU4LA-sH6IeD-rnCVq_PFcOo_e9rMZ1Pac6kDVMQ', gid: '' },
   },
@@ -73,7 +73,6 @@ const FORMS = [
     label: 'Faction Management Staff Application',
     title: [/^staff name|^name$/i],
     contact: [/^discord$/i, /discord/i],
-    submitter: 'the applicant',
     color: 15158332,
     sheet: { id: '1n485B947BGHbyf1U3xZd4V2wGAMPeK4DQZFBG6n2LCQ', gid: '1145131757' },
   },
@@ -86,7 +85,6 @@ const FORMS = [
     // This form asks for no Discord handle at all, so the follow-up is the
     // character — which is who a garage is actually issued to anyway.
     contact: [/discord/i, /character.?s? name/i],
-    submitter: 'the requester',
     color: 3547003,
     sheet: { id: '1JIZGWKHYik3cMul1L1J3a4ZLXNYWSTFiXz92wPFSHYo', gid: '' },
   },
@@ -98,11 +96,9 @@ const FORMS = [
     // as often as a name, so it stays in the body.
     title: [/^character name|^name$/i],
     // The sheet has a "What is your Discord?" column, but it is empty on every
-    // row to date — the question is not actually being collected. Kept so it
-    // starts working the day the form asks for it; until then acknowledgement
-    // falls back to its no-handle wording.
+    // row to date — the question is not actually being collected. Kept so the
+    // record starts carrying a handle the day the form asks for one.
     contact: [/what is your discord|discord/i],
-    submitter: 'the applicant',
     color: 9807270,
     sheet: { id: '1ZgUuEPhXZow3m3i32w0mbk0mKZoWxJP5bAAPEqioW14', gid: '' },
   },
@@ -125,14 +121,6 @@ const MAX_POST_ATTEMPTS = 3;
 
 // Statuses that end the flow — no more nudges, buttons refuse to act.
 const ENDED_STATUSES = ['completed', 'cancelled'];
-
-// How a status reads in a sentence.
-const STATUS_LABELS = {
-  new: 'waiting to be acknowledged',
-  claimed: 'awaiting a decision',
-  completed: 'completed',
-  cancelled: 'cancelled',
-};
 
 /**
  * What a message from this module is allowed to ping: the route's roles by id,
@@ -168,20 +156,14 @@ const BTN = { SUCCESS: 3, SECONDARY: 2 };
 const button = (label, style, customId) => ({ type: 2, style, label, custom_id: customId });
 const actionRow = (...buttons) => ({ type: 1, components: buttons });
 
-const ackRow = (id) => actionRow(
-  button('Acknowledge', BTN.SUCCESS, `frm:done:${id}`),
-  button('Cancel', BTN.SECONDARY, `frm:cancel:${id}`),
-);
-
-const reviewRow = (id) => actionRow(
+// One button, on the opening prompt and on every nudge. There is no
+// acknowledgement step and nothing to claim: the thread is where the work and
+// the discussion happen, and Complete is the statement that they are finished.
+//
+// Snooze and Cancel still exist behind handleFormButton — adding either back is
+// a matter of putting it in this row.
+const completeRow = (id) => actionRow(
   button('Complete', BTN.SUCCESS, `frm:complete:${id}`),
-  button('Cancel', BTN.SECONDARY, `frm:cancel:${id}`),
-);
-
-const nudgeRow = (id) => actionRow(
-  button('Complete', BTN.SUCCESS, `frm:complete:${id}`),
-  button(`Snooze ${SNOOZE_DAYS} days`, BTN.SECONDARY, `frm:snooze:${id}`),
-  button('Cancel', BTN.SECONDARY, `frm:cancel:${id}`),
 );
 
 // ── Sheet polling ──────────────────────────────────────────────────────────────
@@ -345,26 +327,18 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
     }
   }
 
-  // The acknowledgement prompt. Contacting the submitter comes first because it
-  // is the part that is invisible if nobody does it — the decision itself is
-  // visible in the thread either way.
+  // The prompt that closes the item out. It goes last so it sits at the bottom
+  // of the thread, under everything it is asking about.
   const ack = await discordPost(`/channels/${threadId}/messages`, {
     content: mentions || undefined,
     embeds: [{
-      title: 'Acknowledgement',
-      // Without a handle there is nobody to name, and telling someone to message
-      // "not provided" is worse than telling them the form didn't ask.
-      description: contact
-        // Not "reach out on Discord" — for the garage form this falls back to a
-        // character name, and half these forms never asked for a handle.
-        ? `Has ${form.submitter} been told we have this? If not, reach out to **${contact}** to let ` +
-          `them know the submission was received, then press **Acknowledge**.`
-        : `Has ${form.submitter} been told we have this? This form does not collect a Discord handle, so they ` +
-          `will need to be found from the details above. Press **Acknowledge** once they know.`,
+      title: 'Open',
+      description:
+        `Discuss and handle this in the thread. Press **Complete** once it is done.`,
       color: form.color,
-      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed or cancelled.` },
+      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed.` },
     }],
-    components: [ackRow(recordId)],
+    components: [completeRow(recordId)],
     allowed_mentions: allow,
   });
 
@@ -433,13 +407,11 @@ async function checkReminders(form) {
         embeds: [{
           title: `${form.label} still open`,
           description:
-            `This has been open for a while and is still **${STATUS_LABELS[item.status] || item.status}**. ` +
-            `If it is handled, press **Complete**. If it is genuinely in progress, update ${form.submitter} and ` +
-            `press **Snooze ${SNOOZE_DAYS} days**, or press **Cancel** to end it.\n\n` +
-            `Otherwise this will nudge again in ${REMINDER_HOURS} hours.`,
+            `This has been open for a while and has not been completed. If it is handled, press ` +
+            `**Complete**.\n\nOtherwise this will nudge again in ${REMINDER_HOURS} hours.`,
           color: form.color,
         }],
-        components: [nudgeRow(item.id)],
+        components: [completeRow(item.id)],
         allowed_mentions: allowedMentions(nudgeKey(form.key)),
       });
     } catch (e) {
@@ -529,32 +501,6 @@ async function retitleThread(interaction, threadId, tag, { archive = false } = {
   }
 }
 
-async function handleDone(interaction, item, form) {
-  if (item.status === 'claimed') {
-    return interaction.reply({ content: `Already acknowledged by ${item.claimed_by_name}.`, ephemeral: true });
-  }
-
-  const who = actorName(interaction);
-  run("UPDATE form_submissions SET status = 'claimed', claimed_by_id = ?, claimed_by_name = ?, claimed_at = ? WHERE id = ?",
-    [interaction.user.id, who, nowStr(), item.id]);
-  audit(interaction, 'ACKNOWLEDGE', item.id, `${form.label} — ${item.title}`,
-    item.contact ? `${item.contact} contacted` : 'Submitter acknowledged');
-
-  const unix = Math.floor(Date.now() / 1000);
-  await interaction.update({
-    content: null,
-    embeds: [{
-      title: 'Acknowledgement',
-      description: item.contact
-        ? `**${who}** has contacted **${item.contact}** to confirm the submission was received. <t:${unix}:f>`
-        : `**${who}** has acknowledged this submission and let ${form.submitter} know it was received. <t:${unix}:f>`,
-      color: form.color,
-    }],
-    components: [reviewRow(item.id)],
-  });
-  await retitleThread(interaction, item.thread_id, STATUS_TAGS.claimed);
-}
-
 async function handleEnd(interaction, item, form, status) {
   const who = actorName(interaction);
   const verb = status === 'completed' ? 'Completed' : 'Cancelled';
@@ -605,7 +551,7 @@ export async function handleFormButton(interaction) {
 
   try {
     const item = queryOne(
-      'SELECT id, form_key, status, title, contact, claimed_by_name, thread_id FROM form_submissions WHERE id = ?', [id]);
+      'SELECT id, form_key, status, title, contact, thread_id FROM form_submissions WHERE id = ?', [id]);
     if (!item) {
       await interaction.reply({ content: 'This submission no longer exists.', ephemeral: true });
       return true;
@@ -629,8 +575,7 @@ export async function handleFormButton(interaction) {
       return true;
     }
 
-    if (action === 'done') await handleDone(interaction, item, form);
-    else if (action === 'complete') await handleEnd(interaction, item, form, 'completed');
+    if (action === 'complete') await handleEnd(interaction, item, form, 'completed');
     else if (action === 'cancel') await handleEnd(interaction, item, form, 'cancelled');
     else if (action === 'snooze') await handleSnooze(interaction, item, form);
   } catch (e) {
