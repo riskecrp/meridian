@@ -452,7 +452,7 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
  * duplicate later. The record is a normal one — delete it and its thread when
  * you are done looking.
  */
-export async function postLatestRowForTest(formKey, wantRow = null) {
+export async function postLatestRowForTest(formKey, wantRow = null, { accepted = false } = {}) {
   const form = FORM_BY_KEY[formKey];
   if (!form) throw new Error(`unknown form "${formKey}"`);
 
@@ -465,8 +465,28 @@ export async function postLatestRowForTest(formKey, wantRow = null) {
   const sheetRow = wantRow ?? rows.length;
   if (sheetRow < 2 || sheetRow > rows.length) throw new Error(`row ${sheetRow} is not in the sheet`);
   await postSubmission(form, rows[0], rows[sheetRow - 1], sheetRow, { silent: true });
-  return queryOne('SELECT id, title, thread_id FROM form_submissions WHERE form_key = ? AND sheet_row = ?',
+  const item = queryOne('SELECT id, title, thread_id FROM form_submissions WHERE form_key = ? AND sheet_row = ?',
     [formKey, sheetRow]);
+
+  // Carry a decision-workflow preview through to its checklist stage, so the
+  // half that only exists after acceptance can be seen and clicked without
+  // pressing Accept for real and paging the setup roles.
+  if (accepted && form.workflow === 'decision') {
+    run("UPDATE form_submissions SET status = 'accepted', decided_by_name = 'Preview', decided_at = ? WHERE id = ?",
+      [nowStr(), item.id]);
+    (form.checklist || []).slice(0, MAX_CHECKLIST_ITEMS).forEach((it, n) => run(
+      'INSERT OR IGNORE INTO form_submission_checklist (submission_id, item_key, label, sort) VALUES (?, ?, ?, ?)',
+      [item.id, it.key, it.label, n]));
+    const posted = await discordPost(`/channels/${item.thread_id}/messages`, {
+      ...checklistView(item, form),
+      allowed_mentions: NO_MENTIONS,
+    });
+    run('UPDATE form_submissions SET checklist_message_id = ? WHERE id = ?', [String(posted.id), item.id]);
+    await discordPatch(`/channels/${item.thread_id}`, {
+      name: retag(titled(item.title, tagsFor(form).new), tagsFor(form).accepted),
+    }).catch(() => {});
+  }
+  return item;
 }
 
 // ── Nudges ─────────────────────────────────────────────────────────────────────
