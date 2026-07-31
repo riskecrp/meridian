@@ -79,18 +79,39 @@ const FORMS = [
     // The one form that is decided before it is worked. Accept or Reject first;
     // an accepted faction then has to be set up before the item can close.
     workflow: 'decision',
-    // ⚠ DRAFT — placeholder steps, pending the real list from the owner.
-    // Replace the labels and keys below; nothing else needs to change. Keys are
-    // permanent identifiers (they ride in button custom ids and are snapshotted
-    // onto each accepted application), so change them only alongside the labels.
-    // Max 20 items, and keep labels short enough to read on a button.
+    // Setup steps for an accepted faction. `label` goes on the button (keep it
+    // short — Discord allows 80 characters and a cramped row is unreadable);
+    // `detail` is the instruction shown in the embed, where links belong.
+    //
+    // `prereq: true` marks the three steps everything else depends on — you
+    // cannot configure a faction whose Discord you have not joined, whose bot is
+    // not invited, and whose roles do not exist. The remaining seven stay
+    // disabled until all three are ticked. Order is otherwise free.
+    //
+    // Keys are permanent identifiers: they ride in button custom ids and are
+    // snapshotted onto each accepted application, so change one only alongside
+    // its label. Max 20 items.
     checklist: [
-      { key: 'record',    label: 'Faction record created' },
-      { key: 'discord',   label: 'Discord roles & channel' },
-      { key: 'tier',      label: 'Tier assigned' },
-      { key: 'turf',      label: 'Turf confirmed' },
-      { key: 'briefed',   label: 'Leader briefed' },
-      { key: 'announced', label: 'Announced to FM' },
+      { key: 'join_discord', prereq: true, label: "Join faction Discord",
+        detail: "Join the recognized faction's Discord." },
+      { key: 'invite_bot', prereq: true, label: 'Invite Meridian bot',
+        detail: 'Invite the Meridian bot to their Discord — [invite link](https://discord.com/oauth2/authorize?client_id=1441261070206636042&permissions=274877991936&integration_type=0&scope=bot+applications.commands)' },
+      { key: 'ecrp_roles', prereq: true, label: 'ECRP roles',
+        detail: "Verify or create the **ECRP Guide** and **ECRP Management** roles in the faction's Discord." },
+      { key: 'invite_hc', label: 'High Command → GA',
+        detail: 'Invite their High Command to the GA Discord — [invite link](https://discord.gg/FTDmuQqcDR)' },
+      { key: 'dashboard', label: 'Add to Dashboard',
+        detail: 'Configure the faction on the Meridian Dashboard: **Factions → Add Faction +**' },
+      { key: 'f4_exists', label: 'F4 exists',
+        detail: 'Verify or create an in-game **F4** for the faction.' },
+      { key: 'f4_owner', label: 'F4 ownership',
+        detail: 'Transfer ownership of the F4 to the faction leader, if needed.' },
+      { key: 'leader_role', label: 'Criminal leader role',
+        detail: 'Add the **criminal leader** role to the player in the main ECRP Discord.' },
+      { key: 'fm_team', label: 'Assign FM Team',
+        detail: 'Assign the faction to an FM Team: **Meridian Dashboard → Staff**' },
+      { key: 'notify_team', label: 'Notify FM Team',
+        detail: "Tell the team they're receiving a new faction, and advise them to send the [Initial Garage Request](https://docs.google.com/forms/d/e/1FAIpQLSe4Q_seUQf2IrkTKYhuaNTzTLXNCbhw6M8pUHvO1mpAWSiwRw/viewform) after their first OOC meeting." },
     ],
   },
   {
@@ -220,23 +241,53 @@ const decisionRow = (id) => actionRow(
  */
 function checklistView(item, form) {
   const items = query(
-    'SELECT item_key, label, done, done_by_name, done_at FROM form_submission_checklist WHERE submission_id = ? ORDER BY sort, id',
+    'SELECT item_key, label, detail, prereq, done, done_by_name FROM form_submission_checklist WHERE submission_id = ? ORDER BY sort, id',
     [item.id]);
   const doneCount = items.filter((i) => i.done).length;
   const allDone = items.length > 0 && doneCount === items.length;
 
-  const lines = items.map((i) => (i.done
-    ? `✅ ~~${i.label}~~ — ${i.done_by_name}`
-    : `☐ ${i.label}`));
+  const prereqs = items.filter((i) => i.prereq);
+  const rest = items.filter((i) => !i.prereq);
+  // The gate. Until every prerequisite is ticked the remaining steps cannot
+  // actually be carried out, so their buttons stay disabled rather than letting
+  // someone tick work they could not have done.
+  const prereqsDone = prereqs.every((i) => i.done);
 
-  const rows = [];
-  for (let i = 0; i < items.length; i += 5) {
-    rows.push(actionRow(...items.slice(i, i + 5).map((it) => button(
-      `${it.done ? '✅' : '☐'} ${it.label}`.slice(0, 80),
-      it.done ? BTN.SECONDARY : BTN.PRIMARY,
-      `frm:tick:${item.id}:${it.item_key}`,
-    ))));
+  const line = (i, n) => {
+    const head = i.done ? `✅ ~~**${n}. ${i.label}**~~` : `☐ **${n}. ${i.label}**`;
+    const who = i.done ? ` — ${i.done_by_name}` : '';
+    return `${head}${who}\n${i.detail || ''}`.trimEnd();
+  };
+
+  const sections = [];
+  if (prereqs.length) {
+    sections.push(`**Do these first — the rest depend on them**\n${
+      prereqs.map((i, n) => line(i, n + 1)).join('\n')}`);
   }
+  if (rest.length) {
+    sections.push(`**${prereqsDone ? 'Then, in any order' : 'Locked until the three above are done'}**\n${
+      rest.map((i, n) => line(i, prereqs.length + n + 1)).join('\n')}`);
+  }
+
+  // Prerequisites get their own row so the split is visible in the buttons, not
+  // only in the text.
+  const rows = [];
+  const addRows = (group, offset, disabled) => {
+    for (let i = 0; i < group.length; i += 5) {
+      rows.push(actionRow(...group.slice(i, i + 5).map((it, n) => ({
+        ...button(
+          `${it.done ? '✅' : '☐'} ${offset + i + n + 1}. ${it.label}`.slice(0, 80),
+          it.done ? BTN.SECONDARY : BTN.PRIMARY,
+          `frm:tick:${item.id}:${it.item_key}`,
+        ),
+        // A ticked step stays pressable so it can be undone.
+        disabled: disabled && !it.done,
+      }))));
+    }
+  };
+  addRows(prereqs, 0, false);
+  addRows(rest, prereqs.length, !prereqsDone);
+
   rows.push(actionRow({
     ...button(allDone ? 'Complete' : `Complete (${doneCount}/${items.length})`,
       BTN.SUCCESS, `frm:complete:${item.id}`),
@@ -246,9 +297,9 @@ function checklistView(item, form) {
   return {
     embeds: [{
       title: `Setup checklist — ${doneCount}/${items.length} complete`,
-      description: lines.join('\n') + (allDone
-        ? '\n\nEverything is done. Press **Complete** to close this out.'
-        : '\n\nTick each step as it is finished. Complete unlocks once they all are.'),
+      description: `${sections.join('\n\n')}\n\n${allDone
+        ? 'Everything is done. Press **Complete** to close this out.'
+        : 'Tick each step as it is finished. Complete unlocks once they all are.'}`.slice(0, 4096),
       color: form.color,
     }],
     components: rows,
@@ -475,8 +526,8 @@ export async function postLatestRowForTest(formKey, wantRow = null, { accepted =
     run("UPDATE form_submissions SET status = 'accepted', decided_by_name = 'Preview', decided_at = ? WHERE id = ?",
       [nowStr(), item.id]);
     (form.checklist || []).slice(0, MAX_CHECKLIST_ITEMS).forEach((it, n) => run(
-      'INSERT OR IGNORE INTO form_submission_checklist (submission_id, item_key, label, sort) VALUES (?, ?, ?, ?)',
-      [item.id, it.key, it.label, n]));
+      'INSERT OR IGNORE INTO form_submission_checklist (submission_id, item_key, label, detail, prereq, sort) VALUES (?, ?, ?, ?, ?, ?)',
+      [item.id, it.key, it.label, it.detail || '', it.prereq ? 1 : 0, n]));
     // Retire the decision prompt exactly as accepting for real would, or the
     // preview shows a live Accept/Reject above a checklist that already exists.
     const prompt = queryOne('SELECT ack_message_id FROM form_submissions WHERE id = ?', [item.id])?.ack_message_id;
@@ -674,8 +725,8 @@ async function handleAccept(interaction, item, form) {
   // Snapshot the steps as they stand today. INSERT OR IGNORE so a retry after a
   // half-finished accept does not reset ticks that were already made.
   items.forEach((it, n) => run(
-    'INSERT OR IGNORE INTO form_submission_checklist (submission_id, item_key, label, sort) VALUES (?, ?, ?, ?)',
-    [item.id, it.key, it.label, n]));
+    'INSERT OR IGNORE INTO form_submission_checklist (submission_id, item_key, label, detail, prereq, sort) VALUES (?, ?, ?, ?, ?, ?)',
+    [item.id, it.key, it.label, it.detail || '', it.prereq ? 1 : 0, n]));
   audit(interaction, 'ACCEPT', item.id, `${form.label} — ${item.title}`, `${items.length} setup steps to complete`);
 
   const unix = Math.floor(Date.now() / 1000);
@@ -729,9 +780,24 @@ async function handleTick(interaction, item, form, itemKey) {
     return interaction.reply({ content: 'This is not in setup.', ephemeral: true });
   }
   const step = queryOne(
-    'SELECT item_key, label, done FROM form_submission_checklist WHERE submission_id = ? AND item_key = ?',
+    'SELECT item_key, label, done, prereq FROM form_submission_checklist WHERE submission_id = ? AND item_key = ?',
     [item.id, itemKey]);
   if (!step) return interaction.reply({ content: 'That step is no longer on this checklist.', ephemeral: true });
+
+  // The gate is enforced here as well as rendered, because a stale copy of the
+  // message can still be clicked. Un-ticking is always allowed — otherwise a
+  // step ticked before its prerequisites lapsed could never be corrected.
+  if (!step.prereq && !step.done) {
+    const blocking = queryOne(
+      'SELECT count(*) AS n FROM form_submission_checklist WHERE submission_id = ? AND prereq = 1 AND done = 0',
+      [item.id])?.n || 0;
+    if (blocking) {
+      return interaction.reply({
+        content: `The first ${blocking === 1 ? 'step' : `${blocking} steps`} still need doing before this one — joining their Discord, inviting the bot and creating the ECRP roles come first.`,
+        ephemeral: true,
+      });
+    }
+  }
 
   const who = actorName(interaction);
   if (step.done) {
