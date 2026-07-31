@@ -6,16 +6,25 @@
  * thread in the configured channel: the submission laid out for reading, a ping,
  * and a workflow that ends with the item explicitly closed.
  *
- *   new -> completed
+ * There are two workflows, declared per form below.
  *
- * The thread title carries the status, so the channel list shows where every
- * item stands without opening any of them:
+ * Most forms just need doing. There is no acknowledgement step and nothing to
+ * claim: the thread is where the work and the discussion happen, and one button
+ * says they are finished.
  *
  *   [Open] -> [Completed]
  *
- * There is no acknowledgement step: the thread is where the work and the
- * discussion happen, and Complete is the statement that they are finished. While
- * an item is open it is nudged in-thread every REMINDER_HOURS.
+ * The Recognized Criminal Faction application is decided first, and an accepted
+ * faction then has to be set up. FM Leadership accepts or rejects; Game Affairs
+ * Management works the setup checklist and closes it out. Complete stays
+ * disabled until every box is ticked.
+ *
+ *   [Open] --Reject--> [Rejected]
+ *          --Accept--> [Accepted] --all ticked--> [Completed]
+ *
+ * The thread title carries the status either way, so the channel list shows
+ * where everything stands without opening any of it. While an item is open it is
+ * nudged in-thread every REMINDER_HOURS.
  *
  * This is the same process as bot/factionFeedback.js, generalised to four forms;
  * the shared plumbing lives in lib/formIntake.js. Feedback keeps its own module
@@ -41,7 +50,7 @@ import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import {
   nowStr, plusHours, plusDays,
   discordFetch, discordPost, discordPatch,
-  OPEN_STATUS_TAGS as STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
+  OPEN_STATUS_TAGS, DECISION_STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
   TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers, rowPayload,
 } from './lib/formIntake.js';
 
@@ -67,6 +76,22 @@ const FORMS = [
     contact: [/leader.*discord|discord.*(username|handle|tag)/i, /discord/i],
     color: 3447003,
     sheet: { id: '1_CWtU4LA-sH6IeD-rnCVq_PFcOo_e9rMZ1Pac6kDVMQ', gid: '' },
+    // The one form that is decided before it is worked. Accept or Reject first;
+    // an accepted faction then has to be set up before the item can close.
+    workflow: 'decision',
+    // ⚠ DRAFT — placeholder steps, pending the real list from the owner.
+    // Replace the labels and keys below; nothing else needs to change. Keys are
+    // permanent identifiers (they ride in button custom ids and are snapshotted
+    // onto each accepted application), so change them only alongside the labels.
+    // Max 20 items, and keep labels short enough to read on a button.
+    checklist: [
+      { key: 'record',    label: 'Faction record created' },
+      { key: 'discord',   label: 'Discord roles & channel' },
+      { key: 'tier',      label: 'Tier assigned' },
+      { key: 'turf',      label: 'Turf confirmed' },
+      { key: 'briefed',   label: 'Leader briefed' },
+      { key: 'announced', label: 'Announced to FM' },
+    ],
   },
   {
     key: 'staff_application',
@@ -119,8 +144,10 @@ const SNOOZE_DAYS = 7;
 // to hold up every submission queued behind it.
 const MAX_POST_ATTEMPTS = 3;
 
-// Statuses that end the flow — no more nudges, buttons refuse to act.
-const ENDED_STATUSES = ['completed', 'cancelled'];
+// Statuses that end the flow — no more nudges, buttons refuse to act. 'accepted'
+// is NOT one of them: an accepted application still has its setup to finish, and
+// that is exactly the stretch worth chasing.
+const ENDED_STATUSES = ['completed', 'cancelled', 'rejected'];
 
 /**
  * What a message from this module is allowed to ping: the route's roles by id,
@@ -139,6 +166,16 @@ const NO_MENTIONS = { parse: [] };
 
 const routeKey = (formKey) => `form.${formKey}`;
 const nudgeKey = (formKey) => `form.${formKey}.nudge`;
+// Who is pinged for the setup work, and who may tick it off. Deliberately a
+// different route from the form itself: Leadership decides, Game Affairs sets up.
+const setupKey = (formKey) => `form.${formKey}.setup`;
+
+// Which tag set a form's threads use.
+const tagsFor = (form) => (form.workflow === 'decision' ? DECISION_STATUS_TAGS : OPEN_STATUS_TAGS);
+
+// Discord allows 5 action rows of 5 buttons; the last row is the Complete
+// button, so the checklist itself gets four rows.
+const MAX_CHECKLIST_ITEMS = 20;
 
 // Audit entries use the shared vocabulary: an uppercase verb, with the noun in
 // target_type.
@@ -151,7 +188,7 @@ const audit = (interaction, action, id, label, details) => logAudit(
 // The record id rides in the custom id, so a press works after a restart with no
 // state held in memory. index.js routes anything starting 'frm:' back here.
 
-const BTN = { SUCCESS: 3, SECONDARY: 2 };
+const BTN = { PRIMARY: 1, SECONDARY: 2, SUCCESS: 3, DANGER: 4 };
 
 const button = (label, style, customId) => ({ type: 2, style, label, custom_id: customId });
 const actionRow = (...buttons) => ({ type: 1, components: buttons });
@@ -165,6 +202,58 @@ const actionRow = (...buttons) => ({ type: 1, components: buttons });
 const completeRow = (id) => actionRow(
   button('Complete', BTN.SUCCESS, `frm:complete:${id}`),
 );
+
+// The decision workflow's opening prompt.
+const decisionRow = (id) => actionRow(
+  button('Accept', BTN.SUCCESS, `frm:accept:${id}`),
+  button('Reject', BTN.DANGER, `frm:reject:${id}`),
+);
+
+/**
+ * The checklist, drawn from the snapshotted rows rather than the config, so a
+ * later edit to the item list cannot change what an application in flight is
+ * being held to.
+ *
+ * Complete is rendered disabled until every box is ticked, rather than hidden:
+ * a greyed button reading "Complete (2/6)" says what is left, where an absent
+ * one just looks like the feature is missing.
+ */
+function checklistView(item, form) {
+  const items = query(
+    'SELECT item_key, label, done, done_by_name, done_at FROM form_submission_checklist WHERE submission_id = ? ORDER BY sort, id',
+    [item.id]);
+  const doneCount = items.filter((i) => i.done).length;
+  const allDone = items.length > 0 && doneCount === items.length;
+
+  const lines = items.map((i) => (i.done
+    ? `✅ ~~${i.label}~~ — ${i.done_by_name}`
+    : `☐ ${i.label}`));
+
+  const rows = [];
+  for (let i = 0; i < items.length; i += 5) {
+    rows.push(actionRow(...items.slice(i, i + 5).map((it) => button(
+      `${it.done ? '✅' : '☐'} ${it.label}`.slice(0, 80),
+      it.done ? BTN.SECONDARY : BTN.PRIMARY,
+      `frm:tick:${item.id}:${it.item_key}`,
+    ))));
+  }
+  rows.push(actionRow({
+    ...button(allDone ? 'Complete' : `Complete (${doneCount}/${items.length})`,
+      BTN.SUCCESS, `frm:complete:${item.id}`),
+    disabled: !allDone,
+  }));
+
+  return {
+    embeds: [{
+      title: `Setup checklist — ${doneCount}/${items.length} complete`,
+      description: lines.join('\n') + (allDone
+        ? '\n\nEverything is done. Press **Complete** to close this out.'
+        : '\n\nTick each step as it is finished. Complete unlocks once they all are.'),
+      color: form.color,
+    }],
+    components: rows,
+  };
+}
 
 // ── Sheet polling ──────────────────────────────────────────────────────────────
 
@@ -289,7 +378,7 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
   // than opening another.
   if (!threadId) {
     const thread = await discordPost(`/channels/${channelId}/threads`, {
-      name: titled(title, STATUS_TAGS.new),
+      name: titled(title, tagsFor(form).new),
       type: 11,                      // public thread
       auto_archive_duration: 10080,  // 7 days
     });
@@ -327,18 +416,20 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
     }
   }
 
-  // The prompt that closes the item out. It goes last so it sits at the bottom
-  // of the thread, under everything it is asking about.
+  // The prompt that moves the item on. It goes last so it sits at the bottom of
+  // the thread, under everything it is asking about.
+  const decides = form.workflow === 'decision';
   const ack = await discordPost(`/channels/${threadId}/messages`, {
     content: mentions || undefined,
     embeds: [{
-      title: 'Open',
-      description:
-        `Discuss and handle this in the thread. Press **Complete** once it is done.`,
+      title: decides ? 'Decision' : 'Open',
+      description: decides
+        ? 'Discuss this in the thread, then **Accept** or **Reject**.'
+        : 'Discuss and handle this in the thread. Press **Complete** once it is done.',
       color: form.color,
-      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed.` },
+      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is ${decides ? 'decided and set up' : 'completed'}.` },
     }],
-    components: [completeRow(recordId)],
+    components: [decides ? decisionRow(recordId) : completeRow(recordId)],
     allowed_mentions: allow,
   });
 
@@ -389,11 +480,11 @@ async function checkReminders(form) {
   const due = query(
     `SELECT id, thread_id, title, status FROM form_submissions
      WHERE form_key = ?
-       AND status NOT IN ('completed', 'cancelled')
+       AND status NOT IN (${ENDED_STATUSES.map(() => '?').join(', ')})
        AND thread_id IS NOT NULL
        AND due_at <= ?
        AND (last_reminder_at IS NULL OR last_reminder_at < due_at)`,
-    [form.key, nowStr()],
+    [form.key, ...ENDED_STATUSES, nowStr()],
   );
 
   let nudged = 0;
@@ -402,16 +493,25 @@ async function checkReminders(form) {
       // A thread that auto-archived has to be reopened before it can be posted
       // in, or the nudge lands nowhere anyone will see.
       await discordPatch(`/channels/${item.thread_id}`, { archived: false }).catch(() => {});
+      // On the decision forms the buttons live on the prompt messages above —
+      // the decision one, then the checklist — so the nudge only says what is
+      // outstanding and leaves the acting to them. Repeating a checklist that
+      // rewrites itself would leave stale copies scattered up the thread.
+      const left = item.status === 'accepted' ? remainingSteps(item, form) : 0;
+      const chase = item.status === 'accepted'
+        ? `This was accepted but its setup is not finished — **${left}** step${left === 1 ? '' : 's'} still to tick on the checklist above.`
+        : form.workflow === 'decision'
+          ? 'This has been waiting a while and has not been accepted or rejected yet.'
+          : 'This has been open for a while and has not been completed. If it is handled, press **Complete**.';
+
       await discordPost(`/channels/${item.thread_id}/messages`, {
         content: pingMentions(nudgeKey(form.key)) || undefined,
         embeds: [{
           title: `${form.label} still open`,
-          description:
-            `This has been open for a while and has not been completed. If it is handled, press ` +
-            `**Complete**.\n\nOtherwise this will nudge again in ${REMINDER_HOURS} hours.`,
+          description: `${chase}\n\nOtherwise this will nudge again in ${REMINDER_HOURS} hours.`,
           color: form.color,
         }],
-        components: [completeRow(item.id)],
+        components: form.workflow === 'decision' ? [] : [completeRow(item.id)],
         allowed_mentions: allowedMentions(nudgeKey(form.key)),
       });
     } catch (e) {
@@ -440,8 +540,8 @@ async function checkReminders(form) {
  * list falls back to FM Leadership, so a misconfigured route cannot lock
  * everyone out of an item that is already posted.
  */
-function actionRoleIds(formKey) {
-  const route = getPingRoute(routeKey(formKey));
+function actionRoleIds(key) {
+  const route = getPingRoute(key);
   let ids = [];
   try {
     const parsed = JSON.parse(route?.mention_roles || '[]');
@@ -455,11 +555,24 @@ function actionRoleIds(formKey) {
 }
 
 /**
+ * Which route governs a given press.
+ *
+ * On the decision forms the two halves are owned by different people: FM
+ * Leadership decides whether to accept, and Game Affairs Management does the
+ * setup and says when it is finished. So ticking and completing answer to the
+ * setup route, and everything else to the form's own.
+ */
+function routeForAction(form, action) {
+  const setupPhase = action === 'tick' || action === 'complete';
+  return form.workflow === 'decision' && setupPhase ? setupKey(form.key) : routeKey(form.key);
+}
+
+/**
  * Checked on every press. A component interaction carries no command permissions
  * with it, so nothing else stands between a random member and these buttons.
  */
-function canAct(interaction, formKey) {
-  const allowed = actionRoleIds(formKey);
+function canAct(interaction, key) {
+  const allowed = actionRoleIds(key);
   const held = interaction.member?.roles?.cache;
   return !!held && allowed.some((id) => held.has(id));
 }
@@ -467,9 +580,9 @@ function canAct(interaction, formKey) {
 const actorName = (interaction) => interaction.member?.displayName
   || interaction.user.globalName || interaction.user.username;
 
-/** How the roles that may act on a form read in a refusal message. */
-function allowedRoleNames(interaction, formKey) {
-  const names = actionRoleIds(formKey)
+/** How the roles that may act read in a refusal message. */
+function allowedRoleNames(interaction, key) {
+  const names = actionRoleIds(key)
     .map((id) => interaction.guild?.roles?.cache?.get(id)?.name)
     .filter(Boolean);
   return names.length ? names.join(', ') : 'the roles this form pings';
@@ -501,6 +614,96 @@ async function retitleThread(interaction, threadId, tag, { archive = false } = {
   }
 }
 
+/**
+ * Accept: record the decision, snapshot the checklist, and hand the thread over
+ * to whoever does the setup.
+ *
+ * The checklist goes in a NEW message rather than replacing the decision, so the
+ * thread keeps a record of who accepted it and when, and so the ping lands as a
+ * new notification for the setup roles rather than as a silent edit.
+ */
+async function handleAccept(interaction, item, form) {
+  const who = actorName(interaction);
+  const items = (form.checklist || []).slice(0, MAX_CHECKLIST_ITEMS);
+  if (!items.length) throw new Error(`${form.key} has workflow 'decision' but no checklist`);
+
+  run("UPDATE form_submissions SET status = 'accepted', decided_by_id = ?, decided_by_name = ?, decided_at = ? WHERE id = ?",
+    [interaction.user.id, who, nowStr(), item.id]);
+  // Snapshot the steps as they stand today. INSERT OR IGNORE so a retry after a
+  // half-finished accept does not reset ticks that were already made.
+  items.forEach((it, n) => run(
+    'INSERT OR IGNORE INTO form_submission_checklist (submission_id, item_key, label, sort) VALUES (?, ?, ?, ?)',
+    [item.id, it.key, it.label, n]));
+  audit(interaction, 'ACCEPT', item.id, `${form.label} — ${item.title}`, `${items.length} setup steps to complete`);
+
+  const unix = Math.floor(Date.now() / 1000);
+  await interaction.update({
+    content: null,
+    embeds: [{
+      title: 'Accepted',
+      description: `Accepted by **${who}** <t:${unix}:f>. Setup is now outstanding.`,
+      color: form.color,
+    }],
+    components: [],
+  });
+  await retitleThread(interaction, item.thread_id, tagsFor(form).accepted);
+
+  const view = checklistView(item, form);
+  const posted = await discordPost(`/channels/${item.thread_id}/messages`, {
+    content: pingMentions(setupKey(form.key)) || undefined,
+    ...view,
+    allowed_mentions: allowedMentions(setupKey(form.key)),
+  });
+  run('UPDATE form_submissions SET checklist_message_id = ? WHERE id = ?', [String(posted.id), item.id]);
+}
+
+/** Reject: capture why, close the thread, and name who to tell. */
+async function handleReject(interaction, item, form, reason) {
+  const who = actorName(interaction);
+  run("UPDATE form_submissions SET status = 'rejected', decided_by_id = ?, decided_by_name = ?, decided_at = ?, decision_reason = ?, concluded_by_name = ?, concluded_at = ? WHERE id = ?",
+    [interaction.user.id, who, nowStr(), reason || '', who, nowStr(), item.id]);
+  audit(interaction, 'REJECT', item.id, `${form.label} — ${item.title}`, reason || '');
+
+  const unix = Math.floor(Date.now() / 1000);
+  await interaction.update({
+    content: null,
+    embeds: [{
+      title: 'Rejected',
+      description: [
+        `Rejected by **${who}** <t:${unix}:f>.`,
+        reason ? `\n**Reason:** ${reason}` : '',
+        item.contact ? `\nReach out to **${item.contact}** to let them know.` : '',
+      ].filter(Boolean).join(''),
+      color: form.color,
+    }],
+    components: [],
+  });
+  await retitleThread(interaction, item.thread_id, tagsFor(form).rejected, { archive: true });
+}
+
+/** Toggle one setup step. Ticks are reversible — people mis-click. */
+async function handleTick(interaction, item, form, itemKey) {
+  if (item.status !== 'accepted') {
+    return interaction.reply({ content: 'This is not in setup.', ephemeral: true });
+  }
+  const step = queryOne(
+    'SELECT item_key, label, done FROM form_submission_checklist WHERE submission_id = ? AND item_key = ?',
+    [item.id, itemKey]);
+  if (!step) return interaction.reply({ content: 'That step is no longer on this checklist.', ephemeral: true });
+
+  const who = actorName(interaction);
+  if (step.done) {
+    run('UPDATE form_submission_checklist SET done = 0, done_by_id = NULL, done_by_name = NULL, done_at = NULL WHERE submission_id = ? AND item_key = ?',
+      [item.id, itemKey]);
+    audit(interaction, 'UNTICK', item.id, `${form.label} — ${item.title}`, step.label);
+  } else {
+    run('UPDATE form_submission_checklist SET done = 1, done_by_id = ?, done_by_name = ?, done_at = ? WHERE submission_id = ? AND item_key = ?',
+      [interaction.user.id, who, nowStr(), item.id, itemKey]);
+    audit(interaction, 'TICK', item.id, `${form.label} — ${item.title}`, step.label);
+  }
+  await interaction.update(checklistView(item, form));
+}
+
 async function handleEnd(interaction, item, form, status) {
   const who = actorName(interaction);
   const verb = status === 'completed' ? 'Completed' : 'Cancelled';
@@ -517,7 +720,7 @@ async function handleEnd(interaction, item, form, status) {
     }],
     components: [],
   });
-  await retitleThread(interaction, item.thread_id, STATUS_TAGS[status], { archive: true });
+  await retitleThread(interaction, item.thread_id, tagsFor(form)[status], { archive: true });
 }
 
 async function handleSnooze(interaction, item, form) {
@@ -537,6 +740,55 @@ async function handleSnooze(interaction, item, form) {
   });
 }
 
+const loadItem = (id) => queryOne(
+  'SELECT id, form_key, status, title, contact, thread_id FROM form_submissions WHERE id = ?', [id]);
+
+/**
+ * How many setup steps are still outstanding. Zero for a form that has no
+ * checklist at all, so the single-button forms complete as they always did.
+ */
+function remainingSteps(item, form) {
+  if (form.workflow !== 'decision') return 0;
+  return queryOne(
+    'SELECT count(*) AS n FROM form_submission_checklist WHERE submission_id = ? AND done = 0',
+    [item.id])?.n || 0;
+}
+
+/**
+ * The reject modal's submission. Routed from index.js like the buttons; the
+ * permission and status checks are repeated here because a modal can be
+ * submitted long after it was opened, and roles or state may have moved on.
+ */
+export async function handleFormModal(interaction) {
+  const { customId } = interaction;
+  if (!customId.startsWith('frmmodal:reject:')) return false;
+
+  const id = parseInt(customId.split(':')[2], 10);
+  try {
+    const item = loadItem(id);
+    if (!item) {
+      await interaction.reply({ content: 'This submission no longer exists.', ephemeral: true });
+      return true;
+    }
+    const form = FORM_BY_KEY[item.form_key];
+    if (!form || !canAct(interaction, routeKey(item.form_key))) {
+      await interaction.reply({ content: 'You can no longer action this.', ephemeral: true });
+      return true;
+    }
+    if (ENDED_STATUSES.includes(item.status) || item.status === 'accepted') {
+      await interaction.reply({ content: `This submission is already ${item.status}.`, ephemeral: true });
+      return true;
+    }
+    await handleReject(interaction, item, form, interaction.fields.getTextInputValue('reason').trim());
+  } catch (e) {
+    console.error('[FORMS] reject modal error:', e.message);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: 'Something went wrong handling that.', ephemeral: true }).catch(() => {});
+    }
+  }
+  return true;
+}
+
 /**
  * Route a form button. Returns true if it was one of ours, so index.js can fall
  * through to its other handlers when it isn't.
@@ -545,13 +797,12 @@ export async function handleFormButton(interaction) {
   const { customId } = interaction;
   if (!customId.startsWith('frm:')) return false;
 
-  const [, action, rawId] = customId.split(':');
+  const [, action, rawId, extra] = customId.split(':');
   const id = parseInt(rawId, 10);
   if (!Number.isInteger(id)) return true;
 
   try {
-    const item = queryOne(
-      'SELECT id, form_key, status, title, contact, thread_id FROM form_submissions WHERE id = ?', [id]);
+    const item = loadItem(id);
     if (!item) {
       await interaction.reply({ content: 'This submission no longer exists.', ephemeral: true });
       return true;
@@ -561,9 +812,10 @@ export async function handleFormButton(interaction) {
       await interaction.reply({ content: 'This submission belongs to a form that is no longer configured.', ephemeral: true });
       return true;
     }
-    if (!canAct(interaction, item.form_key)) {
+    const route = routeForAction(form, action);
+    if (!canAct(interaction, route)) {
       await interaction.reply({
-        content: `Only ${allowedRoleNames(interaction, item.form_key)} can action ${form.label.toLowerCase()}s.`,
+        content: `Only ${allowedRoleNames(interaction, route)} can do that.`,
         ephemeral: true,
       });
       return true;
@@ -575,7 +827,31 @@ export async function handleFormButton(interaction) {
       return true;
     }
 
-    if (action === 'complete') await handleEnd(interaction, item, form, 'completed');
+    if (action === 'accept') await handleAccept(interaction, item, form);
+    else if (action === 'reject') {
+      // The reason is asked for in a modal, so the actual rejection happens on
+      // the modal submit — see handleFormModal.
+      await interaction.showModal({
+        title: 'Reject application',
+        customId: `frmmodal:reject:${id}`,
+        components: [{ type: 1, components: [{
+          type: 4, custom_id: 'reason', label: 'Reason (optional)', style: 2,
+          required: false, max_length: 900,
+          placeholder: 'Why is this being turned down? Shown in the thread.',
+        }] }],
+      });
+    }
+    else if (action === 'tick') await handleTick(interaction, item, form, extra);
+    else if (action === 'complete') {
+      // The button is rendered disabled until every box is ticked, but a stale
+      // message can still be pressed, so the gate is enforced here too.
+      const left = remainingSteps(item, form);
+      if (left) {
+        await interaction.reply({ content: `${left} setup step${left === 1 ? '' : 's'} still to tick before this can be completed.`, ephemeral: true });
+        return true;
+      }
+      await handleEnd(interaction, item, form, 'completed');
+    }
     else if (action === 'cancel') await handleEnd(interaction, item, form, 'cancelled');
     else if (action === 'snooze') await handleSnooze(interaction, item, form);
   } catch (e) {

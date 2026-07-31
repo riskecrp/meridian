@@ -10,7 +10,7 @@ import { syncConversations } from './conversationSync.js';
 import { startTaskReminder } from './taskReminder.js';
 import { startPromotionReview } from './promotionReview.js';
 import { startFactionFeedback, handleFeedbackButton } from './factionFeedback.js';
-import { startFormSubmissions, handleFormButton } from './formSubmissions.js';
+import { startFormSubmissions, handleFormButton, handleFormModal } from './formSubmissions.js';
 import { handleDM } from './dmHandler.js';
 import { sendPing, pingChannel, getRole } from './lib/pings.js';
 import { logAudit, actorOf } from './lib/audit.js';
@@ -116,6 +116,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (command?.autocomplete) await command.autocomplete(interaction).catch(e => console.error('[AUTOCOMPLETE ERROR]', e.message));
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
+    // Rejecting a form application asks for a reason first (frmmodal:*), so the
+    // rejection itself lands here rather than on the button press.
+    if (await handleFormModal(interaction)) return;
     if (customId.startsWith('task_info_modal_')) {
       const questionId = parseInt(customId.replace('task_info_modal_', ''));
       const answer = interaction.fields.getTextInputValue('answer').trim();

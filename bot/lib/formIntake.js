@@ -68,12 +68,26 @@ export const OPEN_STATUS_TAGS = {
   cancelled: '[Cancelled]',
 };
 
+// Forms that are decided before they are worked — currently the Recognized
+// Criminal Faction application, which is accepted or rejected first and only
+// then has setup to complete.
+export const DECISION_STATUS_TAGS = {
+  new: '[Open]',
+  accepted: '[Accepted]',
+  completed: '[Completed]',
+  rejected: '[Rejected]',
+  cancelled: '[Cancelled]',
+};
+
 // Every tag any intake can put on a thread. Retagging has to be able to strip a
 // tag written by a ladder other than its own, or a thread whose form later
 // changes shape keeps its old prefix and gains a second one. Longest first, so
 // '[Pending Acknowledgement]' is never half-matched by a shorter tag.
-const ALL_TAGS = [...new Set([...Object.values(STATUS_TAGS), ...Object.values(OPEN_STATUS_TAGS)])]
-  .sort((a, b) => b.length - a.length);
+const ALL_TAGS = [...new Set([
+  ...Object.values(STATUS_TAGS),
+  ...Object.values(OPEN_STATUS_TAGS),
+  ...Object.values(DECISION_STATUS_TAGS),
+])].sort((a, b) => b.length - a.length);
 
 /** '<tag> <base>', trimming the base so the whole thing fits Discord's limit. */
 export function titled(base, tag) {
