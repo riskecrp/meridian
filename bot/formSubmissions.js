@@ -355,7 +355,9 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
       // Without a handle there is nobody to name, and telling someone to message
       // "not provided" is worse than telling them the form didn't ask.
       description: contact
-        ? `Has ${form.submitter} been told we have this? If not, reach out to **${contact}** on Discord to let ` +
+        // Not "reach out on Discord" — for the garage form this falls back to a
+        // character name, and half these forms never asked for a handle.
+        ? `Has ${form.submitter} been told we have this? If not, reach out to **${contact}** to let ` +
           `them know the submission was received, then press **Acknowledge**.`
         : `Has ${form.submitter} been told we have this? This form does not collect a Discord handle, so they ` +
           `will need to be found from the details above. Press **Acknowledge** once they know.`,
