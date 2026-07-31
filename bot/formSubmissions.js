@@ -41,7 +41,7 @@ import {
   nowStr, plusHours, plusDays,
   discordFetch, discordPost, discordPatch,
   STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
-  TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers,
+  TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers, rowPayload,
 } from './lib/formIntake.js';
 
 /**
@@ -71,8 +71,8 @@ const FORMS = [
   {
     key: 'staff_application',
     label: 'Faction Management Staff Application',
-    title: [/^(your |applicant )?(full |character |in.?game )?name/i, /forum|character/i],
-    contact: [/discord.*(username|handle|tag)|username/i, /discord/i],
+    title: [/^staff name|^name$/i],
+    contact: [/^discord$/i, /discord/i],
     submitter: 'the applicant',
     color: 15158332,
     sheet: { id: '1n485B947BGHbyf1U3xZd4V2wGAMPeK4DQZFBG6n2LCQ', gid: '1145131757' },
@@ -82,8 +82,10 @@ const FORMS = [
     label: 'Faction Management Garage Request',
     // The old embed led with the request type, and it is the first thing anyone
     // wants to know, so it stays in the thread title.
-    title: [/^faction name|^faction/i, /request type|type of request/i],
-    contact: [/discord.*(username|handle|tag)|username/i, /discord/i],
+    title: [/what faction are you requesting|^faction/i, /what are you requesting/i],
+    // This form asks for no Discord handle at all, so the follow-up is the
+    // character — which is who a garage is actually issued to anyway.
+    contact: [/discord/i, /character.?s? name/i],
     submitter: 'the requester',
     color: 3547003,
     sheet: { id: '1JIZGWKHYik3cMul1L1J3a4ZLXNYWSTFiXz92wPFSHYo', gid: '' },
@@ -91,8 +93,15 @@ const FORMS = [
   {
     key: 'ci_application',
     label: 'CI Application',
-    title: [/^(your |applicant )?(full |character |in.?game )?name/i, /faction/i],
-    contact: [/discord.*(username|handle|tag)|username/i, /discord/i],
+    // Character name only. The faction being applied against would be the useful
+    // second half, but it is a free-text box that gets answered with a paragraph
+    // as often as a name, so it stays in the body.
+    title: [/^character name|^name$/i],
+    // The sheet has a "What is your Discord?" column, but it is empty on every
+    // row to date — the question is not actually being collected. Kept so it
+    // starts working the day the form asks for it; until then acknowledgement
+    // falls back to its no-handle wording.
+    contact: [/what is your discord|discord/i],
     submitter: 'the applicant',
     color: 9807270,
     sheet: { id: '1ZgUuEPhXZow3m3i32w0mbk0mKZoWxJP5bAAPEqioW14', gid: '' },
@@ -253,8 +262,7 @@ function recordFailure(formKey, sheetRow, err) {
 async function postSubmission(form, header, row, sheetRow) {
   const { title, contact } = identify(form, header, row);
 
-  const payload = {};
-  for (let i = 0; i < Math.min(header.length, row.length); i++) payload[header[i]] = row[i];
+  const payload = rowPayload(header, row);
 
   const submittedAt = valueByHeader(header, row, TIMESTAMP_HEADER)?.value || '';
 
@@ -337,9 +345,13 @@ async function postSubmission(form, header, row, sheetRow) {
     content: mentions || undefined,
     embeds: [{
       title: 'Acknowledgement',
-      description:
-        `Has ${form.submitter} been told we have this? If not, reach out to **${contact}** on Discord to let ` +
-        `them know the submission was received, then press **Acknowledge**.`,
+      // Without a handle there is nobody to name, and telling someone to message
+      // "not provided" is worse than telling them the form didn't ask.
+      description: contact
+        ? `Has ${form.submitter} been told we have this? If not, reach out to **${contact}** on Discord to let ` +
+          `them know the submission was received, then press **Acknowledge**.`
+        : `Has ${form.submitter} been told we have this? This form does not collect a Discord handle, so they ` +
+          `will need to be found from the details above. Press **Acknowledge** once they know.`,
       color: form.color,
       footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed or cancelled.` },
     }],
@@ -490,14 +502,17 @@ async function handleDone(interaction, item, form) {
   const who = actorName(interaction);
   run("UPDATE form_submissions SET status = 'claimed', claimed_by_id = ?, claimed_by_name = ?, claimed_at = ? WHERE id = ?",
     [interaction.user.id, who, nowStr(), item.id]);
-  audit(interaction, 'ACKNOWLEDGE', item.id, `${form.label} — ${item.title}`, `${item.contact} contacted`);
+  audit(interaction, 'ACKNOWLEDGE', item.id, `${form.label} — ${item.title}`,
+    item.contact ? `${item.contact} contacted` : 'Submitter acknowledged');
 
   const unix = Math.floor(Date.now() / 1000);
   await interaction.update({
     content: null,
     embeds: [{
       title: 'Acknowledgement',
-      description: `**${who}** has contacted **${item.contact}** to confirm the submission was received. <t:${unix}:f>`,
+      description: item.contact
+        ? `**${who}** has contacted **${item.contact}** to confirm the submission was received. <t:${unix}:f>`
+        : `**${who}** has acknowledged this submission and let ${form.submitter} know it was received. <t:${unix}:f>`,
       color: form.color,
     }],
     components: [reviewRow(item.id)],

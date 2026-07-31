@@ -134,6 +134,12 @@ export const TIMESTAMP_HEADER = /^timestamp$/i;
 // without anyone having to say which of its columns are which.
 export const SHORT_ANSWER_LIMIT = 120;
 
+// A thread title has to stay scannable in the channel list, and some of what
+// these forms ask for is free text — "which faction are you a CI against" gets
+// answered with a paragraph. A part longer than this is dropped from the title
+// and left to the body, where there is room for it.
+const TITLE_PART_LIMIT = 40;
+
 /** First column whose header matches `pattern` and whose value is non-empty. */
 export function valueByHeader(header, row, pattern) {
   for (let i = 0; i < header.length; i++) {
@@ -156,12 +162,17 @@ export function valueByHeader(header, row, pattern) {
  * submission that does not arrive.
  */
 export function identify(form, header, row) {
-  const parts = [];
+  const candidates = [];
   const used = new Set();
   for (const pattern of form.title || []) {
     const hit = valueByHeader(header, row, pattern);
-    if (hit && !used.has(hit.index)) { parts.push(hit.value); used.add(hit.index); }
+    if (hit && !used.has(hit.index)) { candidates.push(hit.value); used.add(hit.index); }
   }
+  // Overlong parts are dropped rather than truncated — a title ending in a
+  // sentence fragment reads worse than one that simply names the applicant.
+  let parts = candidates.filter((p) => p.length <= TITLE_PART_LIMIT);
+  // Unless dropping leaves nothing, in which case a trimmed part beats no title.
+  if (!parts.length && candidates.length) parts = [candidates[0].slice(0, TITLE_PART_LIMIT).trimEnd() + '…'];
   if (!parts.length) {
     for (let i = 0; i < header.length; i++) {
       const value = String(row[i] ?? '').trim();
@@ -182,8 +193,32 @@ export function identify(form, header, row) {
   }
   return {
     title: parts.join(' · ') || 'Untitled submission',
-    contact: contact || 'not provided',
+    // Empty, not "not provided" — whether we have a way to reach the submitter
+    // changes what the acknowledgement prompt can sensibly ask for, so callers
+    // need to be able to tell the difference.
+    contact: contact || '',
   };
+}
+
+/**
+ * The whole row as {question: answer}, for storing alongside the record so a
+ * later edit to the form's questions cannot rewrite what was already received.
+ *
+ * Headers repeat in practice — a question deleted and re-added leaves Google's
+ * placeholder names behind, and the CI sheet carries "Column 7" twice — so
+ * repeats are suffixed rather than allowed to overwrite each other. Unnamed
+ * trailing columns are dropped; they are spreadsheet padding, not questions.
+ */
+export function rowPayload(header, row) {
+  const payload = {};
+  for (let i = 0; i < Math.min(header.length, row.length); i++) {
+    const question = String(header[i] || '').trim();
+    if (!question) continue;
+    let key = question;
+    for (let n = 2; key in payload; n++) key = `${question} (${n})`;
+    payload[key] = row[i];
+  }
+  return payload;
 }
 
 /**
