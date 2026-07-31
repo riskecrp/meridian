@@ -15,9 +15,10 @@
  *   [Open] -> [Completed]
  *
  * The Recognized Criminal Faction application is decided first, and an accepted
- * faction then has to be set up. FM Leadership accepts or rejects; Game Affairs
- * Management works the setup checklist and closes it out. Complete stays
- * disabled until every box is ticked.
+ * faction then has to be set up. FM Leadership owns it throughout and is the
+ * only role it ever pings; Game Affairs Management may also work the setup
+ * checklist, without being paged for it. Complete stays disabled until every box
+ * is ticked.
  *
  *   [Open] --Reject--> [Rejected]
  *          --Accept--> [Accepted] --all ticked--> [Completed]
@@ -79,6 +80,12 @@ const FORMS = [
     // The one form that is decided before it is worked. Accept or Reject first;
     // an accepted faction then has to be set up before the item can close.
     workflow: 'decision',
+    // Roles that may work the setup checklist WITHOUT being pinged for it.
+    // FM Leadership owns an RCF application start to finish and is the only role
+    // it notifies; Game Affairs Management can pitch in proactively when help is
+    // wanted, which is an access grant, not an obligation. Keyed into
+    // discord_roles so a role re-created in Discord is a database edit.
+    setupAlsoAllow: ['game_affairs'],
     // Setup steps for an accepted faction. `label` goes on the button (keep it
     // short — Discord allows 80 characters and a cramped row is unreadable);
     // `detail` is the instruction shown in the embed, where links belong.
@@ -650,17 +657,33 @@ function actionRoleIds(key) {
  * setup and says when it is finished. So ticking and completing answer to the
  * setup route, and everything else to the form's own.
  */
+const isSetupPhase = (form, action) =>
+  form.workflow === 'decision' && (action === 'tick' || action === 'complete');
+
 function routeForAction(form, action) {
-  const setupPhase = action === 'tick' || action === 'complete';
-  return form.workflow === 'decision' && setupPhase ? setupKey(form.key) : routeKey(form.key);
+  return isSetupPhase(form, action) ? setupKey(form.key) : routeKey(form.key);
+}
+
+/**
+ * Everyone who may press a given button: the governing route's roles, plus — in
+ * the setup phase only — the roles granted access without being pinged.
+ *
+ * The two are separate on purpose. A ping route's mention_roles is a list of
+ * people to notify, and using it alone to mean "may press this" forces anyone
+ * with access to also be paged for every single item.
+ */
+function permittedRoleIds(form, action) {
+  const ids = actionRoleIds(routeForAction(form, action));
+  if (!isSetupPhase(form, action)) return ids;
+  const extra = (form.setupAlsoAllow || []).map((k) => getRole(k)).filter(Boolean);
+  return [...new Set([...ids, ...extra])];
 }
 
 /**
  * Checked on every press. A component interaction carries no command permissions
  * with it, so nothing else stands between a random member and these buttons.
  */
-function canAct(interaction, key) {
-  const allowed = actionRoleIds(key);
+function canAct(interaction, allowed) {
   const held = interaction.member?.roles?.cache;
   return !!held && allowed.some((id) => held.has(id));
 }
@@ -669,8 +692,8 @@ const actorName = (interaction) => interaction.member?.displayName
   || interaction.user.globalName || interaction.user.username;
 
 /** How the roles that may act read in a refusal message. */
-function allowedRoleNames(interaction, key) {
-  const names = actionRoleIds(key)
+function allowedRoleNames(interaction, allowed) {
+  const names = allowed
     .map((id) => interaction.guild?.roles?.cache?.get(id)?.name)
     .filter(Boolean);
   return names.length ? names.join(', ') : 'the roles this form pings';
@@ -894,7 +917,7 @@ export async function handleFormModal(interaction) {
       return true;
     }
     const form = FORM_BY_KEY[item.form_key];
-    if (!form || !canAct(interaction, routeKey(item.form_key))) {
+    if (!form || !canAct(interaction, permittedRoleIds(form, 'reject'))) {
       await interaction.reply({ content: 'You can no longer action this.', ephemeral: true });
       return true;
     }
@@ -935,10 +958,10 @@ export async function handleFormButton(interaction) {
       await interaction.reply({ content: 'This submission belongs to a form that is no longer configured.', ephemeral: true });
       return true;
     }
-    const route = routeForAction(form, action);
-    if (!canAct(interaction, route)) {
+    const allowed = permittedRoleIds(form, action);
+    if (!canAct(interaction, allowed)) {
       await interaction.reply({
-        content: `Only ${allowedRoleNames(interaction, route)} can do that.`,
+        content: `Only ${allowedRoleNames(interaction, allowed)} can do that.`,
         ephemeral: true,
       });
       return true;
