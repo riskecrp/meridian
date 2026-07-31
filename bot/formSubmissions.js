@@ -477,6 +477,20 @@ export async function postLatestRowForTest(formKey, wantRow = null, { accepted =
     (form.checklist || []).slice(0, MAX_CHECKLIST_ITEMS).forEach((it, n) => run(
       'INSERT OR IGNORE INTO form_submission_checklist (submission_id, item_key, label, sort) VALUES (?, ?, ?, ?)',
       [item.id, it.key, it.label, n]));
+    // Retire the decision prompt exactly as accepting for real would, or the
+    // preview shows a live Accept/Reject above a checklist that already exists.
+    const prompt = queryOne('SELECT ack_message_id FROM form_submissions WHERE id = ?', [item.id])?.ack_message_id;
+    if (prompt) {
+      await discordPatch(`/channels/${item.thread_id}/messages/${prompt}`, {
+        content: null,
+        embeds: [{
+          title: 'Accepted',
+          description: `Accepted by **Preview** <t:${Math.floor(Date.now() / 1000)}:f>. Setup is now outstanding.`,
+          color: form.color,
+        }],
+        components: [],
+      }).catch(() => {});
+    }
     const posted = await discordPost(`/channels/${item.thread_id}/messages`, {
       ...checklistView(item, form),
       allowed_mentions: NO_MENTIONS,
@@ -646,6 +660,11 @@ async function retitleThread(interaction, threadId, tag, { archive = false } = {
  * new notification for the setup roles rather than as a silent edit.
  */
 async function handleAccept(interaction, item, form) {
+  // Guards a double-click and a press on a stale message: accepting twice would
+  // post a second checklist and orphan the first, ticks and all.
+  if (item.status === 'accepted') {
+    return interaction.reply({ content: 'This has already been accepted — the checklist is above.', ephemeral: true });
+  }
   const who = actorName(interaction);
   const items = (form.checklist || []).slice(0, MAX_CHECKLIST_ITEMS);
   if (!items.length) throw new Error(`${form.key} has workflow 'decision' but no checklist`);
