@@ -34,6 +34,11 @@ import { query, queryOne, run } from './lib/db.js';
 import { pingChannel, pingMentions, pingRoleIds, pingEnabled } from './lib/pings.js';
 import { logAudit } from './lib/audit.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
+import {
+  nowStr, plusHours, plusDays,
+  discordFetch, discordPost, discordPatch,
+  STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
+} from './lib/formIntake.js';
 
 // Responses sheet of the ECRP roleplay feedback form (link-viewable, read as
 // CSV). The same sheet api/notify links to when a submission arrives.
@@ -67,21 +72,8 @@ const SNOOZE_DAYS = 7;
 // to hold up every submission queued behind it.
 const MAX_POST_ATTEMPTS = 3;
 
-const THREAD_NAME_LIMIT = 100;
-
 // Statuses that end the flow — no more nudges, buttons refuse to act.
 const ENDED_STATUSES = ['completed', 'cancelled'];
-
-// Thread-title prefix per status.
-const STATUS_TAGS = {
-  new: '[Pending Acknowledgement]',   // the submitter has not been told we have it
-  claimed: '[Pending Review]',        // submitter contacted, the review is outstanding
-  completed: '[Completed]',
-  cancelled: '[Cancelled]',
-};
-// Longest first, so '[Pending Acknowledgement]' is never half-matched by a
-// shorter tag when a title is being re-tagged.
-const ALL_TAGS = [...new Set(Object.values(STATUS_TAGS))].sort((a, b) => b.length - a.length);
 
 // How a status reads in a sentence, mirroring the dashboard's labels.
 const STATUS_LABELS = {
@@ -90,28 +82,6 @@ const STATUS_LABELS = {
   completed: 'completed',
   cancelled: 'cancelled',
 };
-
-// ── Discord REST ───────────────────────────────────────────────────────────────
-
-const API = 'https://discord.com/api/v10';
-
-async function discordFetch(method, path, body) {
-  const token = process.env.DISCORD_BOT_TOKEN;
-  if (!token) throw new Error('no bot token');
-  const res = await fetch(`${API}${path}`, {
-    method,
-    headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(`Discord ${method} ${path} → ${res.status}: ${err.slice(0, 300)}`);
-  }
-  return res.status === 204 ? null : res.json();
-}
-
-const discordPost = (path, body) => discordFetch('POST', path, body);
-const discordPatch = (path, body) => discordFetch('PATCH', path, body);
 
 /**
  * What a message from this module is allowed to ping: the route's three roles by
@@ -134,73 +104,6 @@ const NO_MENTIONS = { parse: [] };
 // It is the last column, but matched on its text rather than its index so adding
 // a question to the form doesn't start posting it.
 const SKIP_QUESTION = /^this form is for/i;
-
-// ── Small helpers ──────────────────────────────────────────────────────────────
-
-const nowStr = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
-const plusHours = (h) => new Date(Date.now() + h * 3600000).toISOString().slice(0, 19).replace('T', ' ');
-const plusDays = (d) => new Date(Date.now() + d * 86400000).toISOString().slice(0, 19).replace('T', ' ');
-
-function csvUrl() {
-  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${SHEET_GID}`;
-}
-
-/** '<tag> <base>', trimming the base so the whole thing fits Discord's limit. */
-function titled(base, tag) {
-  const room = THREAD_NAME_LIMIT - tag.length - 1;
-  return `${tag} ${base.slice(0, room).trimEnd()}`;
-}
-
-/** Swap whatever status tag a thread carries now for a new one. */
-function retag(name, tag) {
-  let base = name;
-  for (const t of ALL_TAGS) {
-    if (base.startsWith(t + ' ')) { base = base.slice(t.length + 1); break; }
-  }
-  return titled(base, tag);
-}
-
-/** Split long text at newline boundaries so every piece fits one message. */
-function chunks(text, limit = 1900) {
-  const parts = [];
-  let rest = String(text || '').trim();
-  while (rest.length > limit) {
-    let cut = rest.lastIndexOf('\n', limit);
-    if (cut < limit / 2) cut = limit;
-    parts.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\n+/, '');
-  }
-  if (rest) parts.push(rest);
-  return parts;
-}
-
-/**
- * A minimal CSV reader. Google's export quotes any field containing a comma,
- * newline or quote, and escapes quotes by doubling them — so a submission
- * containing either (they routinely contain both) has to be parsed rather than
- * split on commas.
- */
-function parseCsv(text) {
-  const rows = [];
-  let row = [], field = '', quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quoted) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; }
-        else quoted = false;
-      } else field += c;
-      continue;
-    }
-    if (c === '"') { quoted = true; continue; }
-    if (c === ',') { row.push(field); field = ''; continue; }
-    if (c === '\r') continue;
-    if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; continue; }
-    field += c;
-  }
-  if (field.length || row.length) { row.push(field); rows.push(row); }
-  return rows;
-}
 
 // Audit entries use the shared vocabulary: an uppercase verb, with the noun in
 // target_type. `feedback` is lowercase to match `task`, `document` and the rest.
@@ -236,33 +139,19 @@ const nudgeRow = (id) => actionRow(
 
 // ── Sheet polling ──────────────────────────────────────────────────────────────
 
-async function fetchRows() {
-  let text;
-  try {
-    const res = await fetch(csvUrl(), { signal: AbortSignal.timeout(30000) });
-    if (!res.ok) { console.error(`[FEEDBACK] sheet fetch HTTP ${res.status}`); return null; }
-    text = await res.text();
-  } catch (e) {
-    console.error('[FEEDBACK] sheet fetch error:', e.message);
-    return null;
-  }
-  // A sheet that has stopped being link-viewable answers with a login page, and
-  // parsing that as CSV would look like a sheet that suddenly went empty.
-  if (/^\s*<!doc|^\s*<html/i.test(text)) {
-    console.error('[FEEDBACK] sheet is not public (got HTML instead of CSV)');
-    return null;
-  }
-  return parseCsv(text);
-}
-
 // Health is recorded inside this function rather than by the caller, because the
 // interesting outcomes are all early returns: an unreadable sheet returns exactly
 // like a poll with nothing new, and a caller wrapping this in .then() would call
 // that a success.
 async function pollSheet() {
-  const rows = await fetchRows();
-  if (!rows || !rows.length) {
-    recordSyncFail('feedback_poll', rows ? 'the sheet returned no rows' : 'could not read the response sheet');
+  const { rows, error } = await fetchSheetRows(SHEET_ID, SHEET_GID);
+  if (error) {
+    console.error('[FEEDBACK]', error);
+    recordSyncFail('feedback_poll', error);
+    return;
+  }
+  if (!rows.length) {
+    recordSyncFail('feedback_poll', 'the sheet returned no rows');
     return;
   }
   const header = rows[0];

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getRole } from '../../../lib/discord.js';
 import { sendPing, pingMentions } from '../../../lib/pings.js';
-import { run, queryOne } from '../../../lib/db.js';
+import { run } from '../../../lib/db.js';
 
 function _createLeadershipTask(description) {
   const leadershipRoleId = getRole('fm_leadership');
@@ -13,42 +13,23 @@ function _createLeadershipTask(description) {
   );
 }
 
-// Destination channel and the role pinged for each form are configured per route
-// in ping_routes (Admin › Pings › Form Submissions), not hardcoded here.
-const FORM_CONFIGS = {
-  rcf_application: {
-    title: 'Recognized Criminal Faction Application',
-    color: 3447003,
-    route: 'form.rcf_application',
-    build: ({ factionName, sheetUrl }) => ({
-      description: `A Recognized Criminal Faction Application has been received from **${factionName}**!\n[View the response sheet here](${sheetUrl})`,
-    }),
-  },
-  staff_application: {
-    title: 'Faction Management Staff Application',
-    color: 15158332,
-    route: 'form.staff_application',
-    build: ({ applicantName, sheetUrl }) => ({
-      description: `A Faction Management Staff Application has been received from **${applicantName}**!\n[View the response sheet here](${sheetUrl})`,
-    }),
-  },
-  garage_request: {
-    title: 'Faction Management Garage Request',
-    color: 3547003,
-    route: 'form.garage_request',
-    build: ({ factionName, requestType, sheetUrl }) => ({
-      description: `A **${requestType}** Request has been received from **${factionName}**!\n[View the response sheet here](${sheetUrl})`,
-    }),
-  },
-  ci_application: {
-    title: 'New CI Application',
-    color: 9807270,
-    route: 'form.ci_application',
-    build: ({ applicantName, sheetUrl }) => ({
-      description: `A New CI Application has been received from **${applicantName}**.\n[View the response sheet here](${sheetUrl})`,
-    }),
-  },
-};
+// Forms the bot now takes in itself, by polling their response sheets and opening
+// a thread per submission (bot/formSubmissions.js).
+//
+// Their Apps Scripts still POST here on submit and there is no reason to stop
+// them: the push arrives with only a name and a link, so it cannot open the
+// thread, and answering it with an error would only turn every submission into a
+// failure notice in somebody's Google account. It is acknowledged and dropped.
+//
+// This is also where the auto-created Leadership task for these forms went. The
+// thread replaced it — it carries the answers, the ping and the workflow, where
+// the task carried a sentence and a link.
+const POLLED_FORMS = new Set([
+  'rcf_application',
+  'staff_application',
+  'garage_request',
+  'ci_application',
+]);
 
 const FEEDBACK_DEPT_MAP = {
   'Legal Faction Management (LFM)':   { route: 'form.faction_feedback.lfm', color: 3066993  },
@@ -98,17 +79,10 @@ export async function POST(req) {
     return NextResponse.json({ ok: true });
   }
 
-  // All other forms
-  const config = FORM_CONFIGS[formType];
-  if (!config) {
-    return NextResponse.json({ error: 'Unknown formType.' }, { status: 400 });
+  // Taken in by the bot from the response sheet instead — nothing to do here.
+  if (POLLED_FORMS.has(formType)) {
+    return NextResponse.json({ ok: true, handled_by: 'sheet poller' });
   }
 
-  const { description } = config.build(body);
-  const embed = { title: config.title, description, color: config.color };
-  await sendPing(config.route, null, { embeds: [embed] });
-  if (_pingsLeadership(config.route)) {
-    _createLeadershipTask(description);
-  }
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ error: 'Unknown formType.' }, { status: 400 });
 }
