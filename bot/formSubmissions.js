@@ -863,6 +863,21 @@ function remainingSteps(item, form) {
 }
 
 /**
+ * Redraw an application's checklist message from the database.
+ *
+ * Every normal tick redraws it in place as part of answering the interaction, so
+ * this is for the cases where nothing was pressed: a message edited out of sync,
+ * or a state change made outside Discord.
+ */
+export async function refreshChecklistMessage(id) {
+  const item = queryOne('SELECT id, form_key, title, thread_id, checklist_message_id FROM form_submissions WHERE id = ?', [id]);
+  const form = item && FORM_BY_KEY[item.form_key];
+  if (!form || !item.checklist_message_id) return false;
+  await discordPatch(`/channels/${item.thread_id}/messages/${item.checklist_message_id}`, checklistView(item, form));
+  return true;
+}
+
+/**
  * The reject modal's submission. Routed from index.js like the buttons; the
  * permission and status checks are repeated here because a modal can be
  * submitted long after it was opened, and roles or state may have moved on.
