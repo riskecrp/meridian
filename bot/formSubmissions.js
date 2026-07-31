@@ -452,7 +452,7 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
  * duplicate later. The record is a normal one — delete it and its thread when
  * you are done looking.
  */
-export async function postLatestRowForTest(formKey) {
+export async function postLatestRowForTest(formKey, wantRow = null) {
   const form = FORM_BY_KEY[formKey];
   if (!form) throw new Error(`unknown form "${formKey}"`);
 
@@ -460,8 +460,11 @@ export async function postLatestRowForTest(formKey) {
   if (error) throw new Error(error);
   if (rows.length < 2) throw new Error('sheet has no submissions');
 
-  const sheetRow = rows.length;   // 1-based; the last row of the sheet
-  await postSubmission(form, rows[0], rows[rows.length - 1], sheetRow, { silent: true });
+  // 1-based and inclusive of the header, matching what the poller records — so
+  // `wantRow` is the row number as the spreadsheet itself shows it.
+  const sheetRow = wantRow ?? rows.length;
+  if (sheetRow < 2 || sheetRow > rows.length) throw new Error(`row ${sheetRow} is not in the sheet`);
+  await postSubmission(form, rows[0], rows[sheetRow - 1], sheetRow, { silent: true });
   return queryOne('SELECT id, title, thread_id FROM form_submissions WHERE form_key = ? AND sheet_row = ?',
     [formKey, sheetRow]);
 }
