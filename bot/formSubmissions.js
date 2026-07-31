@@ -696,7 +696,9 @@ function allowedRoleNames(interaction, allowed) {
   const names = allowed
     .map((id) => interaction.guild?.roles?.cache?.get(id)?.name)
     .filter(Boolean);
-  return names.length ? names.join(', ') : 'the roles this form pings';
+  // Not "the roles this form pings" — in the setup phase some roles may act
+  // without being pinged at all, so that phrasing would name the wrong set.
+  return names.length ? names.join(', ') : 'certain roles';
 }
 
 /**
