@@ -259,7 +259,13 @@ function recordFailure(formKey, sheetRow, err) {
   }
 }
 
-async function postSubmission(form, header, row, sheetRow) {
+/**
+ * `silent` suppresses every mention — the roles are neither pinged in the
+ * content nor listed as allowed. It exists for postLatestRowForTest below, so a
+ * dry run can be posted through this exact code path (rather than a second
+ * renderer that would drift from it) without notifying anyone.
+ */
+async function postSubmission(form, header, row, sheetRow, { silent = false } = {}) {
   const { title, contact } = identify(form, header, row);
 
   const payload = rowPayload(header, row);
@@ -309,7 +315,8 @@ async function postSubmission(form, header, row, sheetRow) {
     run('UPDATE form_submissions SET thread_id = ? WHERE id = ?', [String(threadId), recordId]);
   }
 
-  const mentions = pingMentions(routeKey(form.key));
+  const mentions = silent ? '' : pingMentions(routeKey(form.key));
+  const allow = silent ? NO_MENTIONS : allowedMentions(routeKey(form.key));
 
   // Header block: every short answer as one line, in the order the form asks
   // them. Long answers follow as their own sections, so the summary stays
@@ -323,7 +330,7 @@ async function postSubmission(form, header, row, sheetRow) {
       ...shortLines,
       submittedAt ? `**Submitted:** ${submittedAt}` : '',
     ].filter(Boolean).join('\n').slice(0, 1990),
-    allowed_mentions: allowedMentions(routeKey(form.key)),
+    allowed_mentions: allow,
   });
 
   // One section per long-form answer, split to fit the message limit. The
@@ -356,7 +363,7 @@ async function postSubmission(form, header, row, sheetRow) {
       footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed or cancelled.` },
     }],
     components: [ackRow(recordId)],
-    allowed_mentions: allowedMentions(routeKey(form.key)),
+    allowed_mentions: allow,
   });
 
   run('UPDATE form_submissions SET ack_message_id = ? WHERE id = ?', [String(ack.id), recordId]);
@@ -364,6 +371,32 @@ async function postSubmission(form, header, row, sheetRow) {
 
   // Only now is the row fully posted, so an earlier failure record is stale.
   run('DELETE FROM form_submission_failures WHERE form_key = ? AND sheet_row = ?', [form.key, sheetRow]);
+}
+
+/**
+ * Post one form's most recent sheet row as a silent dry run — real thread, real
+ * layout, real working buttons, no ping.
+ *
+ * For eyeballing what a form produces before it goes live. It deliberately reuses
+ * postSubmission rather than rendering separately, because a preview that is not
+ * the actual code path is not a preview of anything.
+ *
+ * The row it posts is already behind the poller's position, so this creates no
+ * duplicate later. The record is a normal one — delete it and its thread when
+ * you are done looking.
+ */
+export async function postLatestRowForTest(formKey) {
+  const form = FORM_BY_KEY[formKey];
+  if (!form) throw new Error(`unknown form "${formKey}"`);
+
+  const { rows, error } = await fetchSheetRows(form.sheet.id, form.sheet.gid);
+  if (error) throw new Error(error);
+  if (rows.length < 2) throw new Error('sheet has no submissions');
+
+  const sheetRow = rows.length;   // 1-based; the last row of the sheet
+  await postSubmission(form, rows[0], rows[rows.length - 1], sheetRow, { silent: true });
+  return queryOne('SELECT id, title, thread_id FROM form_submissions WHERE form_key = ? AND sheet_row = ?',
+    [formKey, sheetRow]);
 }
 
 // ── Nudges ─────────────────────────────────────────────────────────────────────
