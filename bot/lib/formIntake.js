@@ -42,6 +42,38 @@ export async function discordFetch(method, path, body) {
 
 export const discordPost = (path, body) => discordFetch('POST', path, body);
 export const discordPatch = (path, body) => discordFetch('PATCH', path, body);
+export const discordDelete = (path) => discordFetch('DELETE', path);
+
+/**
+ * Remove a concluded thread's card from the parent channel's message flow.
+ *
+ * Opening a thread with no starter message makes Discord post a THREAD_CREATED
+ * (type 18) system message into the channel body, and that message STAYS there
+ * after the thread is archived — so a channel that works its items as threads
+ * fills up with cards for finished work, interleaved with the live ones. Worse,
+ * the card carries the thread's name AS IT WAS AT CREATION, so a completed item
+ * still reads '[Open]' in the flow.
+ *
+ * For a thread created this way the system message's id IS the thread id, and
+ * deleting it does NOT delete the thread: verified against the live guild
+ * 2026-08-02 — thread, history and archived listing all survived. (This is only
+ * true for standalone threads. A thread started FROM a message is owned by that
+ * message and deleting it takes the thread with it, so never point this at one.)
+ *
+ * Needs Manage Messages in the parent channel. Failure is logged and swallowed:
+ * the item is already concluded, and a card left in the flow is untidy, not
+ * broken.
+ */
+export async function hideThreadCard(threadId, parentId, tag = 'INTAKE') {
+  if (!threadId || !parentId) return false;
+  try {
+    await discordDelete(`/channels/${parentId}/messages/${threadId}`);
+    return true;
+  } catch (e) {
+    console.error(`[${tag}] could not hide thread card ${threadId}:`, e.message);
+    return false;
+  }
+}
 
 // ── Thread titles ──────────────────────────────────────────────────────────────
 //

@@ -36,7 +36,7 @@ import { logAudit } from './lib/audit.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import {
   nowStr, plusHours, plusDays,
-  discordFetch, discordPost, discordPatch,
+  discordFetch, discordPost, discordPatch, hideThreadCard,
   STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
 } from './lib/formIntake.js';
 
@@ -410,18 +410,31 @@ const actorName = (interaction) => interaction.member?.displayName
  * name is read over REST when the channel isn't in cache — the tag in the title
  * is how the channel list shows where everything stands, so it must not depend
  * on whether discord.js happened to have the thread cached at press time.
+ *
+ * Archiving also takes the thread's card out of the channel's message flow, so
+ * finished work stops sitting between the live items where it can be mistaken
+ * for something still open. The thread keeps everything — it moves to the
+ * channel's archived-thread list.
  */
 async function retitleThread(interaction, threadId, tag, { archive = false } = {}) {
   const id = interaction.channel?.isThread?.() ? interaction.channel.id : threadId;
   if (!id) return;
   try {
-    let name = interaction.channel?.isThread?.() ? interaction.channel.name : null;
-    if (!name) name = (await discordFetch('GET', `/channels/${id}`))?.name;
+    const cached = interaction.channel?.isThread?.() ? interaction.channel : null;
+    let name = cached?.name || null;
+    let parentId = cached?.parentId || null;
+    // One GET covers both, and the parent is only needed when we are archiving.
+    if (!name || (archive && !parentId)) {
+      const channel = await discordFetch('GET', `/channels/${id}`);
+      name = name || channel?.name;
+      parentId = parentId || channel?.parent_id;
+    }
     if (!name) return;
     await discordPatch(`/channels/${id}`, {
       name: retag(name, tag),
       ...(archive ? { archived: true } : {}),
     });
+    if (archive) await hideThreadCard(id, parentId, 'FEEDBACK');
   } catch (e) {
     // The record is already updated; a title that could not be changed is
     // cosmetic and must not turn a completed item into an error the presser sees.
