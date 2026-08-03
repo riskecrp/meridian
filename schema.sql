@@ -1,9 +1,3 @@
--- Meridian schema — GENERATED from the live DB, do not hand-edit.
--- Regenerate after migrations: sqlite3 data/meridian.db .schema > schema.sql
--- Generated: 2026-07-29T21:27:41Z
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE staff (
     id INTEGER PRIMARY KEY, discord_id TEXT NOT NULL UNIQUE, discord_name TEXT NOT NULL DEFAULT '',
     display_name TEXT NOT NULL DEFAULT '', team_id TEXT NOT NULL DEFAULT '', team_name TEXT NOT NULL DEFAULT '',
@@ -181,7 +175,7 @@ CREATE TABLE site_audit_log (
     target_id TEXT DEFAULT NULL,
     target_label TEXT NOT NULL DEFAULT '',
     details TEXT NOT NULL DEFAULT ''
-);
+, source TEXT NOT NULL DEFAULT 'site');
 CREATE INDEX idx_audit_timestamp ON site_audit_log(timestamp);
 CREATE TABLE weapon_ammo (
     id INTEGER PRIMARY KEY,
@@ -841,3 +835,71 @@ CREATE TABLE faction_feedback_failures (
   last_failed_at  TEXT,
   last_error      TEXT
 );
+CREATE TABLE sync_status (
+  job                   TEXT PRIMARY KEY,
+  label                 TEXT    NOT NULL DEFAULT '',
+  expected_every_minutes INTEGER NOT NULL DEFAULT 0,   -- 0 = no cadence to judge against
+  last_run_at           TEXT,
+  last_ok_at            TEXT,
+  last_detail           TEXT    NOT NULL DEFAULT '',   -- what the last good run did
+  last_error            TEXT    NOT NULL DEFAULT '',
+  last_error_at         TEXT,
+  consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+  runs                  INTEGER NOT NULL DEFAULT 0,
+  updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE form_submissions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_key          TEXT    NOT NULL,
+  sheet_row         INTEGER NOT NULL,
+  -- Display identity, resolved from the sheet headers at post time: `title` is
+  -- what the thread is named after, `contact` is who to reach for follow-up.
+  title             TEXT    NOT NULL DEFAULT '',
+  contact           TEXT    NOT NULL DEFAULT '',
+  submitted_at      TEXT    NOT NULL DEFAULT '',
+  payload           TEXT    NOT NULL DEFAULT '{}',
+  thread_id         TEXT,
+  ack_message_id    TEXT,
+  -- new -> claimed (acknowledged) -> completed / cancelled
+  status            TEXT    NOT NULL DEFAULT 'new',
+  claimed_by_id     TEXT,
+  claimed_by_name   TEXT,
+  claimed_at        TEXT,
+  -- When the next nudge is due. Rolled forward on every nudge so an item that
+  -- stays open keeps being chased instead of going quiet after one message.
+  due_at            TEXT,
+  last_reminder_at  TEXT,
+  concluded_by_name TEXT,
+  concluded_at      TEXT,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now')), decided_by_id       TEXT, decided_by_name     TEXT, decided_at          TEXT, decision_reason     TEXT, checklist_message_id TEXT,
+  UNIQUE (form_key, sheet_row)
+);
+CREATE INDEX idx_form_submissions_status ON form_submissions(form_key, status);
+CREATE TABLE form_submission_state (
+  form_key    TEXT    PRIMARY KEY,
+  last_row    INTEGER NOT NULL DEFAULT 0,
+  initialized INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE form_submission_failures (
+  form_key        TEXT    NOT NULL,
+  sheet_row       INTEGER NOT NULL,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  skipped         INTEGER NOT NULL DEFAULT 0,
+  first_failed_at TEXT,
+  last_failed_at  TEXT,
+  last_error      TEXT,
+  PRIMARY KEY (form_key, sheet_row)
+);
+CREATE TABLE form_submission_checklist (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  submission_id INTEGER NOT NULL,
+  item_key      TEXT    NOT NULL,
+  label         TEXT    NOT NULL,
+  sort          INTEGER NOT NULL DEFAULT 0,
+  done          INTEGER NOT NULL DEFAULT 0,
+  done_by_id    TEXT,
+  done_by_name  TEXT,
+  done_at       TEXT, detail TEXT NOT NULL DEFAULT '', prereq INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (submission_id, item_key)
+);
+CREATE INDEX idx_form_checklist_submission ON form_submission_checklist(submission_id);
