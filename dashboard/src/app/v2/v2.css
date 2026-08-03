@@ -91,7 +91,25 @@
 
 .v2-root .tn-right { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
 .v2-root .search { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-3); font-size: 12.5px; cursor: text; width: 150px; }
-@media (max-width: 1180px) { .v2-root .search { display: none; } }
+
+/* ── Topbar progressive collapse: the right cluster yields before the nav does.
+      1340px — user name/role goes, search shrinks; 1180px — search is icon-only,
+      nav icons go (labels stay readable); 900px — brand wordmark goes. ── */
+@media (max-width: 1340px) {
+  .v2-root .tn-user .who { display: none; }
+  .v2-root .search { width: 110px; }
+  .v2-root .topnav-inner { gap: 8px; }
+  .v2-root .tn-right { gap: 7px; }
+}
+@media (max-width: 1180px) {
+  .v2-root .search { width: auto; padding: 0; border: none; background: transparent; width: 32px; height: 32px; justify-content: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+  .v2-root .search .s-txt, .v2-root .search .kbd { display: none; }
+  .v2-root .tn-i .ic { display: none; }
+  .v2-root .tn-i { padding: 6px 7px; }
+}
+@media (max-width: 900px) {
+  .v2-root .tn-brand .wm { display: none; }
+}
 .v2-root .search .kbd { margin-left: auto; font-family: var(--v2-mono); font-size: 9.5px; padding: 1px 5px; border-radius: 4px; background: var(--panel-3); color: var(--ink-3); }
 .v2-root .tb-btn { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-2); display: grid; place-items: center; cursor: pointer; position: relative; }
 .v2-root .tb-btn:hover { color: var(--ink-0); border-color: var(--line-2); }
@@ -279,6 +297,4 @@
 @media (max-width: 860px) {
   .v2-root .cols { grid-template-columns: 1fr; }
   .v2-root .metrics { grid-template-columns: repeat(2,1fr); }
-  .v2-root .search { display: none; }
-  .v2-root .tn-user .who { display: none; }
 }

@@ -258,9 +258,9 @@ export default function V2Layout({ children }) {
             })}
           </nav>
           <div className="tn-right">
-            <button className="search" onClick={() => setPaletteOpen(true)} style={{ cursor: "pointer", fontFamily: "inherit" }}>
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></svg>
-              Search… <span className="kbd">⌘K</span>
+            <button className="search" onClick={() => setPaletteOpen(true)} style={{ cursor: "pointer", fontFamily: "inherit" }} title="Search (Ctrl/⌘ K)">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></svg>
+              <span className="s-txt">Search…</span> <span className="kbd">⌘K</span>
             </button>
             {auth?.ok && <PlusMenu auth={auth} />}
             {auth?.ok && <Bell auth={auth} />}
