@@ -4,7 +4,6 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { getFactions } from "../../fm/factions/actions.js";
 
-const GUILD = "1457188814916423855";
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 
 export default function V2Factions() {

@@ -10,7 +10,7 @@ export const ADMIN_GROUPS = [
   { id: "records", label: "Records", items: [["audit", "Audit Log"], ["archive", "Archive"], ["memberlog", "Server Logs", "risk"], ["convos", "Conversations"]] },
 ];
 
-const OWNER_ID = "738214924760907907";
+export const OWNER_ID = "738214924760907907";
 
 export function adminItemVisible([, , access], { level = 0, isET, isLST, id }) {
   if (access === "l1") return true;

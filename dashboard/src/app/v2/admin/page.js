@@ -47,7 +47,7 @@ function V2Admin() {
     <div className="view">
       <div className="page-head"><div><p className="eyebrow">Admin · {activeGroup.label}</p><h1>{viewLabel}</h1><div className="sub">Switch sections from the Admin menu in the top bar.</div></div></div>
 
-      {viewId === "audit" ? <Audit />
+      {viewId === "audit" ? <Audit auth={auth} />
         : viewId === "archive" ? <Archive />
         : viewId === "inventory" ? <Inventory auth={auth} />
         : viewId === "vehicles" ? <Vehicles canEdit={canEditCatalogs} />

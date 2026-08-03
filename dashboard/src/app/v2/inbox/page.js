@@ -93,7 +93,11 @@ export default function V2Inbox() {
     setBusy(true); setErr("");
     const r = await KIND[it.kind].reply(it.id, replyText).catch(() => ({ ok: false }));
     setBusy(false);
-    if (r?.ok) { closeAll(); load(); } else setErr(r?.error || "Failed to send.");
+    if (r?.ok) {
+      // Replying is the strongest form of "read".
+      if (!it.is_read) await KIND[it.kind].read(it.id).catch(() => {});
+      closeAll(); load();
+    } else setErr(r?.error || "Failed to send.");
   };
   const doRead = async (it) => { await KIND[it.kind].read(it.id); load(); };
   const doDeleteDM = async (it) => { await deleteDM(it.id); load(); };

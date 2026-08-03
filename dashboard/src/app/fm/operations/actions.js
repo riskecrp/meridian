@@ -4,7 +4,7 @@ import { logAudit } from "../../../lib/audit.js";
 import { sendPing, pingChannel, taskComponents } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { today } from "../../../lib/format.js";
-import { GAME_AFFAIRS_ID } from "../../../lib/constants.js";
+import { GAME_AFFAIRS_ID, RISK_DISCORD_ID } from "../../../lib/constants.js";
 
 // All Operations actions are L3-only unless explicitly noted otherwise.
 
@@ -325,6 +325,8 @@ export async function getAuditLog(limit) {
 }
 export async function deleteAuditLogEntry(entryId) {
   const actor = await requireActor(3, {allowEventTeam: true});
+  // An audit trail you can prune isn't an audit trail — owner only (2026-08-04).
+  if (actor.id !== RISK_DISCORD_ID && actor._realId !== RISK_DISCORD_ID) return { ok: false, error: 'Owner only' };
   run("DELETE FROM site_audit_log WHERE id = ?", [entryId]);
   logAudit(actor.id, actor.name, 'DELETE', 'audit_log', entryId, '', 'Audit entry pruned');
   return { ok: true };

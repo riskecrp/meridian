@@ -3,9 +3,11 @@
 // Split out of admin/page.js — content unchanged.
 import { useEffect, useMemo, useState } from "react";
 import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../../fm/operations/actions.js";
+import { OWNER_ID } from "../../adminNav.js";
 
-/* ── Audit Log ── */
-function Audit() {
+/* ── Audit Log (pruning is owner-only — an editable audit trail isn't one) ── */
+function Audit({ auth }) {
+  const isOwner = auth?.id === OWNER_ID || auth?._realId === OWNER_ID;
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -18,7 +20,7 @@ function Audit() {
       <input className="filter-inp" placeholder="Search actor, action, target…" value={q} onChange={e => setQ(e.target.value)} style={{ marginBottom: 14, maxWidth: 340 }} />
       <div className="card"><div style={{ overflowX: "auto" }}>
         <table className="dtable" style={{ minWidth: 720 }}>
-          <thead><tr><th>Timestamp</th><th>Action</th><th>Target</th><th>Details</th><th>Actor</th><th></th></tr></thead>
+          <thead><tr><th>Timestamp</th><th>Action</th><th>Target</th><th>Details</th><th>Actor</th>{isOwner && <th></th>}</tr></thead>
           <tbody>
             {shown.map(l => (
               <tr key={l.id}>
@@ -27,7 +29,7 @@ function Audit() {
                 <td style={{ color: "var(--ink-2)", whiteSpace: "nowrap" }}>{l.target_type}</td>
                 <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.target_label || l.details}</td>
                 <td style={{ color: "var(--ink-3)", whiteSpace: "nowrap" }}>{l.actor_name}</td>
-                <td><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this audit entry?")) { await deleteAuditLogEntry(l.id); load(); } }}>Del</button></td>
+                {isOwner && <td><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this audit entry?")) { await deleteAuditLogEntry(l.id); load(); } }}>Del</button></td>}
               </tr>
             ))}
           </tbody>
@@ -357,9 +359,11 @@ function Conversations() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
           <div style={{ flex: 1, minWidth: 200, position: "relative" }}>
             <div style={lbl}>Member (optional)</div>
-            <input className="filter-inp" style={{ width: "100%" }} value={member} placeholder="Search by member name…" onChange={async e => {
+            <input className="filter-inp" style={{ width: "100%" }} value={member} placeholder="Search by member name…" onChange={e => {
               const v = e.target.value; setMember(v);
-              if (v.length >= 1) setSuggestions(await getMemberSuggestions(v)); else setSuggestions([]);
+              clearTimeout(window.__convoSuggT);
+              if (v.length >= 1) window.__convoSuggT = setTimeout(async () => setSuggestions(await getMemberSuggestions(v).catch(() => [])), 250);
+              else setSuggestions([]);
             }} />
             {suggestions.length > 0 && member && (
               <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, borderRadius: 8, maxHeight: 200, overflowY: "auto", zIndex: 50, background: "var(--panel)", border: "1px solid var(--line-2)" }}>
