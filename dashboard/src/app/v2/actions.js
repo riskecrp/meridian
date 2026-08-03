@@ -80,7 +80,7 @@ export async function getMyAttention() {
       reminders: reminderInstances.length,
       icActive,
     },
-    reviewsDue: reviewsDue.slice(0, 12).map(r => ({ id: r.id, name: r.name })),
+    reviewsDue: reviewsDue.slice(0, 24).map(r => ({ id: r.id, name: r.name })),
     reminderInstances,
   };
 }

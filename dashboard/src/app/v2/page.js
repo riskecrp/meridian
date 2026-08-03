@@ -188,6 +188,7 @@ function V2Home() {
       chip: "REVIEWS", color: "var(--amber)", text: `${c.reviewsDue} faction${c.reviewsDue !== 1 ? "s" : ""} not reviewed this month`,
       href: "/v2/leadership?tab=reviews",
       subLinks: (att.reviewsDue || []).map(f => ({ label: f.name, href: `/v2/factions/${encodeURIComponent(f.name)}?tab=review` })),
+      moreCount: Math.max(0, c.reviewsDue - (att.reviewsDue || []).length),
     });
     if (c.icActive > 0) items.push({ chip: "IC", color: "var(--sky)", text: `${c.icActive} active IC contact${c.icActive !== 1 ? "s" : ""}`, href: isL3 ? "/v2/leadership?tab=contacts" : "/v2/factions" });
   }
@@ -232,8 +233,10 @@ function V2Home() {
                   ? <Link href={it.href} style={rowStyle}>{inner}</Link>
                   : <div style={rowStyle} onClick={it.onClick}>{inner}</div>}
                 {it.subLinks?.length > 0 && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, padding: "6px 2px 9px 6px", borderBottom: "1px solid var(--line)" }}>
-                    {it.subLinks.map(s => <Link key={s.label} href={s.href} className="chip role" style={{ textDecoration: "none" }}>{s.label} →</Link>)}
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, padding: "6px 2px 9px 6px", borderBottom: "1px solid var(--line)" }}>
+                    <span style={{ fontFamily: "var(--v2-mono)", fontSize: 9.5, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--ink-3)", marginRight: 3 }}>Jump to a review:</span>
+                    {it.subLinks.map(s => <Link key={s.label} href={s.href} className="chip role" style={{ textDecoration: "none" }} title={`Open ${s.label}'s Review tab`}>{s.label} →</Link>)}
+                    {it.moreCount > 0 && <Link href={it.href} style={{ fontSize: 11, color: "var(--accent)" }}>+{it.moreCount} more →</Link>}
                   </div>
                 )}
               </div>
