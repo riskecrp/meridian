@@ -17,7 +17,7 @@ function chanSummary(t, ct) {
 }
 
 /* Shared recipient selector + channel-type toggle */
-function Recipients({ targets, ct, setCt, selected, setSelected }) {
+function Recipients({ targets, ct, setCt, selected, setSelected, isL3 }) {
   const configurable = useMemo(() => targets.filter(t => hasChan(t, ct)), [targets, ct]);
   const unconfigured = useMemo(() => targets.filter(t => !hasChan(t, ct)), [targets, ct]);
   const allSel = configurable.length > 0 && configurable.every(t => selected.has(t.config_id));
@@ -50,7 +50,10 @@ function Recipients({ targets, ct, setCt, selected, setSelected }) {
             );
           })}
           {unconfigured.length > 0 && <>
-            <div style={{ padding: "8px 0 4px", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>No {chLabel(ct)} channel set</div>
+            <div style={{ padding: "8px 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>No {chLabel(ct)} channel set</span>
+              {isL3 && <a href="/v2/admin?tab=discord" style={{ fontSize: 10.5, color: "var(--accent)" }}>Fix in Faction Channels →</a>}
+            </div>
             {unconfigured.map(t => (
               <div key={t.config_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)", opacity: 0.45 }}>
                 <input type="checkbox" disabled />
@@ -96,7 +99,7 @@ function V2Comms() {
   const [loading, setLoading] = useState(true);
   const tabParam = sp.get("tab");
   const tab = COMMS_TABS.includes(tabParam) ? tabParam : "announce";
-  const setTab = (id) => router.replace(`/v2/comms${id === "announce" ? "" : `?tab=${id}`}`, { scroll: false });
+  const LABELS = { announce: "Announcement", ic: "IC Communication", history: "Send History" };
 
   useEffect(() => { if (!auth?.loading && (auth?.level >= 1 || auth?.isLeadStoryteller)) getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); }); }, [auth?.loading]);
   if (auth?.loading || loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
@@ -105,14 +108,11 @@ function V2Comms() {
   return (
     <div className="view">
       <div className="page-head">
-        <div><p className="eyebrow">Communications</p><h1>Comms</h1><div className="sub">Broadcast to faction Discords, and see what was delivered.</div></div>
-      </div>
-      <div className="hub-tabs">
-        {[["announce", "Announcement"], ["ic", "IC Communication"], ["history", "History"]].map(([v, l]) => <button key={v} className={`hub-tab${tab === v ? " on" : ""}`} onClick={() => setTab(v)}>{l}</button>)}
+        <div><p className="eyebrow">Comms</p><h1>{LABELS[tab]}</h1><div className="sub">Switch sections from the Comms menu in the top bar.</div></div>
       </div>
       {tab === "announce" && <Announce targets={targets} isL3={isL3} />}
-      {tab === "ic" && <IC targets={targets} />}
-      {tab === "history" && <History auth={auth} />}
+      {tab === "ic" && <IC targets={targets} isL3={isL3} />}
+      {tab === "history" && <History auth={auth} targets={targets} />}
     </div>
   );
 }
@@ -141,12 +141,12 @@ function Announce({ targets, isL3 }) {
           <Result r={result} />
         </div>
       </div>
-      <Recipients targets={targets} ct={ct} setCt={setCt} selected={selected} setSelected={setSelected} />
+      <Recipients targets={targets} ct={ct} setCt={setCt} selected={selected} setSelected={setSelected} isL3={isL3} />
     </div>
   );
 }
 
-function IC({ targets }) {
+function IC({ targets, isL3 }) {
   const [ct, setCt] = useState("command");
   const [selected, setSelected] = useState(new Set());
   const [link, setLink] = useState("");
@@ -192,7 +192,7 @@ function IC({ targets }) {
           <Result r={result} />
         </div>
       </div>
-      <Recipients targets={targets} ct={ct} setCt={setCt} selected={selected} setSelected={setSelected} />
+      <Recipients targets={targets} ct={ct} setCt={setCt} selected={selected} setSelected={setSelected} isL3={isL3} />
     </div>
   );
 }
@@ -201,12 +201,13 @@ const CH_META = { command: { sub: "Command only", badge: "COMMAND", color: "var(
 const FM_META = { sub: "Faction Management", badge: "FACTION MGMT", color: "var(--lock)" };
 function fmtSent(s) { const d = new Date((s || "").replace(" ", "T") + "Z"); if (isNaN(d)) return s || ""; return `${String(d.getDate()).padStart(2, "0")}/${d.toLocaleString("en-US", { month: "short" }).toUpperCase()}/${d.getFullYear()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
 
-function History({ auth }) {
+function History({ auth, targets }) {
   const [kind, setKind] = useState("announcement");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const canSeeAll = auth.level >= 3 || auth.isLeadStoryteller;
-  useEffect(() => { setLoading(true); getAnnouncementHistory(kind).then(h => { setRows(h || []); setLoading(false); }).catch(() => setLoading(false)); }, [kind]);
+  const load = () => { setLoading(true); getAnnouncementHistory(kind).then(h => { setRows(h || []); setLoading(false); }).catch(() => setLoading(false)); };
+  useEffect(() => { load(); }, [kind]);
   return (
     <>
       <div className="sub-tabs" style={{ marginBottom: 14 }}>
@@ -215,16 +216,50 @@ function History({ auth }) {
       </div>
       {!canSeeAll && <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 8 }}>Showing memos you sent.</div>}
       {loading ? <div className="empty">Loading…</div> : rows.length === 0 ? <div className="empty">Nothing sent yet.</div> : (
-        <div className="card">{rows.map(r => <HistRow key={r.id} row={r} />)}</div>
+        <div className="card">{rows.map(r => <HistRow key={r.id} row={r} targets={targets} onRetried={load} />)}</div>
       )}
     </>
   );
 }
 
-function HistRow({ row }) {
+function HistRow({ row, targets, onRetried }) {
   const [exp, setExp] = useState(false);
   const [full, setFull] = useState(false);
   const [img, setImg] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryMsg, setRetryMsg] = useState("");
+
+  // Re-send this message to just the factions whose delivery failed, at the
+  // same channel granularity as the original failure. Creates a fresh history
+  // row (it IS a new send).
+  const isICRow = row.kind === "ic";
+  const failed = (row.deliveries || []).filter(d => !d.ok && d.channel_type !== "FM Discord");
+  const canRetry = failed.length > 0 && (targets || []).length > 0 && (!isICRow || row.link);
+  const retryFailed = async () => {
+    if (!window.confirm(`Resend this ${isICRow ? "IC communication" : "announcement"} to the ${failed.length} failed faction${failed.length !== 1 ? "s" : ""}?`)) return;
+    setRetrying(true); setRetryMsg("");
+    const byCt = { command: new Set(), faction: new Set() };
+    let unmatched = 0;
+    failed.forEach(d => {
+      const t = (targets || []).find(x => x.faction_id === d.faction_id || x.name === d.faction_name);
+      if (!t) { unmatched++; return; }
+      const ct = d.channel_type === "Faction-wide" ? "faction" : "command";
+      if (hasChan(t, ct)) byCt[ct].add(t.config_id); else unmatched++;
+    });
+    let sent = 0, total = 0;
+    for (const ct of ["command", "faction"]) {
+      const ids = [...byCt[ct]];
+      if (!ids.length) continue;
+      const r = isICRow
+        ? await (sendICCommunication(ids, row.link, row.message || "", ct).catch(() => ({ ok: false })))
+        : await (sendAnnouncement(ids, row.message || "", false, ct).catch(() => ({ ok: false })));
+      if (r?.ok) { sent += r.sent || 0; total += r.total || ids.length; }
+      else total += ids.length;
+    }
+    setRetrying(false);
+    setRetryMsg(`Resent ${sent}/${total}${unmatched ? ` · ${unmatched} no longer configured` : ""}`);
+    onRetried?.();
+  };
   const isIC = row.kind === "ic";
   const factionDel = (row.deliveries || []).filter(d => d.channel_type !== "FM Discord");
   const fmOnly = !isIC && factionDel.length === 0 && (row.posted_to_fm || (row.deliveries || []).some(d => d.channel_type === "FM Discord"));
@@ -252,6 +287,8 @@ function HistRow({ row }) {
         <button onClick={() => setExp(v => !v)} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, background: "none", border: "none", padding: 0, cursor: "pointer", color: allOk ? "var(--good)" : row.sent_count > 0 ? "var(--amber)" : "var(--rose)" }}><span style={{ fontSize: 9 }}>{exp ? "▼" : "▶"}</span>{row.sent_count}/{row.total_count} sent</button>
         {!fmOnly && !isIC && row.posted_to_fm ? <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 3 }}>+ also posted to Faction Management</div> : null}
         {exp && <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>{lines.length === 0 ? <span style={{ fontSize: 11, color: "var(--ink-3)" }}>No delivery records.</span> : lines.map(d => <div key={d.id} style={{ fontSize: 11, color: d.ok ? "var(--good)" : "var(--rose)" }}>{d.ok ? "✓" : "✗"} {d.faction_name}{showChan && d.channel_type ? ` (${d.channel_type})` : ""}{!d.ok && d.error ? `: ${d.error}` : ""}</div>)}</div>}
+        {canRetry && !retryMsg && <button className="act" style={{ marginTop: 6, color: "var(--amber)" }} disabled={retrying} onClick={retryFailed}>{retrying ? "Resending…" : `Retry failed (${failed.length})`}</button>}
+        {retryMsg && <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: "var(--good)" }}>✓ {retryMsg}</div>}
       </div>
     </div>
   );

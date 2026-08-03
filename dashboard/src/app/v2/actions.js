@@ -108,6 +108,29 @@ export async function getFactionFleetSummary(factionId) {
   };
 }
 
+// Every document, for the Library. The old level_required gate was relevance
+// filtering, not confidentiality (owner ruling 2026-08-03): everyone sees the
+// whole catalog; level_required becomes the "audience" tag the UI groups by.
+export async function getAllDocuments() {
+  await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
+  return query("SELECT * FROM documents ORDER BY level_required ASC, category, title");
+}
+
+// Per-faction cycle state that getReviewData can't answer: who got their
+// feedback message this month, and which factions have a promo staged.
+export async function getReviewCycleMap() {
+  await requireActor(2, { allowLeadStoryteller: true });
+  const month = new Date().toISOString().substring(0, 7);
+  const fb = query(`SELECT target_label, actor_name, MAX(timestamp) t FROM site_audit_log
+    WHERE target_type = 'feedback_sent' AND strftime('%Y-%m', timestamp) = ?
+    GROUP BY target_label`, [month]);
+  const promos = query("SELECT name FROM factions WHERE archived = 0 AND pending_promo IS NOT NULL AND pending_promo != ''");
+  return {
+    feedback: Object.fromEntries(fb.map(r => [r.target_label, { by: r.actor_name, at: r.t }])),
+    staged: promos.map(p => p.name),
+  };
+}
+
 // Has this month's feedback been delivered to the faction? Sent-ness is only
 // recorded in the audit log (by sendFeedbackToFaction / markFeedbackSent), so
 // read it back from there for the review checklist.

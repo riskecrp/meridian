@@ -3,9 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getMyAttention } from "./actions.js";
+import { getMyAttention, getAllDocuments } from "./actions.js";
 import { getFactions } from "../fm/factions/actions.js";
-import { getDocuments } from "../fm/documents/actions.js";
 import { getLoreEntries, getNPCs } from "../fm/storytelling/actions.js";
 
 /* ── Global "+ New" — the four creation verbs, reachable from any page.
@@ -86,13 +85,13 @@ export function CommandPalette({ auth, navTargets, open, setOpen }) {
     if (dyn === null) {
       Promise.all([
         getFactions().catch(() => []),
-        getDocuments().catch(() => []),
+        getAllDocuments().catch(() => []),
         getLoreEntries().catch(() => []),
         canNPC ? getNPCs().catch(() => []) : Promise.resolve([]),
       ]).then(([facs, docs, lore, npcs]) => {
         const items = [];
         (facs || []).forEach(f => items.push({ kind: "Faction", label: f.name, sub: `T${f.tier}${f.teamName ? ` · ${f.teamName}` : ""}`, href: `/v2/factions/${encodeURIComponent(f.name)}` }));
-        (docs || []).filter(d => (d.level_required || 1) <= level).forEach(d => items.push({ kind: "Doc", label: d.title, sub: d.category, href: `/v2/admin?tab=docs&sop=${encodeURIComponent(d.title)}` }));
+        (docs || []).forEach(d => items.push({ kind: "Doc", label: d.title, sub: d.category, href: `/v2/story?tab=docs&sop=${encodeURIComponent(d.title)}` }));
         (lore || []).forEach(e => items.push({ kind: "KB", label: e.title, sub: e.category, href: `/v2/story?tab=kb&q=${encodeURIComponent(e.title)}` }));
         (npcs || []).forEach(n => items.push({ kind: "NPC", label: n.name, sub: n.turf || n.npc_type, href: `/v2/story?tab=npcs&q=${encodeURIComponent(n.name)}` }));
         setDyn(items);

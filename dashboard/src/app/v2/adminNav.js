@@ -4,7 +4,9 @@
 export const ADMIN_GROUPS = [
   { id: "people", label: "People", items: [["staff", "Staff & Teams"], ["hours", "FM Hours", "risk"]] },
   { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", "l2"], ["vehicles", "Vehicle Catalog", "l2"], ["imports", "Import Catalog", "l2"]] },
-  { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l2"], ["docs", "Documents", "l1"], ["discord", "Discord & Access"]] },
+  // Documents moved to Library (all-staff reference, 2026-08-03) — with it gone,
+  // nothing here is L1 and the Admin nav disappears for guides entirely.
+  { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l2"], ["discord", "Discord & Access"]] },
   { id: "records", label: "Records", items: [["audit", "Audit Log"], ["archive", "Archive"], ["memberlog", "Server Logs", "risk"], ["convos", "Conversations"]] },
 ];
 

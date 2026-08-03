@@ -18,6 +18,7 @@ import { useDraft, loadDraft, clearDraft } from "../../../lib/useDraft";
 
 import Modal from "../Modal.js";
 import { useCopy, useRun } from "../hooks.js";
+import DocumentsView from "./Documents.js";
 
 const GTAMap = dynamic(() => import("../../../lib/GTAMap"), { ssr: false, loading: () => <div style={{ height: 400, display: "grid", placeItems: "center", color: "var(--ink-3)" }}>Loading map…</div> });
 
@@ -56,6 +57,7 @@ function V2Story() {
 
   const TABS = [
     { id: "kb", label: "Knowledge Base" },
+    { id: "docs", label: "Documents" },
     { id: "scenelogs", label: "Scene Logs" },
     { id: "scenes", label: "Scene Library" },
     { id: "arsenal", label: "Arsenal" },
@@ -81,13 +83,14 @@ function V2Story() {
     <div className="view">
       <div className="page-head">
         <div>
-          <p className="eyebrow">Storytelling</p>
+          <p className="eyebrow">Library</p>
           <h1>{sectionLabel}</h1>
-          <div className="sub">Switch sections from the Storytelling menu in the top bar.</div>
+          <div className="sub">Switch sections from the Library menu in the top bar.</div>
         </div>
       </div>
       {busy && !loaded[tab] && <div className="empty">Loading…</div>}
 
+      {tab === "docs" && <DocumentsView auth={auth} />}
       {tab === "kb" && loaded.kb && <KB auth={auth} canMgmt={canMgmt} lore={data.kb.lore} cmds={data.kb.command} reload={() => reload("kb")} initialQ={initialQ} />}
       {tab === "changelog" && loaded.changelog && <ChangeLog auth={auth} rows={data.changelog} reload={() => reload("changelog")} />}
       {tab === "scenes" && loaded.scenes && <Scenes rows={data.scenes} />}

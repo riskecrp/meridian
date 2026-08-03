@@ -196,10 +196,11 @@ export default function V2Layout({ children }) {
     { key: "home", label: "Home", href: "/v2", icon: I.home },
     { key: "inbox", label: "Inbox", href: "/v2/inbox", icon: I.inbox },
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
-    // Prototype: sections as a nav dropdown instead of in-page tabs (deep-linked via ?tab=).
+    // Library = everything you look up: reference, docs, scene records.
     {
-      key: "story", label: "Storytelling", href: "/v2/story", icon: I.story, menu: [
+      key: "story", label: "Library", href: "/v2/story", icon: I.story, menu: [
         { id: "kb", label: "Knowledge Base" },
+        { id: "docs", label: "Documents" },
         { id: "scenelogs", label: "Scene Logs" },
         { id: "scenes", label: "Scene Library" },
         { id: "arsenal", label: "Arsenal" },
@@ -207,7 +208,13 @@ export default function V2Layout({ children }) {
         { id: "changelog", label: "Change Log" },
       ],
     },
-    { key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms },
+    {
+      key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms, menu: [
+        { id: "announce", label: "Announcement" },
+        { id: "ic", label: "IC Communication" },
+        { id: "history", label: "Send History" },
+      ],
+    },
     {
       key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2, menu: [
         { id: "approvals", label: "Approvals" },
@@ -227,14 +234,9 @@ export default function V2Layout({ children }) {
   ].filter(it => (!it.min || level >= it.min) && (!it.menu || it.menu.some(m => m.id)));
 
   // Every reachable section, for the ⌘K palette.
-  const navTargets = [
-    ...NAV.flatMap(it => it.menu
-      ? [{ kind: "Page", label: it.label, href: it.href }, ...it.menu.filter(m => m.id).map(m => ({ kind: it.label, label: m.label, href: `${it.href}?tab=${m.id}` }))]
-      : [{ kind: "Page", label: it.label, href: it.href }]),
-    { kind: "Comms", label: "Announcement", href: "/v2/comms" },
-    { kind: "Comms", label: "IC Communication", href: "/v2/comms?tab=ic" },
-    { kind: "Comms", label: "Send History", href: "/v2/comms?tab=history" },
-  ];
+  const navTargets = NAV.flatMap(it => it.menu
+    ? [{ kind: "Page", label: it.label, href: it.href }, ...it.menu.filter(m => m.id).map(m => ({ kind: it.label, label: m.label, href: `${it.href}?tab=${m.id}` }))]
+    : [{ kind: "Page", label: it.label, href: it.href }]);
 
   return (
     <div className="v2-root">

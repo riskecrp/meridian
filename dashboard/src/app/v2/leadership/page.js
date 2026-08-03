@@ -11,6 +11,7 @@ import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatu
 import RpChangeForm from "../../fm/teams/RpChangeForm";
 import Modal from "../Modal.js";
 import { FM_GUILD_ID } from "../../../lib/constants";
+import { getReviewCycleMap } from "../actions.js";
 
 export default function V2LeadershipPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Leadership /></Suspense>;
@@ -243,41 +244,87 @@ function MeetingNotes({ auth, openNew = false }) {
   );
 }
 
-/* ── Reviews roll-up ── */
+/* ── Reviews: the monthly cycle board. One row per faction, one dot per step
+      (Reviewed → Confirmed → Feedback sent → Staged), one click to the exact
+      step in that faction's hub. ── */
+function CycleDot({ on, label, hint }) {
+  return <span title={`${label}${hint ? ` — ${hint}` : ""}`} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+    <span style={{ width: 8, height: 8, borderRadius: "50%", background: on ? "var(--good)" : "var(--panel-2)", border: `1px solid ${on ? "var(--good)" : "var(--line-2)"}`, display: "inline-block" }} />
+    <span style={{ fontSize: 9, fontFamily: "var(--v2-mono)", color: on ? "var(--good)" : "var(--ink-3)" }}>{label}</span>
+  </span>;
+}
+
 function Reviews() {
   const [rows, setRows] = useState([]);
+  const [cycle, setCycle] = useState({ feedback: {}, staged: [] });
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
-  useEffect(() => { getReviewData().then(r => { setRows(r || []); setLoading(false); }).catch(() => setLoading(false)); }, []);
+  const [flt, setFlt] = useState("all"); // all | todo | confirm | feedback
+  useEffect(() => {
+    Promise.all([getReviewData().catch(() => []), getReviewCycleMap().catch(() => ({ feedback: {}, staged: [] }))])
+      .then(([r, c]) => { setRows(r || []); setCycle(c || { feedback: {}, staged: [] }); setLoading(false); });
+  }, []);
   if (loading) return <div className="empty">Loading…</div>;
-  const shown = rows.filter(f => !q || [f.name, f.teamName, f.leadName].some(x => (x || "").toLowerCase().includes(q.toLowerCase())));
+
+  const state = (f) => ({
+    reviewed: !!f.currentReview,
+    confirmed: !!f.currentReview?.status?.startsWith("Confirmed"),
+    feedback: !!cycle.feedback[f.name],
+    staged: cycle.staged.includes(f.name),
+  });
+  const shown = rows
+    .filter(f => !q || [f.name, f.teamName, f.leadName].some(x => (x || "").toLowerCase().includes(q.toLowerCase())))
+    .filter(f => {
+      const s = state(f);
+      if (flt === "todo") return !s.reviewed;
+      if (flt === "confirm") return s.reviewed && !s.confirmed;
+      if (flt === "feedback") return !s.feedback;
+      return true;
+    });
   const reviewed = rows.filter(f => f.currentReview).length;
+  const fbSent = rows.filter(f => cycle.feedback[f.name]).length;
   const recColor = (r) => r === "Promote" ? "var(--good)" : (r === "Demote" || r === "Remove") ? "var(--rose)" : "var(--amber)";
   return (
     <>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-        <input className="filter-inp" style={{ maxWidth: 320 }} placeholder="Filter factions…" value={q} onChange={e => setQ(e.target.value)} />
-        <span style={{ fontFamily: "var(--v2-mono)", fontSize: 11.5, color: "var(--ink-3)" }}>{reviewed} / {rows.length} reviewed this month</span>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+        <input className="filter-inp" style={{ maxWidth: 280 }} placeholder="Filter factions…" value={q} onChange={e => setQ(e.target.value)} />
+        <div style={{ display: "flex", gap: 5 }}>
+          {[["all", "All"], ["todo", "Needs review"], ["confirm", "Needs confirm"], ["feedback", "Needs feedback"]].map(([v, l]) => (
+            <button key={v} className={`pill${flt === v ? " on" : ""}`} onClick={() => setFlt(v)}>{l}</button>
+          ))}
+        </div>
+        <span style={{ marginLeft: "auto", fontFamily: "var(--v2-mono)", fontSize: 11.5, color: "var(--ink-3)" }}>{reviewed}/{rows.length} reviewed · {fbSent}/{rows.length} feedback sent · due the 15th</span>
       </div>
       <div className="card"><div style={{ overflowX: "auto" }}>
-        <table className="dtable" style={{ minWidth: 680 }}>
-          <thead><tr><th>Faction</th><th>Team</th><th>Tier</th><th style={{ textAlign: "right" }}>Scenes 30d</th><th>This month</th><th></th></tr></thead>
+        <table className="dtable" style={{ minWidth: 760 }}>
+          <thead><tr><th>Faction</th><th>Team</th><th>Tier</th><th style={{ textAlign: "right" }}>Scenes 30d</th><th>Recommendation</th><th>Cycle</th><th></th></tr></thead>
           <tbody>
-            {shown.map(f => (
-              <tr key={f.id}>
-                <td><b>{f.name}</b></td>
-                <td style={{ color: "var(--ink-2)" }}>{f.teamName || "—"}</td>
-                <td><span className={`tier ${f.tier >= 7 ? "hi" : f.tier >= 4 ? "mid" : "lo"}`}>T{f.tier}</span></td>
-                <td style={{ textAlign: "right", fontFamily: "var(--v2-mono)" }}>{f.scenes30}</td>
-                <td>{f.currentReview
-                  ? <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}><span className="chip" style={{ background: `color-mix(in srgb, ${recColor(f.currentReview.recommendation)} 15%, transparent)`, color: recColor(f.currentReview.recommendation) }}>{f.currentReview.recommendation || "—"}</span><span style={{ fontSize: 11, color: "var(--ink-3)" }}>{f.currentReview.status}</span></span>
-                  : <span style={{ fontSize: 11.5, color: "var(--amber)" }}>Not reviewed</span>}</td>
-                <td><Link className="act" href={`/v2/factions/${encodeURIComponent(f.name)}?tab=review`}>Open →</Link></td>
-              </tr>
-            ))}
+            {shown.map(f => {
+              const s = state(f);
+              return (
+                <tr key={f.id}>
+                  <td><b>{f.name}</b></td>
+                  <td style={{ color: "var(--ink-2)" }}>{f.teamName || "—"}</td>
+                  <td><span className={`tier ${f.tier >= 7 ? "hi" : f.tier >= 4 ? "mid" : "lo"}`}>T{f.tier}</span></td>
+                  <td style={{ textAlign: "right", fontFamily: "var(--v2-mono)" }}>{f.scenes30}</td>
+                  <td>{f.currentReview
+                    ? <span className="chip" style={{ background: `color-mix(in srgb, ${recColor(f.currentReview.recommendation)} 15%, transparent)`, color: recColor(f.currentReview.recommendation) }}>{f.currentReview.recommendation || "—"}</span>
+                    : <span style={{ fontSize: 11.5, color: "var(--amber)" }}>Not reviewed</span>}</td>
+                  <td>
+                    <span style={{ display: "inline-flex", gap: 9, alignItems: "center" }}>
+                      <CycleDot on={s.reviewed} label="REC" hint={f.currentReview ? "review submitted" : "no review yet"} />
+                      <CycleDot on={s.confirmed} label="CONF" hint={f.currentReview?.status || ""} />
+                      <CycleDot on={s.feedback} label="SENT" hint={cycle.feedback[f.name] ? `by ${cycle.feedback[f.name].by}` : "feedback not delivered"} />
+                      {s.staged && <span className="chip lock" style={{ fontSize: 9 }}>STAGED</span>}
+                    </span>
+                  </td>
+                  <td><Link className="act" href={`/v2/factions/${encodeURIComponent(f.name)}?tab=review`}>Open →</Link></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
-      </div></div>
+      </div>{shown.length === 0 && <div className="empty">Nothing matches this filter.</div>}</div>
     </>
   );
 }
