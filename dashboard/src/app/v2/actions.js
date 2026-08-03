@@ -8,6 +8,7 @@ import { logAudit } from "../../lib/audit.js";
 import { getMyTasks, getMyMentions, getLeadershipMentions, getTeamWatchPings, getDMTrackingStatus, getForwardedDMs } from "../fm/dashboard/actions.js";
 import { getPendingQueue } from "../fm/leadership/actions.js";
 import { getTeamIcContacts } from "../fm/teams/actions.js";
+import { getFleetTierDefaults } from "../fm/operations/actions.js";
 
 const unreadCount = (arr) => (arr || []).filter(x => !x.is_read).length;
 
@@ -82,6 +83,41 @@ export async function getMyAttention() {
     reviewsDue: reviewsDue.slice(0, 12).map(r => ({ id: r.id, name: r.name })),
     reminderInstances,
   };
+}
+
+// Read-only fleet standing for one faction — counts + effective (possibly
+// overridden) limits. Caps are faction-facing capability info, so all staff
+// may read them; editing stays L3 in the hub Assets tab. Mirrors
+// getEffectiveLimits() in fm/operations/actions.js.
+export async function getFactionFleetSummary(factionId) {
+  await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
+  const f = queryOne("SELECT id, tier FROM factions WHERE id = ?", [factionId]);
+  if (!f) return null;
+  const defaults = (await getFleetTierDefaults())[f.tier] || { types: 0, total: 0, garages: 1, stipend: 0 };
+  const override = queryOne("SELECT max_types, max_total, max_garages FROM faction_fleet_config WHERE faction_id = ?", [factionId]);
+  const veh = queryOne("SELECT COUNT(*) types, COALESCE(SUM(quantity),0) total FROM faction_fleet_vehicles WHERE faction_id = ?", [factionId]);
+  const gar = queryOne("SELECT COUNT(*) c FROM faction_fleet_garages WHERE faction_id = ?", [factionId]);
+  return {
+    typeCount: veh?.types || 0,
+    totalQuantity: veh?.total || 0,
+    garageCount: gar?.c || 0,
+    limits: override
+      ? { maxTypes: override.max_types ?? defaults.types, maxTotal: override.max_total ?? defaults.total, maxGarages: override.max_garages ?? defaults.garages, isOverridden: true }
+      : { maxTypes: defaults.types, maxTotal: defaults.total, maxGarages: defaults.garages, isOverridden: false },
+    stipend: defaults.stipend ?? 0,
+  };
+}
+
+// Has this month's feedback been delivered to the faction? Sent-ness is only
+// recorded in the audit log (by sendFeedbackToFaction / markFeedbackSent), so
+// read it back from there for the review checklist.
+export async function getFeedbackSentThisMonth(factionName) {
+  await requireActor(2, { allowLeadStoryteller: true });
+  const row = queryOne(`SELECT actor_name, timestamp FROM site_audit_log
+    WHERE target_type = 'feedback_sent' AND target_label = ?
+      AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')
+    ORDER BY timestamp DESC LIMIT 1`, [factionName]);
+  return row ? { sent: true, by: row.actor_name, at: row.timestamp } : { sent: false };
 }
 
 // Complete one of MY recurring-reminder instances (L3 may complete anyone's,

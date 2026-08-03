@@ -18,12 +18,15 @@ import {
 import {
   getReviewHistory, getReviewData, submitReview, setReviewStatus,
   getFactionLeadershipSummary, getMyPersonalNotes, submitPersonalNote,
-  generateFeedbackDraft, sendFeedbackToFaction, markFeedbackSent,
+  generateFeedbackDraft, adjustFeedbackDraft, sendFeedbackToFaction, markFeedbackSent,
 } from "../../../fm/leadership/actions.js";
 import {
   getFleetOverview, getFleetTierDefaults, addFleetVehicle, deleteFleetVehicle,
   addFleetGarage, deleteFleetGarage, setFleetOverride, clearFleetOverride,
 } from "../../../fm/operations/actions.js";
+import { assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getThreadMessages } from "../../../fm/teams/actions.js";
+import { getFactionFleetSummary, getFeedbackSentThisMonth } from "../../actions.js";
+import { FM_GUILD_ID } from "../../../../lib/constants";
 
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const money = (n) => "$" + (n || 0).toLocaleString();
@@ -59,6 +62,9 @@ function FactionHub() {
   const [contacts, setContacts] = useState([]);
   const [imports, setImports] = useState([]);
   const [fleet, setFleet] = useState(null);
+  const [fleetSum, setFleetSum] = useState(null);
+  const [fbSent, setFbSent] = useState(null);
+  const [assignFor, setAssignFor] = useState(null); // { contactId, staff, sel }
   const [tierDefaults, setTierDefaults] = useState({});
   const [reviews, setReviews] = useState([]);
   const [reviewInfo, setReviewInfo] = useState(null);
@@ -95,11 +101,13 @@ function FactionHub() {
     getFactionImports(d.id).then(i => setImports(i || [])).catch(() => {});
     getFactionPortalMessages(d.id).then(p => setPortal(p || [])).catch(() => {});
     getFleetTierDefaults().then(setTierDefaults).catch(() => {});
+    getFactionFleetSummary(d.id).then(setFleetSum).catch(() => {});
     if (isL3) getFleetOverview().then(all => setFleet((all || []).find(f => f.id === d.id) || null)).catch(() => {});
     if (isLeader) {
       getReviewHistory(d.id).then(r => setReviews(r || [])).catch(() => {});
       getReviewData().then(all => { const info = (all || []).find(f => f.id === d.id) || null; setReviewInfo(info); if (info?.currentReview) setRecForm({ recommendation: info.currentReview.recommendation || "", feedback: info.currentReview.feedback || "" }); }).catch(() => {});
       getFactionLeadershipSummary(d.id).then(x => setLeadSummary(x || { notes: [], pending: [] })).catch(() => {});
+      getFeedbackSentThisMonth(d.name).then(setFbSent).catch(() => {});
     }
     setLoading(false);
   };
@@ -127,10 +135,12 @@ function FactionHub() {
     ...(isLeader ? [{ id: "review", label: "Review", lock: true }, { id: "admin", label: "Admin" }] : []),
   ];
 
-  // ── Stage RP Change (multi-step modal) ──
-  const openStageRP = async () => {
+  // ── Stage RP Change (multi-step modal). When opened from an incoming IC
+  //    contact, the request goes through stageRoleplay so the contact advances
+  //    to pending_roleplay and its Discord thread is notified. ──
+  const openStageRP = async (contactId = null) => {
     const [npcs, props] = await Promise.all([getNPCsForRP().catch(() => []), getFactionProperties(detail.id).catch(() => [])]);
-    setForm({ kind: "rp", step: "type", type: "", npcs, props, oldVal: "", newVal: "", turf: "" });
+    setForm({ kind: "rp", step: "type", type: "", npcs, props, oldVal: "", newVal: "", turf: "", contactId });
   };
   const submitRP = async () => {
     const f = form; let payload;
@@ -138,7 +148,8 @@ function FactionHub() {
     else if (f.type === "HQ") payload = { faction: detail.name, type: "HQ", oldValue: f.oldVal, newValue: f.newVal, turf: "N/A" };
     else payload = { faction: detail.name, type: "Other", oldValue: f.oldVal || "N/A", newValue: f.newVal, turf: "N/A" };
     if (!payload.newValue?.trim()) return;
-    await run(() => requestRPChange(payload));
+    if (f.contactId) await run(() => stageRoleplay(f.contactId, { type: payload.type, turf: payload.turf, oldValue: payload.oldValue, newValue: payload.newValue }));
+    else await run(() => requestRPChange(payload));
   };
 
   // ── OOC editor ──
@@ -158,7 +169,7 @@ function FactionHub() {
           <h1>{detail.name}</h1>
           <span className={`tier ${tierBand(detail.tier)}`} style={{ fontSize: 11, padding: "3px 8px" }}>Tier {detail.tier}</span>
           {summary?.teamName && <span className="chip role">{summary.teamName}</span>}
-          {isL3 && <button className="act" style={{ padding: "2px 8px" }} onClick={async () => { const n = window.prompt("Rename faction:", detail.name); if (n && n !== detail.name) { await renameFaction(detail.id, detail.name, n); router.replace(`/v2/factions/${encodeURIComponent(n)}`); } }}>Rename</button>}
+          {isL3 && <button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ kind: "rename", value: detail.name })}>Rename</button>}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           {isLeader && <button className="btn ghost" style={{ color: "var(--amber)" }} onClick={openStageRP}>Stage RP change</button>}
@@ -195,9 +206,9 @@ function FactionHub() {
               <div className="hd"><div className="t">Standing</div><div className="meta">Tier {detail.tier}</div></div>
               <div className="kv">
                 <div><div className="k">Imports allowed</div><div className="v">{permittedCount}</div></div>
-                <div><div className="k">Fleet cap</div><div className="v">{td.total ?? "—"} <span style={{ fontSize: 11, color: "var(--ink-3)" }}>({td.types ?? "—"} types)</span></div></div>
-                <div><div className="k">Garages</div><div className="v">{td.garages ?? "—"}</div></div>
-                <div><div className="k">Stipend</div><div className="v">{td.stipend != null ? money(td.stipend) : "—"}</div></div>
+                <div><div className="k">Fleet</div><div className="v">{fleetSum ? <>{fleetSum.totalQuantity} / {fleetSum.limits.maxTotal}{fleetSum.limits.isOverridden && <span className="chip lock" style={{ marginLeft: 6, fontSize: 9 }}>OVR</span>}</> : (td.total ?? "—")} <span style={{ fontSize: 11, color: "var(--ink-3)" }}>({fleetSum ? `${fleetSum.typeCount}/${fleetSum.limits.maxTypes}` : (td.types ?? "—")} types)</span></div></div>
+                <div><div className="k">Garages</div><div className="v">{fleetSum ? `${fleetSum.garageCount} / ${fleetSum.limits.maxGarages}` : (td.garages ?? "—")}</div></div>
+                <div><div className="k">Stipend</div><div className="v">{fleetSum ? money(fleetSum.stipend) : td.stipend != null ? money(td.stipend) : "—"}</div></div>
                 <div><div className="k">Scenes · 30d</div><div className="v">{summary?.scenes30d ?? "—"}</div></div>
                 <div><div className="k">Last promoted</div><div className="v">{detail.lastPromoted || summary?.lastPromoted || "Never"}</div></div>
               </div>
@@ -253,7 +264,7 @@ function FactionHub() {
               {[["scenes", "Scenes"], ["intel", "Intel"], ["ooc", "OOC"]].map(([id, l]) => <button key={id} className={`tab${actSub === id ? " on" : ""}`} onClick={() => { setActSub(id); setEditNoteId(null); }}>{l}</button>)}
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              {actSub === "intel" && <button className="act" onClick={async () => { const t = window.prompt("Add intelligence note:"); if (t?.trim()) await run(() => addNote(detail.id, detail.name, t)); }}>Add note +</button>}
+              {actSub === "intel" && <button className="act" onClick={() => setForm({ kind: "intel", value: "" })}>Add note +</button>}
               {actSub === "intel" && level >= 2 && <button className="act primary" disabled={aiBusy} onClick={async () => { setAiBusy(true); const r = await aiSummarize(detail.name).catch(() => ({ ok: false })); setAiBusy(false); setAiText(r.ok ? r.summary : `Error: ${r.error || "failed"}`); }}>{aiBusy ? "Generating…" : "AI Summarize ✨"}</button>}
               {actSub === "ooc" && level >= 1 && <button className="act primary" onClick={openOOC}>Document meeting +</button>}
             </div>
@@ -266,7 +277,7 @@ function FactionHub() {
                   <span style={{ flex: 1 }} />
                   {l.author_id === auth.id && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditNoteId(`s${l.id}`); setEditText(l.notes); }}>Edit</button>}
                   {l.author_id === auth.id && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { if (window.confirm("Request deletion of this scene?")) { await requestDeletion("scene_log", l.notes, l.id); window.alert("Deletion request submitted."); } }}>Req del</button>}
-                  {isL3 && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { const v = window.prompt("Edit rewards:", l.rewards); if (v !== null) await run(() => editFactionSceneRewards(l.id, v)); }}>Rewards</button>}
+                  {isL3 && <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ kind: "rewards", id: l.id, value: l.rewards === "None" ? "" : (l.rewards || "") })}>Rewards</button>}
                   {isL3 && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this scene?")) run(() => directDelete("scene_log", l.id)); }}>Del</button>}
                 </div>
                 {editNoteId === `s${l.id}` ? <div><textarea className="filter-inp" rows={3} value={editText} onChange={e => setEditText(e.target.value)} /><div style={{ display: "flex", gap: 6, marginTop: 6 }}><button className="act primary" onClick={() => run(() => editSceneLog(l.id, editText)).then(() => setEditNoteId(null))}>Save</button><button className="act" onClick={() => setEditNoteId(null)}>Cancel</button></div></div>
@@ -319,7 +330,7 @@ function FactionHub() {
               </tbody></table>
             )}
           </div>
-          <FleetCard fleet={fleet} td={td} tier={detail.tier} isL3={isL3} busy={busy} run={run} setForm={setForm} form={form} setErr={setErr} err={err} money={money} CapBar={CapBar} factionId={detail.id} />
+          <FleetCard fleet={fleet} fleetSum={fleetSum} td={td} tier={detail.tier} isL3={isL3} busy={busy} run={run} setForm={setForm} form={form} setErr={setErr} err={err} money={money} CapBar={CapBar} factionId={detail.id} />
         </div>
       )}
 
@@ -364,10 +375,46 @@ function FactionHub() {
             <div className="hd"><div className="t">Incoming contacts</div><div className="meta">{contacts.filter(c => !c.is_read).length} unread</div></div>
             {contacts.length === 0 ? <div className="empty">No messages received.</div> : contacts.map(c => {
               const st = IC_STATUS[c.status] || IC_STATUS.pending_discussion;
+              const refreshContacts = () => getFactionContacts(detail.id).then(x => setContacts(x || []));
               return (
-                <div className="contact" key={c.id} style={{ opacity: c.is_read ? 0.65 : 1 }}>
-                  <div className="ch"><span className="from">{c.sender_name}</span>{c.contact_type && <span className="chip" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>{c.contact_type}</span>}<span className={`status-pill ${st[0]}`}>{st[1]}</span>{!c.is_read && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }} />}<span style={{ flex: 1 }} /><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, color: "var(--ink-3)" }}>{c.submitted_at?.slice(0, 16)}</span>{!c.is_read && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { await markContactRead(c.id); getFactionContacts(detail.id).then(setContacts); }}>Mark read</button>}</div>
+                <div className="contact" key={c.id} style={{ opacity: c.is_read && c.status === "completed" ? 0.65 : 1 }}>
+                  <div className="ch">
+                    <span className="from">{c.sender_name}</span>
+                    {c.contact_type && <span className="chip" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>{c.contact_type}</span>}
+                    {isLeader
+                      ? <select disabled={busy} value={c.status || "pending_discussion"}
+                        onChange={async e => { const v = e.target.value; if (v === "completed") { if (!window.confirm("Complete and archive this contact?")) return; await completeIcContact(c.id); } else await setIcContactStatus(c.id, v); refreshContacts(); }}
+                        style={{ fontSize: 9.5, fontWeight: 700, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--line)", cursor: "pointer", outline: "none", fontFamily: "var(--v2-mono)", textTransform: "uppercase", background: "var(--panel-2)", color: "var(--ink-1)" }}>
+                        <option value="pending_discussion">Pending Discussion</option>
+                        <option value="pending_roleplay">Pending Roleplay</option>
+                        <option value="completed">Completed</option>
+                      </select>
+                      : <span className={`status-pill ${st[0]}`}>{st[1]}</span>}
+                    {!c.is_read && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }} />}
+                    <span style={{ flex: 1 }} />
+                    <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, color: "var(--ink-3)" }}>{c.submitted_at?.slice(0, 16)}</span>
+                    {!c.is_read && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { await markContactRead(c.id); refreshContacts(); }}>Mark read</button>}
+                  </div>
                   <div className="msg">{c.message}</div>
+                  {isLeader && (
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 8 }}>
+                      <span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{c.assigned_name ? <><span style={{ color: "var(--accent)" }}>{c.assigned_name}</span> assigned</> : "Unassigned"}</span>
+                      <span style={{ flex: 1 }} />
+                      {c.thread_id && <a className="act" href={`https://discord.com/channels/${FM_GUILD_ID}/${c.thread_id}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Thread ↗</a>}
+                      <button className="act" onClick={async () => { const staff = await getStaffForTeam(detail.name).catch(() => []); setAssignFor({ contactId: c.id, staff: staff || [], sel: "" }); }}>Assign</button>
+                      {c.status !== "completed" && <button className="act" style={{ color: "var(--sky)" }} onClick={() => openStageRP(c.id)}>Request RP change</button>}
+                    </div>
+                  )}
+                  {assignFor?.contactId === c.id && (
+                    <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                      <select className="filter-inp" style={{ flex: 1, minWidth: 200 }} value={assignFor.sel} onChange={e => setAssignFor({ ...assignFor, sel: e.target.value })}>
+                        <option value="">Select member…</option>
+                        {assignFor.staff.map(s => <option key={s.discord_id} value={s.discord_id}>{s.display_name}</option>)}
+                      </select>
+                      <button className="act primary" disabled={!assignFor.sel || busy} onClick={async () => { const m = assignFor.staff.find(s => s.discord_id === assignFor.sel); await assignIcContact(c.id, assignFor.sel, m?.display_name || assignFor.sel); setAssignFor(null); refreshContacts(); }}>Confirm</button>
+                      <button className="act" onClick={() => setAssignFor(null)}>Cancel</button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -375,8 +422,8 @@ function FactionHub() {
         </div>
       )}
 
-      {/* ── Review (L2+) ── */}
-      {tab === "review" && isLeader && <Review {...{ detail, summary, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, fbMsg, setFbMsg, imports, isL3, busy, err, run, form, setForm, promo }} />}
+      {/* ── Review (L2+): the monthly cycle as a guided checklist ── */}
+      {tab === "review" && isLeader && <Review {...{ detail, summary, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, fbMsg, setFbMsg, fbSent, imports, isL3, busy, err, run, form, setForm, promo }} />}
 
       {/* ── Admin (L2+) ── */}
       {tab === "admin" && isLeader && (
@@ -387,7 +434,7 @@ function FactionHub() {
                 <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)", minWidth: 130 }}>{h.created_at}</span>
                 <span className="chip" style={{ background: h.action_type.includes("PROMO") ? "var(--good-bg)" : "var(--accent-bg)", color: h.action_type.includes("PROMO") ? "var(--good)" : "var(--accent)" }}>{h.action_type}</span>
                 <span style={{ color: "var(--ink-1)" }}>{h.details}</span><span style={{ flex: 1 }} /><span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{h.authorized_by}</span>
-                {isL3 && <><button className="act" style={{ padding: "2px 7px" }} onClick={async () => { const v = window.prompt("Edit details:", h.details); if (v !== null) await run(() => editAuditEntry(h.id, v)); }}>Edit</button><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this audit entry?")) run(() => deleteAuditEntry(h.id)); }}>Del</button></>}
+                {isL3 && <><button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ kind: "auditEdit", id: h.id, value: h.details || "" })}>Edit</button><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this audit entry?")) run(() => deleteAuditEntry(h.id)); }}>Del</button></>}
               </div>
             ))}
           </div>
@@ -412,8 +459,25 @@ function FactionHub() {
         <input className="filter-inp" placeholder="Type (HQ, Warehouse, Property…)" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} />
         <label style={{ fontSize: 12.5, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={form.isHQ} onChange={e => setForm({ ...form, isHQ: e.target.checked })} /> Mark as HQ</label>
       </Modal>}
-      {form?.kind === "link" && <Modal title={`Edit ${form.field}`} onClose={() => setForm(null)} onSave={() => run(() => updateFactionLinks(detail.id, form.field, form.value))}>
+      {form?.kind === "link" && <Modal title={`Edit ${form.field}`} onClose={() => setForm(null)} onSave={() => run(() => updateFactionLinks(detail.id, form.field, form.value))} error={err}>
         <input className="filter-inp" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
+      </Modal>}
+      {form?.kind === "rename" && <Modal title="Rename faction" onClose={() => setForm(null)} saveLabel="Rename" saveDisabled={busy || !form.value.trim() || form.value.trim() === detail.name} error={err}
+        onSave={async () => { const n = form.value.trim(); const ok = await run(() => renameFaction(detail.id, detail.name, n)); if (ok) router.replace(`/v2/factions/${encodeURIComponent(n)}?tab=${tab}`); }}>
+        <input className="filter-inp" autoFocus value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
+        <div style={{ fontSize: 11, color: "var(--ink-3)" }}>Renames the faction everywhere — portal, records, history.</div>
+      </Modal>}
+      {form?.kind === "intel" && <Modal title="Add intelligence note" onClose={() => setForm(null)} saveLabel="Add note" saveDisabled={busy || !form.value.trim()} error={err}
+        onSave={() => run(() => addNote(detail.id, detail.name, form.value.trim()))}>
+        <textarea className="filter-inp" rows={5} autoFocus placeholder="What was learned…" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
+      </Modal>}
+      {form?.kind === "rewards" && <Modal title="Edit scene rewards" onClose={() => setForm(null)} saveDisabled={busy} error={err}
+        onSave={() => run(() => editFactionSceneRewards(form.id, form.value))}>
+        <textarea className="filter-inp" rows={3} autoFocus placeholder="e.g. $5,000 + 2x Item" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
+      </Modal>}
+      {form?.kind === "auditEdit" && <Modal title="Edit audit entry" onClose={() => setForm(null)} saveDisabled={busy} error={err}
+        onSave={() => run(() => editAuditEntry(form.id, form.value))}>
+        <textarea className="filter-inp" rows={3} autoFocus value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
       </Modal>}
       {form?.kind === "ooc" && <Modal maxWidth={860} title={`OOC meeting: ${detail.name}`} onClose={() => setForm(null)} onSave={submitOOC} saveDisabled={busy || !form.text.trim()}>
         <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16 }}>
@@ -449,7 +513,7 @@ function FactionHub() {
 }
 
 /* Fleet card (Assets) */
-function FleetCard({ fleet, td, tier, isL3, busy, run, setForm, form, money, CapBar, factionId }) {
+function FleetCard({ fleet, fleetSum, td, tier, isL3, busy, run, setForm, form, money, CapBar, factionId }) {
   return (
     <div className="card">
       <div className="hd"><div className="t">Fleet</div><div className="meta">Tier {tier} allowance</div></div>
@@ -471,24 +535,64 @@ function FleetCard({ fleet, td, tier, isL3, busy, run, setForm, form, money, Cap
         {form?.kind === "gar" && <Modal title="Add garage" onClose={() => setForm(null)} onSave={() => run(() => addFleetGarage(factionId, form.gname.trim(), form.x, form.y, form.z, ""))} saveDisabled={busy || !form.gname.trim()}><input className="filter-inp" placeholder="Garage name" value={form.gname} onChange={e => setForm({ ...form, gname: e.target.value })} /><div style={{ display: "flex", gap: 6 }}>{["x", "y", "z"].map(a => <input key={a} className="filter-inp" placeholder={a.toUpperCase()} value={form[a]} onChange={e => setForm({ ...form, [a]: e.target.value })} />)}</div></Modal>}
         {form?.kind === "ovr" && <Modal title="Override caps" onClose={() => setForm(null)} onSave={() => run(() => setFleetOverride(factionId, parseInt(form.mt), parseInt(form.mtot), parseInt(form.mg), form.reason))} saveDisabled={busy}><div style={{ display: "flex", gap: 6 }}><input className="filter-inp" placeholder="Types" value={form.mt} onChange={e => setForm({ ...form, mt: e.target.value })} /><input className="filter-inp" placeholder="Total" value={form.mtot} onChange={e => setForm({ ...form, mtot: e.target.value })} /><input className="filter-inp" placeholder="Garages" value={form.mg} onChange={e => setForm({ ...form, mg: e.target.value })} /></div><input className="filter-inp" placeholder="Reason" value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></Modal>}
       </> : <div style={{ paddingTop: 6 }}>
-        <CapBar label="Vehicle types" used={0} max={td.types ?? 0} /><CapBar label="Total vehicles" used={0} max={td.total ?? 0} /><CapBar label="Garages" used={0} max={td.garages ?? 0} />
-        <div className="cap"><span className="lbl">Stipend</span><span className="num" style={{ width: "auto" }}><b>{money(td.stipend)}</b>/mo</span></div>
+        <CapBar label="Vehicle types" used={fleetSum?.typeCount ?? 0} max={fleetSum?.limits.maxTypes ?? td.types ?? 0} />
+        <CapBar label="Total vehicles" used={fleetSum?.totalQuantity ?? 0} max={fleetSum?.limits.maxTotal ?? td.total ?? 0} />
+        <CapBar label="Garages" used={fleetSum?.garageCount ?? 0} max={fleetSum?.limits.maxGarages ?? td.garages ?? 0} />
+        <div className="cap"><span className="lbl">Stipend</span><span className="num" style={{ width: "auto" }}><b>{money(fleetSum?.stipend ?? td.stipend)}</b>/mo</span>{fleetSum?.limits.isOverridden && <span className="chip lock" style={{ marginLeft: 8 }}>Override</span>}</div>
         <div className="empty">Fleet inventory is managed by L3.</div>
       </div>}
     </div>
   );
 }
 
-/* Review workspace (L2+) */
-function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, fbMsg, setFbMsg, imports, isL3, busy, err, run, form, setForm, promo }) {
+/* Review workspace (L2+): the monthly cycle as numbered steps. Staging
+   machinery (tier + imports) stays behind the final step and only unlocks
+   once the outcome is confirmed — or when a promo is already staged. */
+function StepHead({ n, title, done, meta }) {
+  return (
+    <div className="hd" style={{ alignItems: "center" }}>
+      <div className="t" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 18, height: 18, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, fontFamily: "var(--v2-mono)", flexShrink: 0, background: done ? "var(--good-bg)" : "var(--panel-2)", color: done ? "var(--good)" : "var(--ink-3)", border: `1px solid ${done ? "var(--good)" : "var(--line-2)"}` }}>{done ? "✓" : n}</span>
+        {title}
+      </div>
+      {meta && <div className="meta">{meta}</div>}
+    </div>
+  );
+}
+
+function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, fbMsg, setFbMsg, fbSent, imports, isL3, busy, err, run, form, setForm, promo }) {
   const cur = reviewInfo?.currentReview;
   const REC = [{ v: "Promote", cls: "good" }, { v: "Hold", cls: "" }, { v: "Demote", cls: "warn" }, { v: "Remove", cls: "warn" }];
   const canReview = reviewInfo?.mine || isL3;
   const staged = promo;
+  const [adjText, setAdjText] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiErr, setAiErr] = useState("");
+
+  const outcomeConfirmed = !!cur?.status?.startsWith("Confirmed");
+  const outcome = outcomeConfirmed ? cur.status.replace("Confirmed ", "") : null;
+  const notesDone = (leadSummary.notes || []).length > 0 && (leadSummary.pending || []).length === 0;
+
+  const genDraft = async () => {
+    setAiBusy(true); setAiErr("");
+    const r = await generateFeedbackDraft(detail.id).catch(() => ({ ok: false }));
+    setAiBusy(false);
+    if (r.ok) setFbMsg(r.draft || r.message || ""); else setAiErr(r.error || "Draft failed.");
+  };
+  const adjDraft = async () => {
+    setAiBusy(true); setAiErr("");
+    const r = await adjustFeedbackDraft(detail.id, fbMsg, adjText).catch(() => ({ ok: false }));
+    setAiBusy(false);
+    if (r.ok) { setFbMsg(r.draft || r.message || ""); setAdjText(""); } else setAiErr(r.error || "Adjust failed.");
+  };
+
+  // Steps in order; numbering adapts to what this viewer can see.
+  let n = 0;
   return (
     <div className="hub-body">
       <div className="stack">
-        <div className="card"><div className="hd"><div className="t">Activity — the evidence</div></div>
+        <div className="card">
+          <StepHead n={++n} title="Evidence" done meta="auto" />
           <div className="metrics" style={{ marginBottom: 0, borderBottom: "none", gap: 26, paddingTop: 6 }}>
             <div className="metric"><div className="l">Scenes · this mo</div><div className="v">{reviewInfo?.scenes30 ?? summary?.scenes30d ?? 0}</div></div>
             <div className="metric"><div className="l">Prev mo</div><div className="v">{reviewInfo?.scenes60 ?? 0}</div></div>
@@ -496,46 +600,100 @@ function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, lea
             <div className="metric"><div className="l">Forum · 30d</div><div className="v">{reviewInfo?.forumPosts ?? summary?.forumPosts ?? 0}</div></div>
           </div>
         </div>
-        <div className="card"><div className="hd"><div className="t">This month’s review</div>{cur && <div className="meta">{cur.status || "Pending Discussion"}</div>}</div>
+
+        <div className="card">
+          <StepHead n={++n} title="Recommendation" done={!!cur} meta={cur ? (cur.status || "Pending Discussion") : "not started"} />
           <div className="restricted">Confidential to Leadership · shared with the team lead for the 15th message</div>
           {!canReview ? <div className="empty">Only {reviewInfo?.teamName || "the owning team"}’s leads (or L3) edit this review.</div> : <div style={{ paddingTop: 6 }}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>{REC.map(r => <button key={r.v} className={`act${recForm.recommendation === r.v ? " primary" : ` ${r.cls}`}`} onClick={() => setRecForm({ ...recForm, recommendation: r.v })}>{r.v}</button>)}</div>
             <textarea className="filter-inp" rows={5} placeholder="Written feedback…" value={recForm.feedback} onChange={e => setRecForm({ ...recForm, feedback: e.target.value })} style={{ marginBottom: 8 }} />
             <button className="act primary" disabled={busy || !recForm.recommendation || !recForm.feedback.trim()} onClick={() => run(() => submitReview({ factionId: detail.id, factionName: detail.name, recommendation: recForm.recommendation, feedback: recForm.feedback }))}>{cur ? "Update review" : "Submit review"}</button>
-            {cur && <div style={{ marginTop: 14 }}><div style={{ fontFamily: "var(--v2-mono)", fontSize: 9, textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 6 }}>Confirm outcome</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{["Confirmed Promote", "Confirmed Hold", "Confirmed Demote", "Confirmed Remove"].map(st => <button key={st} className={`act${cur.status === st ? " primary" : ""}`} disabled={busy} onClick={() => run(() => setReviewStatus(cur.id, st))}>{st.replace("Confirmed ", "")}</button>)}</div></div>}
           </div>}
         </div>
-        <div className="card"><div className="hd"><div className="t">Feedback message · the 15th</div></div>
+
+        {isL3 && (
+          <div className="card">
+            <StepHead n={++n} title="Leadership notes" done={notesDone} meta={`${(leadSummary.notes || []).length} recorded · ${(leadSummary.pending || []).length} pending`} />
+            <textarea className="filter-inp" rows={3} placeholder="Private note this month…" value={noteTextLs} onChange={e => setNoteTextLs(e.target.value)} style={{ margin: "6px 0" }} />
+            <button className="act primary" disabled={busy || !noteTextLs.trim()} onClick={async () => { const ok = await run(() => submitPersonalNote(detail.id, detail.name, noteTextLs, recForm.recommendation || "Hold")); if (ok) setNoteTextLs(""); }}>Save note</button>
+            <div style={{ marginTop: 10 }}>
+              {(leadSummary.notes || []).length === 0 ? <div className="empty">No notes yet.</div> : (leadSummary.notes || []).map((note, i) => <div className="note" key={i}>{note.note}{note.status ? <span className="chip role" style={{ marginLeft: 6 }}>{note.status}</span> : null}<div className="by">— {note.author_name || note.author_id}</div></div>)}
+              {(leadSummary.pending || []).length > 0 && <div style={{ paddingTop: 8, fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>Awaiting: {(leadSummary.pending || []).map(p => p.display_name).join(", ")}</div>}
+            </div>
+          </div>
+        )}
+
+        <div className="card">
+          <StepHead n={++n} title="Feedback to the faction" done={!!fbSent?.sent} meta={fbSent?.sent ? `sent by ${fbSent.by}` : "the 15th message"} />
           <div style={{ paddingTop: 6 }}>
-            <button className="act" disabled={busy} onClick={async () => { const r = await generateFeedbackDraft(detail.id).catch(() => ({ ok: false })); if (r.ok) setFbMsg(r.message || r.draft || ""); }}>✦ Generate draft</button>
+            {fbSent?.sent && <div style={{ fontSize: 12, color: "var(--good)", marginBottom: 8 }}>✓ Delivered this month by {fbSent.by} ({(fbSent.at || "").slice(0, 10)}).</div>}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button className="act" disabled={aiBusy || busy} onClick={genDraft}>{aiBusy ? "Working…" : "✦ Generate draft"}</button>
+            </div>
             <textarea className="filter-inp" rows={5} placeholder="Message sent to the faction." value={fbMsg} onChange={e => setFbMsg(e.target.value)} style={{ margin: "8px 0" }} />
-            <div style={{ display: "flex", gap: 6 }}><button className="act primary" disabled={busy || !fbMsg.trim()} onClick={() => run(() => sendFeedbackToFaction(detail.id, fbMsg))}>Send to faction</button><button className="act" disabled={busy} onClick={() => run(() => markFeedbackSent(detail.id))}>Mark sent</button></div>
+            {fbMsg.trim() && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                <input className="filter-inp" style={{ flex: 1 }} placeholder="Adjust the draft — e.g. “warmer tone, mention the new HQ”" value={adjText} onChange={e => setAdjText(e.target.value)} onKeyDown={e => e.key === "Enter" && adjText.trim() && adjDraft()} />
+                <button className="act" disabled={aiBusy || !adjText.trim()} onClick={adjDraft}>Adjust ↺</button>
+              </div>
+            )}
+            {aiErr && <div className="err" style={{ marginBottom: 8 }}>{aiErr}</div>}
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="act primary" disabled={busy || !fbMsg.trim()} onClick={() => { if (window.confirm(`Send this feedback to ${detail.name}'s Command channel?`)) run(() => sendFeedbackToFaction(detail.id, fbMsg)); }}>Send to faction</button>
+              <button className="act" disabled={busy} onClick={() => run(() => markFeedbackSent(detail.id))}>Mark sent manually</button>
+            </div>
           </div>
         </div>
-        <div className="card"><div className="hd"><div className="t">Apply outcome → tier</div><div className="meta">Tier {detail.tier}</div></div>
-          {staged ? <div style={{ paddingTop: 6 }}><div className="alert promo" style={{ marginBottom: 10 }}>📋 Staged → Tier {staged.tier}</div><div style={{ display: "flex", gap: 6 }}><button className="act good" disabled={busy} onClick={() => run(() => completePromotion(detail.id, detail.name))}>Complete promotion</button><button className="act warn" disabled={busy} onClick={() => run(() => cancelPromotion(detail.id, detail.name))}>Cancel</button></div></div>
-            : <div style={{ paddingTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {isL3 && <button className="act primary" onClick={() => setForm({ kind: "promote", tier: String(Math.min(9, detail.tier + 1)), picks: new Set(imports.filter(i => i.permitted).map(i => i.name)) })}>Stage promotion ↑</button>}
-              {isL3 && <button className="act warn" onClick={() => setForm({ kind: "demote", tier: String(Math.max(1, detail.tier - 1)) })}>Demote ↓</button>}
-              <span className="act" style={{ cursor: "default", opacity: 0.6 }}>Hold = no change</span>
-            </div>}
-          {form?.kind === "promote" && <div className="inline-form" style={{ marginTop: 12 }}>
-            <div className="lbl">Promote to tier</div>
-            <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(9)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}</select>
-            <div className="lbl" style={{ marginTop: 4 }}>Imports granted ({form.picks.size})</div>
-            <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px" }}>{imports.map(i => <div className="imp-row" key={i.id}><span className="nm">{i.name} <span style={{ color: "var(--ink-3)", fontSize: 10 }}>T{i.tier}</span></span><button className={`tg${form.picks.has(i.name) ? " on" : ""}`} onClick={() => { const p = new Set(form.picks); p.has(i.name) ? p.delete(i.name) : p.add(i.name); setForm({ ...form, picks: p }); }}>{form.picks.has(i.name) ? "Granted" : "Off"}</button></div>)}</div>
-            {err && <div className="err">{err}</div>}
-            <div className="row-btns"><button className="act primary" disabled={busy} onClick={() => run(() => stagePromotion(detail.id, detail.name, parseInt(form.tier), [...form.picks]))}>Stage</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div>
-          </div>}
-          {form?.kind === "demote" && <div className="inline-form" style={{ marginTop: 12 }}><div className="lbl">Demote to tier</div><select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(detail.tier)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}</select><div className="row-btns"><button className="act warn" disabled={busy} onClick={() => run(() => demoteFaction(detail.id, detail.name, parseInt(form.tier)))}>Confirm demotion</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div></div>}
+
+        <div className="card">
+          <StepHead n={++n} title="Confirm outcome" done={outcomeConfirmed} meta={outcomeConfirmed ? cur.status : cur ? "after discussion" : "needs a review first"} />
+          {!cur ? <div className="empty">Submit the recommendation first.</div> : (
+            <div style={{ paddingTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {["Confirmed Promote", "Confirmed Hold", "Confirmed Demote", "Confirmed Remove"].map(st => <button key={st} className={`act${cur.status === st ? " primary" : ""}`} disabled={busy} onClick={() => run(() => setReviewStatus(cur.id, st))}>{st.replace("Confirmed ", "")}</button>)}
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <StepHead n={++n} title="Apply" done={false} meta={`Tier ${detail.tier}`} />
+          {staged ? (
+            <div style={{ paddingTop: 6 }}>
+              <div className="alert promo" style={{ marginBottom: 10 }}>📋 Staged → Tier {staged.tier}</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="act good" disabled={busy} onClick={() => { if (window.confirm(`Complete promotion for ${detail.name}?`)) run(() => completePromotion(detail.id, detail.name)); }}>Complete promotion</button>
+                {isL3 && <button className="act warn" disabled={busy} onClick={() => { if (window.confirm("Cancel this staged promotion?")) run(() => cancelPromotion(detail.id, detail.name)); }}>Cancel</button>}
+              </div>
+            </div>
+          ) : !outcomeConfirmed ? (
+            <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-3)" }}>🔒 Confirm the outcome above — the tier &amp; import controls unlock here.</div>
+          ) : !isL3 ? (
+            <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-3)" }}>Outcome confirmed — an L3 applies the {outcome.toLowerCase()} from here.</div>
+          ) : outcome === "Promote" ? (
+            <div style={{ paddingTop: 6 }}>
+              {form?.kind !== "promote" && <button className="act primary" onClick={() => setForm({ kind: "promote", tier: String(Math.min(9, detail.tier + 1)), picks: new Set(imports.filter(i => i.permitted).map(i => i.name)) })}>Stage promotion ↑</button>}
+              {form?.kind === "promote" && <div className="inline-form">
+                <div className="lbl">Promote to tier</div>
+                <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(9)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}</select>
+                <div className="lbl" style={{ marginTop: 4 }}>Imports granted ({form.picks.size})</div>
+                <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px" }}>{imports.map(i => <div className="imp-row" key={i.id}><span className="nm">{i.name} <span style={{ color: "var(--ink-3)", fontSize: 10 }}>T{i.tier}</span></span><button className={`tg${form.picks.has(i.name) ? " on" : ""}`} onClick={() => { const p = new Set(form.picks); p.has(i.name) ? p.delete(i.name) : p.add(i.name); setForm({ ...form, picks: p }); }}>{form.picks.has(i.name) ? "Granted" : "Off"}</button></div>)}</div>
+                {err && <div className="err">{err}</div>}
+                <div className="row-btns"><button className="act primary" disabled={busy} onClick={() => run(() => stagePromotion(detail.id, detail.name, parseInt(form.tier), [...form.picks]))}>Stage</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div>
+              </div>}
+            </div>
+          ) : outcome === "Demote" ? (
+            <div style={{ paddingTop: 6 }}>
+              {form?.kind !== "demote" && <button className="act warn" onClick={() => setForm({ kind: "demote", tier: String(Math.max(1, detail.tier - 1)) })}>Demote ↓</button>}
+              {form?.kind === "demote" && <div className="inline-form"><div className="lbl">Demote to tier</div><select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(detail.tier)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}</select>{err && <div className="err">{err}</div>}<div className="row-btns"><button className="act warn" disabled={busy} onClick={() => { if (window.confirm(`Demote ${detail.name} to Tier ${form.tier}?`)) run(() => demoteFaction(detail.id, detail.name, parseInt(form.tier))); }}>Confirm demotion</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div></div>}
+            </div>
+          ) : outcome === "Remove" ? (
+            <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-2)" }}>Removal confirmed — archive the faction from the <b>Admin tab → Danger zone</b> when ready.</div>
+          ) : (
+            <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-2)" }}>Hold confirmed — no tier change this month. ✓</div>
+          )}
         </div>
       </div>
+
       <div className="stack">
-        {isL3 && <div className="card"><div className="hd"><div className="t"><span style={{ color: "var(--lock)" }}>🔒</span> Leadership notes</div><div className="meta">{(leadSummary.notes || []).length} · {(leadSummary.pending || []).length} pending</div></div>
-          <textarea className="filter-inp" rows={3} placeholder="Private note this month…" value={noteTextLs} onChange={e => setNoteTextLs(e.target.value)} style={{ marginBottom: 6 }} />
-          <button className="act primary" disabled={busy || !noteTextLs.trim()} onClick={async () => { const ok = await run(() => submitPersonalNote(detail.id, detail.name, noteTextLs, recForm.recommendation || "Hold")); if (ok) setNoteTextLs(""); }}>Save note</button>
-          <div style={{ marginTop: 10 }}>{(leadSummary.notes || []).length === 0 ? <div className="empty">No notes yet.</div> : (leadSummary.notes || []).map((n, i) => <div className="note" key={i}>{n.note}{n.status ? <span className="chip role" style={{ marginLeft: 6 }}>{n.status}</span> : null}<div className="by">— {n.author_name || n.author_id}</div></div>)}{(leadSummary.pending || []).length > 0 && <div style={{ paddingTop: 8, fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>Awaiting: {(leadSummary.pending || []).map(p => p.display_name).join(", ")}</div>}</div>
-        </div>}
         <div className="card"><div className="hd"><div className="t">Review history</div><div className="meta">{reviews.length}</div></div>
           {reviews.length === 0 ? <div className="empty">No reviews.</div> : <table className="dtable"><thead><tr><th>Month</th><th>Rec</th></tr></thead><tbody>{reviews.map((r, i) => <tr key={i}><td><b>{r.review_month}</b></td><td>{r.recommendation || r.status || "—"}</td></tr>)}</tbody></table>}
         </div>
