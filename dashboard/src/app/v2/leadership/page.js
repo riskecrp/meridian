@@ -11,7 +11,7 @@ import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatu
 import RpChangeForm from "../../fm/teams/RpChangeForm";
 import Modal from "../Modal.js";
 import { FM_GUILD_ID } from "../../../lib/constants";
-import { getReviewCycleMap } from "../actions.js";
+import { getReviewCycleMap, getRPExecuteTarget } from "../actions.js";
 
 export default function V2LeadershipPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Leadership /></Suspense>;
@@ -85,7 +85,19 @@ function Approvals({ auth }) {
                 </>}
                 {canConfirmRP && <button className="act good" disabled={busy} onClick={() => setRpDone(rpDone?.id === rc.id ? null : { id: rc.id, note: "" })}>Confirm RP done</button>}
                 {rc.status === "APPROVED" && !canConfirmRP && <span style={{ fontSize: 11, color: "var(--sky)", fontStyle: "italic" }}>Waiting for {rc.requested_by} to confirm the RP.</span>}
-                {isL3 && rc.status === "RP_DONE" && <button className="act good" disabled={busy} onClick={() => { if (rc.execution_type === "NPC") setNpcExec({ id: rc.id, npcName: "", npcPos: "" }); else if (window.confirm("Execute this change?")) run(() => executeRPChange(rc.id, {})); }}>Execute</button>}
+                {isL3 && rc.status === "RP_DONE" && <button className="act good" disabled={busy} onClick={async () => {
+                  // Hardening: show exactly what the execute will rewrite before committing.
+                  const t = await getRPExecuteTarget(rc.id).catch(() => null);
+                  if (rc.execution_type === "NPC") {
+                    setNpcExec({ id: rc.id, npcName: "", npcPos: "", target: t?.target || null, turf: t?.turf || rc.turf });
+                  } else if (rc.execution_type === "HQ") {
+                    const lines = t?.oldFound ? `Unset HQ on "${t.oldValue}"` : `⚠ Old address "${t?.oldValue}" not found — nothing to unset`;
+                    const nw = t?.newExists ? `set HQ on existing "${t?.newValue}"` : `create "${t?.newValue}" as the new HQ`;
+                    if (window.confirm(`Execute HQ change for ${rc.faction_name}?\n\n${lines}, then ${nw}.`)) run(() => executeRPChange(rc.id, {}));
+                  } else {
+                    if (window.confirm(`Execute this change for ${rc.faction_name}?\n\nType "Other" — no world records are rewritten; the request is marked executed and logged.`)) run(() => executeRPChange(rc.id, {}));
+                  }
+                }}>Execute</button>}
                 {isL3 && <button className="act" disabled={busy} onClick={() => { if (window.confirm(`Delete this RP change for ${rc.faction_name}?`)) run(() => deleteRPChange(rc.id)); }}>Delete</button>}
               </div>
             </div>
@@ -133,7 +145,14 @@ function Approvals({ auth }) {
         ); })}
       </div>}
 
-      {npcExec && <Modal title="Execute NPC swap" onClose={() => setNpcExec(null)} onSave={() => run(() => executeRPChange(npcExec.id, { npcName: npcExec.npcName, npcPos: npcExec.npcPos }))} saveDisabled={!npcExec.npcName.trim()}>
+      {npcExec && <Modal title="Execute NPC swap" onClose={() => setNpcExec(null)} onSave={() => run(() => executeRPChange(npcExec.id, { npcName: npcExec.npcName, npcPos: npcExec.npcPos }))} saveDisabled={!npcExec.npcName.trim() || !npcExec.npcPos.trim()}>
+        {npcExec.target
+          ? <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>
+              This rewrites the live NPC: <b>{npcExec.target.name}</b> ({npcExec.target.npc_type}) on <b>{npcExec.target.turf}</b> — currently at {npcExec.target.position}.
+            </div>
+          : <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--rose-bg)", fontSize: 12.5, color: "var(--rose)" }}>
+              ⚠ No NPC in the registry matches turf “{npcExec.turf}” with the old type — executing will change <b>nothing</b> in the world. Check the request or fix the registry first.
+            </div>}
         <input className="filter-inp" placeholder="Final NPC name" value={npcExec.npcName} onChange={e => setNpcExec({ ...npcExec, npcName: e.target.value })} />
         <input className="filter-inp" placeholder="TP position" value={npcExec.npcPos} onChange={e => setNpcExec({ ...npcExec, npcPos: e.target.value })} />
       </Modal>}

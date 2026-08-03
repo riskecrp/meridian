@@ -121,3 +121,19 @@ export function taskComponents(uid) {
     ],
   }];
 }
+
+/**
+ * Action row for an RP-change pipeline ping. One row per stage; the bot's
+ * rpc:* handlers mirror the dashboard actions, so the pipeline is fully
+ * drivable from either surface. Contract: rpc:<action>:<pending_executions.id>.
+ */
+export function rpComponents(execId, stage) {
+  const open = { type: 2, style: 5, label: "Open", url: "https://ecrpfm.com/v2/leadership?tab=approvals" };
+  const rows = {
+    pending:  [{ type: 2, style: 3, label: "Approve", custom_id: `rpc:approve:${execId}` },
+               { type: 2, style: 4, label: "Deny…", custom_id: `rpc:deny:${execId}` }, open],
+    approved: [{ type: 2, style: 3, label: "Confirm RP done", custom_id: `rpc:done:${execId}` }, open],
+    done:     [{ type: 2, style: 1, label: "Execute…", custom_id: `rpc:exec:${execId}` }, open],
+  };
+  return rows[stage] ? [{ type: 1, components: rows[stage] }] : undefined;
+}

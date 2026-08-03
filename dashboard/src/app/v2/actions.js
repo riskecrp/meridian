@@ -108,6 +108,27 @@ export async function getFactionFleetSummary(factionId) {
   };
 }
 
+// What will an RP-change Execute actually rewrite? NPC executes match on
+// turf + old type and overwrite that live registry row; HQ executes re-flag
+// properties. Surfacing the target BEFORE the commit is the guard rail that
+// would have saved Martin Jane (renamed to "Test NPC" in a walkthrough,
+// 2026-08-04, restored from backup).
+export async function getRPExecuteTarget(execId) {
+  await requireActor(3);
+  const exec = queryOne("SELECT pe.*, f.name AS faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id = f.id WHERE pe.id = ?", [execId]);
+  if (!exec) return { ok: false, error: "Request not found" };
+  if (exec.execution_type === "NPC") {
+    const npc = queryOne("SELECT id, name, npc_type, turf, position FROM npcs WHERE turf = ? AND npc_type = ?", [exec.turf, exec.old_value]);
+    return { ok: true, type: "NPC", turf: exec.turf, oldValue: exec.old_value, newValue: exec.new_value, target: npc || null };
+  }
+  if (exec.execution_type === "HQ") {
+    const oldP = queryOne("SELECT id, address FROM properties WHERE faction_id = ? AND address = ?", [exec.faction_id, exec.old_value]);
+    const newP = queryOne("SELECT id, address FROM properties WHERE faction_id = ? AND address = ?", [exec.faction_id, exec.new_value]);
+    return { ok: true, type: "HQ", oldValue: exec.old_value, newValue: exec.new_value, oldFound: !!oldP, newExists: !!newP };
+  }
+  return { ok: true, type: "Other", oldValue: exec.old_value, newValue: exec.new_value };
+}
+
 // Every document, for the Library. The old level_required gate was relevance
 // filtering, not confidentiality (owner ruling 2026-08-03): everyone sees the
 // whole catalog; level_required becomes the "audience" tag the UI groups by.

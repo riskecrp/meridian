@@ -1,7 +1,7 @@
 "use server";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendPing, pingChannel, taskComponents } from "../../../lib/pings.js";
+import { sendPing, pingChannel, taskComponents, rpComponents } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { today } from "../../../lib/format.js";
 import { GAME_AFFAIRS_ID, RISK_DISCORD_ID } from "../../../lib/constants.js";
@@ -222,7 +222,8 @@ export async function approveRPChange(execId) {
   logAudit(actor.id, actor.name, 'APPROVE', 'rp_change', execId, exec.faction_name, `Approved ${exec.execution_type}`);
   if (exec.requester_id) {
     await sendPing('rp.approved.requester',
-      `<@${exec.requester_id}> ✅ Your RP change request for **${exec.faction_name}** has been approved — **${exec.old_value} → ${exec.new_value}**. Schedule the scene, then click **Mark RP Done** on your dashboard when it's complete.`);
+      `<@${exec.requester_id}> ✅ Your RP change request for **${exec.faction_name}** has been approved — **${exec.old_value} → ${exec.new_value}**. Schedule and run the scene, then press **Confirm RP done** here or under Leadership → Approvals.`,
+      { components: rpComponents(execId, 'approved') });
   }
   return { ok: true };
 }
@@ -248,7 +249,8 @@ export async function resubmitRPChange(execId, note) {
   run("UPDATE pending_executions SET status='PENDING', rp_note=?, deny_reason='' WHERE id=?", [note || '', execId]);
   logAudit(actor.id, actor.name, 'EDIT', 'rp_change', execId, exec.faction_name, 'Resubmitted');
   await sendPing('rp.resubmitted',
-    `🔄 **RP Change Resubmitted** — **${exec.faction_name}**\n**Type:** ${exec.execution_type}\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Requested By:** ${exec.requested_by}${note ? `\n**Additional Context:** ${note}` : ''}`);
+    `🔄 **RP Change Resubmitted** — **${exec.faction_name}**\n**Type:** ${exec.execution_type}\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Requested By:** ${exec.requested_by}${note ? `\n**Additional Context:** ${note}` : ''}`,
+    { components: rpComponents(execId, 'pending') });
   return { ok: true };
 }
 
@@ -260,7 +262,8 @@ export async function markRPDone(execId, note) {
   run("UPDATE pending_executions SET status='RP_DONE', rp_note=? WHERE id=?", [note || '', execId]);
   logAudit(actor.id, actor.name, 'EDIT', 'rp_change', execId, exec.faction_name, 'RP marked done');
   await sendPing('rp.done',
-    `🎬 **RP Scene Complete** — **${exec.faction_name}**\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Confirmed By:** ${actor.name}${note ? `\n**Note:** ${note}` : ''}\n\nReady to execute the ${exec.execution_type} change on the dashboard.`);
+    `🎬 **RP Scene Complete** — **${exec.faction_name}**\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Confirmed By:** ${actor.name}${note ? `\n**Note:** ${note}` : ''}\n\nReady to execute the ${exec.execution_type} change — press **Execute…** here or use Leadership → Approvals.`,
+    { components: rpComponents(execId, 'done') });
   return { ok: true };
 }
 

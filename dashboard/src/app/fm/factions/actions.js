@@ -1,7 +1,7 @@
 "use server";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendPing } from "../../../lib/pings.js";
+import { sendPing, rpComponents } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { today } from "../../../lib/format.js";
 import { GAME_AFFAIRS_ID } from "../../../lib/constants.js";
@@ -565,14 +565,15 @@ export async function requestRPChange(data) {
   const actor = await requireActor(2, {allowEventTeam: true, allowLeadStoryteller: true});
   const fac = queryOne("SELECT id FROM factions WHERE name = ?", [data.faction]);
   if (!fac) return { ok: false };
-  run("INSERT INTO pending_executions (date, faction_id, execution_type, turf, old_value, new_value, requested_by, requester_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  const _rpIns = run("INSERT INTO pending_executions (date, faction_id, execution_type, turf, old_value, new_value, requested_by, requester_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [today(), fac.id, data.type, data.turf || 'N/A', data.oldValue || 'N/A', data.newValue, actor.name, actor.id]);
+  const _rpId = _rpIns.lastInsertRowid;
   logAudit(actor.id, actor.name, 'CREATE', 'rp_change', null, data.faction, `${data.type}: ${data.oldValue} → ${data.newValue}`);
   let msg = `🔔 **RP Change Request**\n**Faction:** ${data.faction}\n**Type:** ${data.type}\n**Requested By:** ${actor.name}`;
   if (data.type === 'NPC') msg += `\n**Turf:** ${data.turf}\n**Current:** ${data.oldValue}\n**New:** ${data.newValue}`;
   else if (data.type === 'HQ') msg += `\n**Old Address:** ${data.oldValue}\n**New Address:** ${data.newValue}`;
   else msg += `\n**Details:** ${data.newValue}`;
-  await sendPing('rp.requested', msg);
+  await sendPing('rp.requested', msg, { components: rpComponents(_rpId, 'pending') });
   return { ok: true };
 }
 
