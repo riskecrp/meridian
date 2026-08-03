@@ -1,5 +1,5 @@
 "use client";
-// Admin › Records: Audit Log, Archive, Server Logs (owner), Conversations.
+// Admin › Records: Audit Log, Archive, Server Logs (Leadership), Conversations.
 // Split out of admin/page.js — content unchanged.
 import { useEffect, useMemo, useState } from "react";
 import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../../fm/operations/actions.js";
@@ -88,7 +88,7 @@ function Archive() {
     </>
   );
 }
-/* ── Server Logs (owner-only): member events / deleted / edited / keyword alerts ── */
+/* ── Server Logs (Leadership): member events / deleted / edited / keyword alerts ── */
 const fmtTs = (ts) => ts ? new Date(ts + "Z").toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 function UserCell({ displayName, username, userId }) {
   if (!displayName && !username) return <span style={{ color: "var(--ink-3)", fontStyle: "italic" }}>unknown</span>;
@@ -123,7 +123,7 @@ function ServerLogs() {
             <button key={id} className={`tab${tab === id ? " on" : ""}`} onClick={() => setTab(id)}>{l}</button>
           ))}
         </div>
-        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>All servers the bot is in · visible only to you</span>
+        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>All servers the bot is in · Leadership only</span>
       </div>
       {tab === "members" && <MemberEvents />}
       {tab === "deleted" && <DeletedMessages />}

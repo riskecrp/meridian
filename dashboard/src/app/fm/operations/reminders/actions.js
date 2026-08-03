@@ -8,7 +8,7 @@ import { logAudit } from "../../../../lib/audit.js";
 // List all reminders.
 // L3: all. L2: own only. L1: forbidden (page is L2+).
 export async function listReminders() {
-  const actor = await requireActor(2);
+  const actor = await requireActor(3);
   let rows;
   if (actor.level >= 3) {
     rows = query("SELECT * FROM recurring_reminders ORDER BY ping_day, title");
@@ -29,13 +29,13 @@ export async function getReminderProgress(reminderId, year, month) {
 
 // All Discord channels available for the dropdown.
 export async function listChannels() {
-  await requireActor(2);
+  await requireActor(3);
   return query("SELECT key, channel_id FROM discord_config ORDER BY key");
 }
 
 // Possible target options for the dropdown.
 export async function getTargetOptions() {
-  await requireActor(2);
+  await requireActor(3);
   const teams = query("SELECT DISTINCT team_id, team_name FROM staff WHERE team_id != '' AND team_name != 'Game Affairs Management' ORDER BY team_name");
   const staff = query("SELECT discord_id, display_name FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' ORDER BY display_name");
   const roles = query("SELECT key, role_id FROM discord_roles ORDER BY key");
@@ -43,7 +43,7 @@ export async function getTargetOptions() {
 }
 
 export async function createReminder(data) {
-  const actor = await requireActor(2);
+  const actor = await requireActor(3);
   if (!data.title || !data.target_type || !data.target_id || !data.channel_id || !data.ping_day) {
     return { ok: false, error: "Missing required fields" };
   }
@@ -61,7 +61,7 @@ export async function createReminder(data) {
 }
 
 export async function updateReminder(id, data) {
-  const actor = await requireActor(2);
+  const actor = await requireActor(3);
   const existing = queryOne("SELECT * FROM recurring_reminders WHERE id = ?", [id]);
   if (!existing) return { ok: false, error: "Not found" };
   if (actor.level < 3 && existing.created_by_id !== actor.id) {
@@ -81,7 +81,7 @@ export async function updateReminder(id, data) {
 }
 
 export async function deleteReminder(id) {
-  const actor = await requireActor(2);
+  const actor = await requireActor(3);
   const existing = queryOne("SELECT * FROM recurring_reminders WHERE id = ?", [id]);
   if (!existing) return { ok: false, error: "Not found" };
   if (actor.level < 3 && existing.created_by_id !== actor.id) {

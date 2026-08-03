@@ -2,11 +2,10 @@ import { NextResponse } from 'next/server';
 import { requireActor } from '../../../lib/requireActor.js';
 import { query, run } from '../../../lib/db.js';
 
-const RISK_ID = '738214924760907907';
 
 async function guard() {
   const actor = await requireActor(1);
-  if (actor.id !== RISK_ID) throw new Error('denied');
+  if (actor.level < 3) throw new Error('denied');
 }
 
 export async function GET() {

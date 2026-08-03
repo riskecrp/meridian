@@ -3,11 +3,9 @@ import { query, queryOne, run } from "../../../../lib/db.js";
 import { requireActor } from "../../../../lib/requireActor.js";
 import { pingChannel } from "../../../../lib/pings.js";
 
-const RISK_ID = "738214924760907907";
-
+// Opened from owner-only to all FM Leadership (owner ruling 2026-08-04).
 async function guard() {
-  const actor = await requireActor(1);
-  if (actor.id !== RISK_ID) throw new Error("Access denied.");
+  await requireActor(3);
 }
 
 // Month abbreviations for DD/Mon/YYYY date parsing

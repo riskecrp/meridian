@@ -613,7 +613,7 @@ function FMHours() {
             <button key={id} className={`tab${tab === id ? " on" : ""}`} onClick={() => setTab(id)}>{l}</button>
           ))}
         </div>
-        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Monthly activity tracking for Faction Management · visible only to you</span>
+        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Monthly activity tracking for Faction Management · Leadership only</span>
       </div>
       {tab === "links" && <CharacterLinks staff={staff} onSaved={loadStaff} />}
       {tab === "hours" && <ImportHours staff={staff} />}

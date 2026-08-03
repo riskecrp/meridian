@@ -1,13 +1,16 @@
 // Admin sections, shared by the top-nav dropdown (layout.js) and the Admin page.
 // Item shape: [id, label, access?] — access mirrors the old /fm nav:
-//   "l1" = all staff · "l2" = L2 / Event Team / Lead Storyteller · "risk" = owner only · default = L3/ET.
+//   "l1" = all staff · "l2" = L2 / Event Team / Lead Storyteller · "l3" = any L3
+//   (strict — no ET boost) · "risk" = owner only · default = L3/ET.
+// 2026-08-04 owner ruling: FM Hours + Server Logs open to every L3 (were owner-
+// only), Recurring Reminders leaves the L2 tier.
 export const ADMIN_GROUPS = [
-  { id: "people", label: "People", items: [["staff", "Staff & Teams"], ["hours", "FM Hours", "risk"]] },
+  { id: "people", label: "People", items: [["staff", "Staff & Teams"], ["hours", "FM Hours", "l3"]] },
   { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", "l2"], ["vehicles", "Vehicle Catalog", "l2"], ["imports", "Import Catalog", "l2"]] },
   // Documents moved to Library (all-staff reference, 2026-08-03) — with it gone,
   // nothing here is L1 and the Admin nav disappears for guides entirely.
-  { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l2"], ["discord", "Discord & Access"]] },
-  { id: "records", label: "Records", items: [["audit", "Audit Log"], ["archive", "Archive"], ["memberlog", "Server Logs", "risk"], ["convos", "Conversations"]] },
+  { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l3"], ["discord", "Discord & Access"]] },
+  { id: "records", label: "Records", items: [["audit", "Audit Log"], ["archive", "Archive"], ["memberlog", "Server Logs", "l3"], ["convos", "Conversations"]] },
 ];
 
 export const OWNER_ID = "738214924760907907";
@@ -15,6 +18,7 @@ export const OWNER_ID = "738214924760907907";
 export function adminItemVisible([, , access], { level = 0, isET, isLST, id }) {
   if (access === "l1") return true;
   if (access === "l2") return level >= 2 || isET || isLST;
+  if (access === "l3") return level >= 3;
   if (access === "risk") return id === OWNER_ID;
   return level >= 3 || isET;
 }

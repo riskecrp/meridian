@@ -2,12 +2,11 @@ import { NextResponse } from 'next/server';
 import { requireActor } from '../../../lib/requireActor.js';
 import { query } from '../../../lib/db.js';
 
-const RISK_ID = '738214924760907907';
 
 export async function GET() {
   try {
     const actor = await requireActor(1);
-    if (actor.id !== RISK_ID) {
+    if (actor.level < 3) {
       return NextResponse.json({ error: 'Access denied.' }, { status: 403 });
     }
     const logs = query(
