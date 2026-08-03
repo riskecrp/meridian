@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { getAnnouncementTargets, sendAnnouncement, sendICCommunication, uploadToImgbb, getAnnouncementHistory } from "../../fm/communications/actions.js";
 
@@ -80,12 +81,22 @@ function Result({ r }) {
   );
 }
 
-export default function V2Comms() {
+export default function V2CommsPage() {
+  return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Comms /></Suspense>;
+}
+
+const COMMS_TABS = ["announce", "ic", "history"];
+
+function V2Comms() {
   const auth = useAuth();
+  const router = useRouter();
+  const sp = useSearchParams();
   const isL3 = (auth?.level || 0) >= 3;
   const [targets, setTargets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("announce");
+  const tabParam = sp.get("tab");
+  const tab = COMMS_TABS.includes(tabParam) ? tabParam : "announce";
+  const setTab = (id) => router.replace(`/v2/comms${id === "announce" ? "" : `?tab=${id}`}`, { scroll: false });
 
   useEffect(() => { if (!auth?.loading && (auth?.level >= 1 || auth?.isLeadStoryteller)) getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); }); }, [auth?.loading]);
   if (auth?.loading || loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;

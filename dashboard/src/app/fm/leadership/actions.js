@@ -582,7 +582,7 @@ export async function getMeetingNotes() {
   const actor = await requireActor(1);
   const cols = `n.id, n.faction_id, n.date, n.author, n.author_id, n.text as content,
                 n.created_at, n.meeting_type, n.target_type, n.target_key, n.target_label,
-                f.name as faction_name`;
+                n.attendees_json, f.name as faction_name`;
   let rows;
   if (actor.level >= 3) {
     rows = query(`SELECT ${cols} FROM ooc_notes n
@@ -599,12 +599,17 @@ export async function getMeetingNotes() {
          OR (n.target_type = 'team' AND n.target_key = ?)
       ORDER BY n.created_at DESC LIMIT 100`, [user.team_id, user.team_id]);
   }
-  return rows.map(n => ({
-    ...n,
-    display_name: n.target_type === 'faction'
-      ? (n.faction_name || 'Unknown faction')
-      : (n.target_label || 'Meeting'),
-  }));
+  return rows.map(n => {
+    let attendeeIds = [];
+    try { attendeeIds = JSON.parse(n.attendees_json || '[]'); } catch {}
+    return {
+      ...n,
+      attendeeIds,
+      display_name: n.target_type === 'faction'
+        ? (n.faction_name || 'Unknown faction')
+        : (n.target_label || 'Meeting'),
+    };
+  });
 }
 
 export async function saveMeetingNote(data) {

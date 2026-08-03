@@ -6,6 +6,8 @@ import { getMyTasks, getMyCreatedTasks, getMyReminders, getMyTeamFactions, getSt
 import { getPendingQueue } from "../fm/leadership/actions.js";
 import { createTask, createReminder } from "../fm/teams/actions.js";
 import TaskList from "./TaskList.js";
+import { targetOptions } from "./TargetPicker.js";
+import { useRun } from "./hooks.js";
 
 /* Port of /fm/teams CreateActionForm: task + event/reminder creation with shared target picker */
 function CreateAction({ mode, setMode, staffList, roleTargets, onDone, onCancel }) {
@@ -17,31 +19,22 @@ function CreateAction({ mode, setMode, staffList, roleTargets, onDone, onCancel 
   const [eventDate, setEventDate] = useState("");
   const [eventNote, setEventNote] = useState("");
   const [enable30m, setEnable30m] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const { busy, err, setErr, run } = useRun();
 
-  const roleOptions = [
-    ...(roleTargets.leadershipId ? [{ label: "FM Leadership", value: roleTargets.leadershipId }] : []),
-    ...(roleTargets.leadId ? [{ label: "FM Team Leads", value: roleTargets.leadId }] : []),
-    ...(roleTargets.allFmId ? [{ label: "All Faction Management", value: roleTargets.allFmId }] : []),
-    ...(roleTargets.teams || []).map(t => ({ label: t.team_name, value: t.team_id })),
-  ];
+  const roleOptions = targetOptions(roleTargets).map(o => ({ label: o.label, value: o.id }));
   const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 };
 
-  const submit = async () => {
-    if (!targetId) { window.alert("Please select a target."); return; }
+  const submit = () => {
+    if (!targetId) { setErr("Please select a target."); return; }
     if (mode === "task") {
-      if (!desc.trim()) { window.alert("Description required."); return; }
-      setBusy(true);
-      await createTask({ desc, targetId, targetType, enableDM });
+      if (!desc.trim()) { setErr("Description required."); return; }
+      run(() => createTask({ desc, targetId, targetType, enableDM }), () => onDone(mode));
     } else {
-      if (!eventDate) { window.alert("Date required."); return; }
+      if (!eventDate) { setErr("Date required."); return; }
       const epochMs = new Date(eventDate).getTime();
-      if (isNaN(epochMs)) { window.alert("Invalid date."); return; }
-      setBusy(true);
-      await createReminder({ message: `[${eventType}] ${eventNote || ""}`.trim(), epochMs, eventType, note: eventNote, targetType, targetId, enable30m });
+      if (isNaN(epochMs)) { setErr("Invalid date."); return; }
+      run(() => createReminder({ message: `[${eventType}] ${eventNote || ""}`.trim(), epochMs, eventType, note: eventNote, targetType, targetId, enable30m }), () => onDone(mode));
     }
-    setBusy(false);
-    onDone(mode);
   };
 
   return (
@@ -96,6 +89,7 @@ function CreateAction({ mode, setMode, staffList, roleTargets, onDone, onCancel 
           <input type="checkbox" checked={enable30m} onChange={e => setEnable30m(e.target.checked)} /> Send 30-minute warning ping before event
         </label>
       </>}
+      {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
         <button className="btn" disabled={busy} onClick={submit}>{busy ? "Saving…" : mode === "task" ? "Create task" : "Schedule event"}</button>
         <button className="act" onClick={onCancel}>Cancel</button>

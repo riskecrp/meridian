@@ -9,22 +9,8 @@ import { approveRPChange, denyRPChange, markRPDone, executeRPChange, deleteRPCha
 import { completePromotion, cancelPromotion } from "../../fm/factions/actions.js";
 import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../fm/teams/actions.js";
 import RpChangeForm from "../../fm/teams/RpChangeForm";
-
-function Modal({ title, onClose, onSave, saveDisabled, children, wide }) {
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
-      <div style={{ position: "relative", width: "100%", maxWidth: wide ? 720 : 520, maxHeight: "88vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
-        <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>{title}</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{children}</div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-          <button className="act" onClick={onClose}>Cancel</button>
-          {onSave && <button className="act primary" disabled={saveDisabled} onClick={onSave}>Save</button>}
-        </div>
-      </div>
-    </div>
-  );
-}
+import Modal from "../Modal.js";
+import { FM_GUILD_ID } from "../../../lib/constants";
 
 export default function V2LeadershipPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Leadership /></Suspense>;
@@ -222,7 +208,7 @@ function MeetingNotes({ auth }) {
               <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{n.date}</span>
               <span style={{ flex: 1 }} />
               {(n.author_id === auth.id || auth.level >= 3) && <>
-                <button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ id: n.id, targetType: n.target_type, targetKey: n.target_type === "faction" ? String(n.faction_id) : n.target_key, content: n.content, attendeeIds: new Set() })}>Edit</button>
+                <button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ id: n.id, targetType: n.target_type, targetKey: n.target_type === "faction" ? String(n.faction_id) : n.target_key, content: n.content, attendeeIds: new Set(n.attendeeIds || []) })}>Edit</button>
                 <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete note?")) { await deleteMeetingNote(n.id); load(); } }}>Del</button>
               </>}
             </div>
@@ -233,7 +219,7 @@ function MeetingNotes({ auth }) {
           </div>
         ))}
       </div>
-      {form && <Modal wide title={`${form.id ? "Edit" : "New"} meeting note`} onClose={() => setForm(null)} onSave={save} saveDisabled={!form.targetType || !stripHtml(form.content).trim()}>
+      {form && <Modal maxWidth={720} title={`${form.id ? "Edit" : "New"} meeting note`} onClose={() => setForm(null)} onSave={save} saveDisabled={!form.targetType || !stripHtml(form.content).trim()}>
         <select className="filter-inp" value={form.targetType && form.targetKey ? `${form.targetType}:${form.targetKey}` : ""} onChange={e => { const [tt, ...r] = e.target.value.split(":"); setForm({ ...form, targetType: tt, targetKey: r.join(":") }); }}>
           <option value="">Select target…</option>
           {targetOptions().map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
@@ -281,7 +267,7 @@ function Reviews() {
                 <td>{f.currentReview
                   ? <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}><span className="chip" style={{ background: `color-mix(in srgb, ${recColor(f.currentReview.recommendation)} 15%, transparent)`, color: recColor(f.currentReview.recommendation) }}>{f.currentReview.recommendation || "—"}</span><span style={{ fontSize: 11, color: "var(--ink-3)" }}>{f.currentReview.status}</span></span>
                   : <span style={{ fontSize: 11.5, color: "var(--amber)" }}>Not reviewed</span>}</td>
-                <td><Link className="act" href={`/v2/factions/${encodeURIComponent(f.name)}`}>Open →</Link></td>
+                <td><Link className="act" href={`/v2/factions/${encodeURIComponent(f.name)}?tab=review`}>Open →</Link></td>
               </tr>
             ))}
           </tbody>
@@ -357,7 +343,7 @@ function IcContactCard({ contact, staffList, onRefresh }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>{new Date(contact.submitted_at).toLocaleDateString()}</span>
-          {contact.thread_id && <a href={`https://discord.com/channels/@me/${contact.thread_id}`} target="_blank" rel="noreferrer" style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)" }}>Thread ↗</a>}
+          {contact.thread_id && <a href={`https://discord.com/channels/${FM_GUILD_ID}/${contact.thread_id}`} target="_blank" rel="noreferrer" style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)" }}>Thread ↗</a>}
           <select disabled={busy} value={contact.status} onChange={e => doStatusChange(e.target.value)}
             style={{ fontSize: 9.5, fontWeight: 700, padding: "3px 6px", borderRadius: 6, background: meta.bg, color: meta.color, border: "1px solid var(--line)", cursor: "pointer", outline: "none", fontFamily: "var(--v2-mono)", textTransform: "uppercase" }}>
             <option value="pending_discussion">Pending Discussion</option>

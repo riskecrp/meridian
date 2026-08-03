@@ -16,29 +16,10 @@ import {
 import { getSceneLogs, getFactionNames as getSceneFactionNames, getInventoryForScene, getStaffForScene, submitScene, addMyselfToScene, removeAssistantFromScene, editSceneNotes, deleteScene, requestSceneDeletion, getAttentionFactions, getTreasuryStats } from "../../fm/scenes/actions.js";
 import { useDraft, loadDraft, clearDraft } from "../../../lib/useDraft";
 
+import Modal from "../Modal.js";
+import { useCopy, useRun } from "../hooks.js";
+
 const GTAMap = dynamic(() => import("../../../lib/GTAMap"), { ssr: false, loading: () => <div style={{ height: 400, display: "grid", placeItems: "center", color: "var(--ink-3)" }}>Loading map…</div> });
-
-function useCopy() {
-  const [copied, setCopied] = useState(null);
-  const copy = (text, id) => { navigator.clipboard?.writeText(text); setCopied(id); setTimeout(() => setCopied(null), 1500); };
-  return [copied, copy];
-}
-
-function Modal({ title, onClose, onSave, saveDisabled, children, wide }) {
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
-      <div style={{ position: "relative", width: "100%", maxWidth: wide ? 620 : 460, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
-        <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>{title}</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{children}</div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-          <button className="act" onClick={onClose}>Cancel</button>
-          {onSave && <button className="act primary" disabled={saveDisabled} onClick={onSave}>Save</button>}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function V2StoryPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Story /></Suspense>;
@@ -120,6 +101,7 @@ function KB({ auth, canMgmt, lore, cmds, reload }) {
   const [filter, setFilter] = useState(null);
   const [favs, setFavs] = useState([]);
   const [form, setForm] = useState(null);
+  const { busy, err, setErr, run } = useRun();
   useEffect(() => { try { setFavs(JSON.parse(localStorage.getItem("meridian_kb_favs_" + auth.id) || "[]")); } catch {} }, [auth.id]);
   const toggleFav = (uid) => { const n = favs.includes(uid) ? favs.filter(f => f !== uid) : [...favs, uid]; setFavs(n); localStorage.setItem("meridian_kb_favs_" + auth.id, JSON.stringify(n)); };
   const allItems = useMemo(() => [...lore.map(i => ({ ...i, dtype: "lore", uid: `l-${i.id}` })), ...(canMgmt ? cmds.map(i => ({ ...i, dtype: "command", uid: `c-${i.id}` })) : [])], [lore, cmds, canMgmt]);
@@ -133,7 +115,7 @@ function KB({ auth, canMgmt, lore, cmds, reload }) {
     else f = f.filter(i => i.dtype !== "command");
     return f.sort((a, b) => { const af = favs.includes(a.uid), bf = favs.includes(b.uid); if (af && !bf) return -1; if (!af && bf) return 1; return a.title.localeCompare(b.title); });
   }, [allItems, search, filter, favs]);
-  const save = async () => { if (!form.title.trim()) return; if (form.id) await editKBEntry(form.id, form); else await addKBEntry(form, form.type); setForm(null); reload(); };
+  const save = () => { if (!form.title.trim()) return; run(() => form.id ? editKBEntry(form.id, form) : addKBEntry(form, form.type), () => { setForm(null); reload(); }); };
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -172,7 +154,7 @@ function KB({ auth, canMgmt, lore, cmds, reload }) {
           })}
         </div>
       )}
-      {form && <Modal title={`${form.id ? "Edit" : "Add"} ${form.type === "command" ? "Management" : "KB"} entry`} onClose={() => setForm(null)} onSave={save} saveDisabled={!form.title.trim()}>
+      {form && <Modal title={`${form.id ? "Edit" : "Add"} ${form.type === "command" ? "Management" : "KB"} entry`} onClose={() => { setForm(null); setErr(""); }} onSave={save} saveDisabled={busy || !form.title.trim()} error={err}>
         <input className="filter-inp" placeholder="Category" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
         <input className="filter-inp" placeholder="Title" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
         <textarea className="filter-inp" rows={4} placeholder="Content (the value that gets copied)" value={form.content} onChange={e => setForm({ ...form, content: e.target.value })} />
@@ -188,8 +170,9 @@ function ChangeLog({ auth, rows, reload }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState(null);
+  const { busy, err, setErr, run } = useRun();
   const shown = rows.filter(c => filter === "all" || c.change_type === filter).filter(c => !search || [c.name, c.position, c.notes].some(x => (x || "").toLowerCase().includes(search.toLowerCase())));
-  const save = async () => { if (!form.name.trim()) return; const p = { name: form.name, position: form.position, changeType: form.change_type, action: form.action, blockedOff: form.blocked_off, notes: form.notes }; if (form.id) await editChangeLog(form.id, p); else await addChangeLog(p); setForm(null); reload(); };
+  const save = () => { if (!form.name.trim()) return; const p = { name: form.name, position: form.position, changeType: form.change_type, action: form.action, blockedOff: form.blocked_off, notes: form.notes }; run(() => form.id ? editChangeLog(form.id, p) : addChangeLog(p), () => { setForm(null); reload(); }); };
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
@@ -216,7 +199,7 @@ function ChangeLog({ auth, rows, reload }) {
           </div>
         ))}
       </div>
-      {form && <Modal title={`${form.id ? "Edit" : "New"} change-log entry`} onClose={() => setForm(null)} onSave={save} saveDisabled={!form.name.trim()}>
+      {form && <Modal title={`${form.id ? "Edit" : "New"} change-log entry`} onClose={() => { setForm(null); setErr(""); }} onSave={save} saveDisabled={busy || !form.name.trim()} error={err}>
         <select className="filter-inp" value={form.change_type} onChange={e => setForm({ ...form, change_type: e.target.value })}><option value="black_market_doctor">Black Market Doctor</option><option value="drop_location">Drop Location</option></select>
         <input className="filter-inp" placeholder="Name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
         <input className="filter-inp" placeholder="/tppos location" value={form.position} onChange={e => setForm({ ...form, position: e.target.value })} />
@@ -271,14 +254,15 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
   const [sSearch, setSSearch] = useState("");
 
   const loadouts = d.loadouts || [];
+  const { busy, err, setErr, run } = useRun();
   const cats = [...new Set(loadouts.map(w => w.weapon_category))].filter(Boolean).sort();
   const shown = loadouts.filter(w => !cat || w.weapon_category === cat).filter(w => !q || [w.weapon_name, w.caliber].some(x => (x || "").toLowerCase().includes(q.toLowerCase())) || (w.ammo || []).some(a => a.ammo_name.toLowerCase().includes(q.toLowerCase())) || (w.attachments || []).some(a => a.attachment_name.toLowerCase().includes(q.toLowerCase())));
-  const saveWeapon = async () => { if (!wForm.name.trim()) return; if (wForm.id) await editWeapon(wForm.id, wForm); else await addWeapon(wForm); setWForm(null); reload(); };
+  const saveWeapon = () => { if (!wForm.name.trim()) return; run(() => wForm.id ? editWeapon(wForm.id, wForm) : addWeapon(wForm), () => { setWForm(null); reload(); }); };
 
   const spawnCmd = (item, n) => { const t = (item.item_type || "").toLowerCase(); if (t === "weapon" || t === "ammo") return `/GetWeapon ${item.game_id} ${n} 0`; if (t.includes("component") || t.includes("attachment")) return `/GetWeaponComponent ${item.game_id}`; return `/GetItem ${item.game_id} ${n}`; };
   const spawns = d.spawns || [];
   const spawnShown = spawns.filter(i => !sSearch || [i.name, i.category, i.game_id].some(x => (x || "").toLowerCase().includes(sSearch.toLowerCase())));
-  const saveSpawn = async () => { if (!spawnForm.name.trim()) return; const p = { name: spawnForm.name, gameId: spawnForm.game_id, category: spawnForm.category, itemType: spawnForm.item_type }; if (spawnForm.id) await editSpawnItem(spawnForm.id, p); else await addSpawnItem(p); setSpawnForm(null); reload(); };
+  const saveSpawn = () => { if (!spawnForm.name.trim()) return; const p = { name: spawnForm.name, gameId: spawnForm.game_id, category: spawnForm.category, itemType: spawnForm.item_type }; run(() => spawnForm.id ? editSpawnItem(spawnForm.id, p) : addSpawnItem(p), () => { setSpawnForm(null); reload(); }); };
 
   return (
     <>
@@ -345,7 +329,7 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
             </div>
           ))}
         </div>
-        {wForm && <Modal title={`${wForm.id ? "Edit" : "Add"} weapon`} onClose={() => setWForm(null)} onSave={saveWeapon} saveDisabled={!wForm.name.trim()}>
+        {wForm && <Modal title={`${wForm.id ? "Edit" : "Add"} weapon`} onClose={() => { setWForm(null); setErr(""); }} onSave={saveWeapon} saveDisabled={busy || !wForm.name.trim()} error={err}>
           <input className="filter-inp" placeholder="Weapon name" value={wForm.name} onChange={e => setWForm({ ...wForm, name: e.target.value })} />
           <input className="filter-inp" placeholder="Category" list="wcats" value={wForm.category} onChange={e => setWForm({ ...wForm, category: e.target.value })} />
           <datalist id="wcats">{cats.map(c => <option key={c} value={c} />)}</datalist>
@@ -381,7 +365,7 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
           </table>
           {spawnShown.length === 0 && <div className="empty">No items match.</div>}
         </div>
-        {spawnForm && <Modal title={`${spawnForm.id ? "Edit" : "Add"} spawn item`} onClose={() => setSpawnForm(null)} onSave={saveSpawn} saveDisabled={!spawnForm.name.trim()}>
+        {spawnForm && <Modal title={`${spawnForm.id ? "Edit" : "Add"} spawn item`} onClose={() => { setSpawnForm(null); setErr(""); }} onSave={saveSpawn} saveDisabled={busy || !spawnForm.name.trim()} error={err}>
           <input className="filter-inp" placeholder="Name" value={spawnForm.name} onChange={e => setSpawnForm({ ...spawnForm, name: e.target.value })} />
           <input className="filter-inp" placeholder="Game ID" value={spawnForm.game_id} onChange={e => setSpawnForm({ ...spawnForm, game_id: e.target.value })} />
           <input className="filter-inp" placeholder="Category" value={spawnForm.category} onChange={e => setSpawnForm({ ...spawnForm, category: e.target.value })} />
@@ -402,6 +386,7 @@ function NPCs({ auth, npcs, turfs, reload }) {
   const [mapTurf, setMapTurf] = useState(null);
   const [npcForm, setNpcForm] = useState(null); // {id?, name, position, type, customType?, turf}
   const [turfForm, setTurfForm] = useState(null); // {oldTurf, newTurf, power}
+  const { busy, err, setErr, run } = useRun();
 
   const network = useMemo(() => {
     const net = {};
@@ -416,8 +401,8 @@ function NPCs({ auth, npcs, turfs, reload }) {
   const npcTypes = [...new Set(npcs.map(n => (n.npc_type || "").trim()).filter(Boolean))].sort();
   const turfNames = [...new Set([...turfs.map(t => (t.name || "").trim()), ...npcs.map(n => (n.turf || "").trim())].filter(t => t && t !== "Neutral"))].sort();
 
-  const saveNPC = async () => { if (!npcForm.name.trim()) return; const p = { ...npcForm, type: npcForm.type === "__new" ? (npcForm.customType || "").trim() : npcForm.type, turf: npcForm.turf || "Neutral" }; if (npcForm.id) await editNPC(npcForm.id, p); else await addNPC(p); setNpcForm(null); reload(); };
-  const saveTurf = async () => { if (!turfForm.newTurf.trim()) return; await updateTurf(turfForm.oldTurf, turfForm.newTurf, turfForm.power); setTurfForm(null); reload(); };
+  const saveNPC = () => { if (!npcForm.name.trim()) return; const p = { ...npcForm, type: npcForm.type === "__new" ? (npcForm.customType || "").trim() : npcForm.type, turf: npcForm.turf || "Neutral" }; run(() => npcForm.id ? editNPC(npcForm.id, p) : addNPC(p), () => { setNpcForm(null); reload(); }); };
+  const saveTurf = () => { if (!turfForm.newTurf.trim()) return; run(() => updateTurf(turfForm.oldTurf, turfForm.newTurf, turfForm.power), () => { setTurfForm(null); reload(); }); };
 
   const NpcRow = (n) => { const ic = copied === `npc-${n.id}`; return (
     <div className="clog" key={n.id}>
@@ -476,7 +461,7 @@ function NPCs({ auth, npcs, turfs, reload }) {
         ))}
       </>}
 
-      {npcForm && <Modal title={`${npcForm.id ? "Edit" : "Add"} NPC`} onClose={() => setNpcForm(null)} onSave={saveNPC} saveDisabled={!npcForm.name.trim()}>
+      {npcForm && <Modal title={`${npcForm.id ? "Edit" : "Add"} NPC`} onClose={() => { setNpcForm(null); setErr(""); }} onSave={saveNPC} saveDisabled={busy || !npcForm.name.trim()} error={err}>
         <input className="filter-inp" placeholder="Name" value={npcForm.name} onChange={e => setNpcForm({ ...npcForm, name: e.target.value })} />
         <input className="filter-inp" placeholder="TP position" value={npcForm.position} onChange={e => setNpcForm({ ...npcForm, position: e.target.value })} />
         <select className="filter-inp" value={npcForm.type} onChange={e => setNpcForm({ ...npcForm, type: e.target.value })}>
@@ -490,7 +475,7 @@ function NPCs({ auth, npcs, turfs, reload }) {
           {turfNames.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
       </Modal>}
-      {turfForm && <Modal title={`${turfForm.oldTurf ? "Edit" : "Create"} turf`} onClose={() => setTurfForm(null)} onSave={saveTurf} saveDisabled={!turfForm.newTurf.trim()}>
+      {turfForm && <Modal title={`${turfForm.oldTurf ? "Edit" : "Create"} turf`} onClose={() => { setTurfForm(null); setErr(""); }} onSave={saveTurf} saveDisabled={busy || !turfForm.newTurf.trim()} error={err}>
         <input className="filter-inp" placeholder="Turf name" value={turfForm.newTurf} onChange={e => setTurfForm({ ...turfForm, newTurf: e.target.value })} />
         <input className="filter-inp" placeholder="Shipment power" value={turfForm.power} onChange={e => setTurfForm({ ...turfForm, power: e.target.value })} />
       </Modal>}

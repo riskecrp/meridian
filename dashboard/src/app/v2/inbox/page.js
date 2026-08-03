@@ -8,6 +8,7 @@ import {
   getDMTrackingStatus, toggleDMTracking, getForwardedDMs, markDMRead, markAllDMsRead, deleteDM,
   createMyTask, getStaffForCreate, getRoleTargetsForCreate,
 } from "../../fm/dashboard/actions.js";
+import { TargetSelect, parseTarget } from "../TargetPicker.js";
 
 const clean = (s) => (s || "").replace(/<@[!&]?[0-9]+>/g, "@…");
 const when = (t) => (t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
@@ -98,10 +99,14 @@ export default function V2Inbox() {
   const doDeleteDM = async (it) => { await deleteDM(it.id); load(); };
   const doTask = async () => {
     if (!taskTarget || !taskDesc.trim()) return;
-    setBusy(true);
-    const [type, ...rest] = taskTarget.split(":");
-    await createMyTask({ desc: taskDesc.trim(), targetType: type, targetId: rest.join(":"), enableDM: false });
-    setBusy(false); closeAll();
+    setBusy(true); setErr("");
+    const { targetType, targetId } = parseTarget(taskTarget);
+    let r;
+    try { r = await createMyTask({ desc: taskDesc.trim(), targetType, targetId, enableDM: false }); }
+    catch { r = { ok: false }; }
+    setBusy(false);
+    if (r && r.ok === false) { setErr(r.error || "Could not create the task."); return; }
+    closeAll();
   };
   const markAllVisible = async () => {
     const kinds = tab === "all" ? ["mention", "leadership", "watch", "dm"] : [tab];
@@ -184,16 +189,9 @@ export default function V2Inbox() {
                   <div className="inline-form" style={{ marginTop: 10 }}>
                     <div className="lbl">Create task from this</div>
                     <textarea className="filter-inp" rows={2} value={taskDesc} onChange={e => setTaskDesc(e.target.value)} />
-                    <select className="filter-inp" value={taskTarget} onChange={e => setTaskTarget(e.target.value)}>
-                      <option value="">Assign to…</option>
-                      <optgroup label="Roles & Teams">
-                        {roles.leadershipId && <option value={`Role:${roles.leadershipId}`}>FM Leadership</option>}
-                        {roles.leadId && <option value={`Role:${roles.leadId}`}>FM Team Leads</option>}
-                        {roles.allFmId && <option value={`Role:${roles.allFmId}`}>All FM</option>}
-                        {(roles.teams || []).map(t => <option key={t.team_id} value={`Role:${t.team_id}`}>Team {t.team_name}</option>)}
-                      </optgroup>
-                      <optgroup label="Staff">{staff.map(s => <option key={s.discord_id} value={`User:${s.discord_id}`}>{s.display_name}</option>)}</optgroup>
-                    </select>
+                    <TargetSelect className="filter-inp" value={taskTarget} onChange={setTaskTarget}
+                      roleTargets={roles} staffList={staff} placeholder="Assign to…" />
+                    {err && <div className="err">{err}</div>}
                     <div className="row-btns"><button className="act primary" disabled={busy || !taskTarget || !taskDesc.trim()} onClick={doTask}>{busy ? "Creating…" : "Create task"}</button><button className="act" onClick={closeAll}>Cancel</button></div>
                   </div>
                 )}

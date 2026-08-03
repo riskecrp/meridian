@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../../lib/useAuth";
 import QuillEditor from "../../../../lib/QuillEditor";
 import {
@@ -29,30 +29,26 @@ const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const money = (n) => "$" + (n || 0).toLocaleString();
 const IC_STATUS = { pending_discussion: ["disc", "Pending Discussion"], pending_roleplay: ["rp", "Pending Roleplay"], completed: ["done", "Completed"] };
 
-function Modal({ title, onClose, onSave, saveDisabled, children, wide }) {
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
-      <div style={{ position: "relative", width: "100%", maxWidth: wide ? 860 : 480, maxHeight: "88vh", overflowY: "auto", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
-        <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>{title}</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{children}</div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-          <button className="act" onClick={onClose}>Cancel</button>
-          {onSave && <button className="act primary" disabled={saveDisabled} onClick={onSave}>Save</button>}
-        </div>
-      </div>
-    </div>
-  );
-}
+import Modal from "../../Modal.js";
+
 function CapBar({ label, used, max }) {
   const pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
   return <div className="cap"><span className="lbl">{label}</span><span className="bar"><span className={`fill${used >= max && max > 0 ? " full" : ""}`} style={{ width: `${pct}%` }} /></span><span className="num"><b>{used}</b> / {max}</span></div>;
 }
 
-export default function FactionHub() {
+export default function FactionHubPage() {
+  return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><FactionHub /></Suspense>;
+}
+
+// All hub tabs are URL-addressable (?tab=) so other areas — Leadership Reviews,
+// Home, Discord pings — can land on the exact tab.
+const HUB_TAB_IDS = ["overview", "roster", "activity", "assets", "imports", "comms", "review", "admin"];
+
+function FactionHub() {
   const auth = useAuth();
   const router = useRouter();
   const params = useParams();
+  const sp = useSearchParams();
   const name = params?.name ? decodeURIComponent(params.name) : "";
   const level = auth?.level || 0;
   const isL3 = level >= 3;
@@ -71,7 +67,10 @@ export default function FactionHub() {
   const [noteTextLs, setNoteTextLs] = useState("");
   const [fbMsg, setFbMsg] = useState("");
   const [portal, setPortal] = useState([]);
-  const [tab, setTab] = useState("overview");
+  const tabParam = sp.get("tab");
+  const tab = HUB_TAB_IDS.includes(tabParam) && (level >= 2 || auth?.isLeadStoryteller || (tabParam !== "review" && tabParam !== "admin"))
+    ? tabParam : "overview";
+  const setTab = (id) => router.replace(`/v2/factions/${encodeURIComponent(name)}${id === "overview" ? "" : `?tab=${id}`}`, { scroll: false });
   const [actSub, setActSub] = useState("scenes");
   const [capSub, setCapSub] = useState("imports");
   const [loading, setLoading] = useState(true);
@@ -346,8 +345,9 @@ export default function FactionHub() {
             <textarea className="filter-inp" rows={3} placeholder="Write a message for the faction's public page…" value={portalText} onChange={e => setPortalText(e.target.value)} style={{ marginTop: 6 }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
               <label style={{ fontSize: 12.5, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={portalPin} onChange={e => setPortalPin(e.target.checked)} /> Pin to top</label>
-              <button className="act primary" disabled={busy || !portalText.trim()} onClick={async () => { await postPortalMessage(detail.id, detail.name, portalText, portalPin); setPortalText(""); setPortalPin(false); getFactionPortalMessages(detail.id).then(setPortal); }}>Post message</button>
+              <button className="act primary" disabled={busy || !portalText.trim()} onClick={async () => { const ok = await run(() => postPortalMessage(detail.id, detail.name, portalText, portalPin)); if (ok) { setPortalText(""); setPortalPin(false); } }}>Post message</button>
             </div>
+            {err && tab === "comms" && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
           </div>
           {portal.length > 0 && <div className="card"><div className="hd"><div className="t">Posted messages</div></div>
             {portal.map(m => (
@@ -415,7 +415,7 @@ export default function FactionHub() {
       {form?.kind === "link" && <Modal title={`Edit ${form.field}`} onClose={() => setForm(null)} onSave={() => run(() => updateFactionLinks(detail.id, form.field, form.value))}>
         <input className="filter-inp" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
       </Modal>}
-      {form?.kind === "ooc" && <Modal wide title={`OOC meeting: ${detail.name}`} onClose={() => setForm(null)} onSave={submitOOC} saveDisabled={busy || !form.text.trim()}>
+      {form?.kind === "ooc" && <Modal maxWidth={860} title={`OOC meeting: ${detail.name}`} onClose={() => setForm(null)} onSave={submitOOC} saveDisabled={busy || !form.text.trim()}>
         <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16 }}>
           <div><div className="lbl" style={{ fontSize: 9, fontFamily: "var(--v2-mono)", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 6 }}>Attendance</div>
             <div style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5 }}>

@@ -5,6 +5,8 @@ import {
   claimMyTask, completeMyTask, unclaimMyTask,
   reassignMyTask, requestTaskInfo, editMyTask,
 } from "../fm/dashboard/actions.js";
+import { TargetSelect, parseTarget } from "./TargetPicker.js";
+import { useRun } from "./hooks.js";
 
 // Interactive task list, reused in two modes:
 //  - compact (Home): Assigned / Created / Team tabs, capped, "View all →" link.
@@ -15,8 +17,7 @@ export default function TaskList({ auth, assigned, created, team, allServer, sta
   const [tab, setTab] = useState("assigned");
   const [openUid, setOpenUid] = useState(null);
   const [form, setForm] = useState(null); // { uid, kind, text, target }
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const { busy, err, setErr, run: runAction } = useRun();
   const [q, setQ] = useState("");
 
   const TABS = [
@@ -36,23 +37,7 @@ export default function TaskList({ auth, assigned, created, team, allServer, sta
   const resetForm = () => { setForm(null); setErr(""); };
   const openForm = (uid, kind, seed = "") => { setForm({ uid, kind, text: seed, target: "" }); setErr(""); };
 
-  const run = async (fn) => {
-    setBusy(true); setErr("");
-    try { const r = await fn(); if (r && r.ok === false) { setErr(r.error || "Action failed."); setBusy(false); return; } }
-    catch (e) { setErr("Action failed."); setBusy(false); return; }
-    setBusy(false); resetForm(); onRefresh();
-  };
-
-  const targetOptions = () => {
-    const rt = roleTargets || {};
-    const opts = [];
-    if (auth.level >= 3 && rt.leadershipId) opts.push({ v: `Role:${rt.leadershipId}`, l: "FM Leadership" });
-    if (auth.level >= 3) opts.push({ v: "Role:1457189093594239147", l: "Game Affairs" });
-    if (rt.leadId) opts.push({ v: `Role:${rt.leadId}`, l: "Team Leads" });
-    if (rt.allFmId) opts.push({ v: `Role:${rt.allFmId}`, l: "All FM" });
-    (rt.teams || []).forEach(t => opts.push({ v: `Role:${t.team_id}`, l: `Team ${t.team_name}` }));
-    return opts;
-  };
+  const run = (fn) => runAction(fn, () => { resetForm(); onRefresh(); });
 
   const submitForm = () => {
     const { uid, kind, text, target } = form;
@@ -62,8 +47,8 @@ export default function TaskList({ auth, assigned, created, team, allServer, sta
     if (kind === "edit") { if (!text.trim()) { setErr("Description is required."); return; } return run(() => editMyTask(uid, text.trim())); }
     if (kind === "reassign") {
       if (!target) { setErr("Pick a target."); return; }
-      const [type, ...rest] = target.split(":");
-      return run(() => reassignMyTask(uid, rest.join(":"), type, text.trim() || undefined));
+      const { targetType, targetId } = parseTarget(target);
+      return run(() => reassignMyTask(uid, targetId, targetType, text.trim() || undefined));
     }
   };
 
@@ -147,15 +132,9 @@ export default function TaskList({ auth, assigned, created, team, allServer, sta
                         : "Reassign to"}
                     </div>
                     {form.kind === "reassign" && (
-                      <select value={form.target} onChange={e => setForm({ ...form, target: e.target.value })}>
-                        <option value="">Select target…</option>
-                        <optgroup label="Roles & Teams">
-                          {targetOptions().map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
-                        </optgroup>
-                        <optgroup label="Staff">
-                          {(staffList || []).map(s => <option key={s.discord_id} value={`User:${s.discord_id}`}>{s.display_name}</option>)}
-                        </optgroup>
-                      </select>
+                      <TargetSelect className="" value={form.target} onChange={v => setForm({ ...form, target: v })}
+                        roleTargets={roleTargets} staffList={staffList} level={auth.level}
+                        gateLeadership includeGameAffairs />
                     )}
                     <textarea rows={form.kind === "reassign" ? 2 : 3} value={form.text}
                       placeholder={form.kind === "info" ? "What do you need to know?" : form.kind === "reassign" ? "Note for the new assignee (optional)" : ""}
