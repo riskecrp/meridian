@@ -50,6 +50,7 @@ function Approvals({ auth }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [npcExec, setNpcExec] = useState(null); // {id, npcName, npcPos}
+  const [rpDone, setRpDone] = useState(null);   // {id, note} — requester confirming the RP happened
   const load = () => getPendingQueue().then(x => { setQ(x || { rpChanges: [], deletions: [], promos: [] }); setLoading(false); }).catch(() => setLoading(false));
   useEffect(() => { load(); }, []);
   const run = async (fn) => { setBusy(true); try { await fn(); } finally { setBusy(false); load(); } };
@@ -62,25 +63,42 @@ function Approvals({ auth }) {
   return (
     <>
       {q.rpChanges.length > 0 && <div className="card"><div className="hd"><div className="t">RP changes</div><div className="meta">{q.rpChanges.length}</div></div>
-        {q.rpChanges.map(rc => { const m = statusMeta(rc.status); return (
-          <div key={rc.id} className="clog" style={{ alignItems: "flex-start" }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 3 }}>
-                <span className="chip" style={{ background: "var(--amber-bg)", color: "var(--amber)" }}>RP · {rc.faction_name}</span>
-                <span style={{ fontFamily: "var(--v2-mono)", fontSize: 9, fontWeight: 800, color: m.c }}>{m.l}</span>
+        {q.rpChanges.map(rc => {
+          const m = statusMeta(rc.status);
+          // The requester closes the loop after running the scene; L3 can too.
+          const canConfirmRP = rc.status === "APPROVED" && (rc.requester_id === auth.id || isL3);
+          return (
+          <div key={rc.id} style={{ borderBottom: "1px solid var(--line)" }}>
+            <div className="clog" style={{ alignItems: "flex-start", borderBottom: "none" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 3 }}>
+                  <span className="chip" style={{ background: "var(--amber-bg)", color: "var(--amber)" }}>RP · {rc.faction_name}</span>
+                  <span style={{ fontFamily: "var(--v2-mono)", fontSize: 9, fontWeight: 800, color: m.c }}>{m.l}</span>
+                </div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{rc.execution_type}: <b>{rc.old_value}</b> → <b>{rc.new_value}</b></div>
+                <div style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{rc.requested_by} · {rc.date}</div>
               </div>
-              <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{rc.execution_type}: <b>{rc.old_value}</b> → <b>{rc.new_value}</b></div>
-              <div style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{rc.requested_by} · {rc.date}</div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {isL3 && rc.status === "PENDING" && <>
+                  <button className="act" style={{ color: "var(--rose)" }} disabled={busy} onClick={async () => { const reason = window.prompt("Reason for denial (required):"); if (reason?.trim()) run(() => denyRPChange(rc.id, reason.trim())); }}>Deny</button>
+                  <button className="act good" disabled={busy} onClick={() => run(() => approveRPChange(rc.id))}>Approve</button>
+                </>}
+                {canConfirmRP && <button className="act good" disabled={busy} onClick={() => setRpDone(rpDone?.id === rc.id ? null : { id: rc.id, note: "" })}>Confirm RP done</button>}
+                {rc.status === "APPROVED" && !canConfirmRP && <span style={{ fontSize: 11, color: "var(--sky)", fontStyle: "italic" }}>Waiting for {rc.requested_by} to confirm the RP.</span>}
+                {isL3 && rc.status === "RP_DONE" && <button className="act good" disabled={busy} onClick={() => { if (rc.execution_type === "NPC") setNpcExec({ id: rc.id, npcName: "", npcPos: "" }); else if (window.confirm("Execute this change?")) run(() => executeRPChange(rc.id, {})); }}>Execute</button>}
+                {isL3 && <button className="act" disabled={busy} onClick={() => { if (window.confirm(`Delete this RP change for ${rc.faction_name}?`)) run(() => deleteRPChange(rc.id)); }}>Delete</button>}
+              </div>
             </div>
-            {isL3 && <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-              {rc.status === "PENDING" && <>
-                <button className="act" style={{ color: "var(--rose)" }} disabled={busy} onClick={async () => { const reason = window.prompt("Reason for denial (required):"); if (reason?.trim()) run(() => denyRPChange(rc.id, reason.trim())); }}>Deny</button>
-                <button className="act good" disabled={busy} onClick={() => run(() => approveRPChange(rc.id))}>Approve</button>
-              </>}
-              {rc.status === "APPROVED" && <span style={{ fontSize: 11, color: "var(--sky)", fontStyle: "italic" }}>Waiting for Team Lead to confirm RP.</span>}
-              {rc.status === "RP_DONE" && <button className="act good" disabled={busy} onClick={() => { if (rc.execution_type === "NPC") setNpcExec({ id: rc.id, npcName: "", npcPos: "" }); else if (window.confirm("Execute this change?")) run(() => executeRPChange(rc.id, {})); }}>Execute</button>}
-              <button className="act" disabled={busy} onClick={() => { if (window.confirm(`Delete this RP change for ${rc.faction_name}?`)) run(() => deleteRPChange(rc.id)); }}>Delete</button>
-            </div>}
+            {rpDone?.id === rc.id && (
+              <div className="inline-form" style={{ margin: "0 2px 12px" }}>
+                <div className="lbl">Confirmation note (optional) — how the scene went</div>
+                <textarea rows={2} autoFocus value={rpDone.note} onChange={e => setRpDone({ ...rpDone, note: e.target.value })} />
+                <div className="row-btns">
+                  <button className="act primary" disabled={busy} onClick={async () => { await run(() => markRPDone(rc.id, rpDone.note.trim())); setRpDone(null); }}>Confirm RP done</button>
+                  <button className="act" onClick={() => setRpDone(null)}>Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
         ); })}
       </div>}

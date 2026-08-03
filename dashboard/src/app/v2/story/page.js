@@ -675,7 +675,8 @@ function SceneLogs({ auth, openNew = false }) {
                     <div style={{ flex: 1 }}><div style={lbl}>Item</div>
                       <input list={`v2inv-${idx}`} className="filter-inp" style={{ width: "100%" }} placeholder="Type to search…" value={item.name}
                         onChange={e => { const n = [...form.items]; n[idx] = { ...n[idx], name: e.target.value }; setForm({ ...form, items: n }); }} />
-                      <datalist id={`v2inv-${idx}`}>{inventory.map((inv, i) => <option key={i} value={inv.name}>{`Stock: ${inv.current_stock}`}</option>)}</datalist>
+                      {/* Stock counts were deliberately retired (see fm/inventory/actions.js) — the catalogue is names only. */}
+                      <datalist id={`v2inv-${idx}`}>{inventory.map((inv, i) => <option key={i} value={inv.name}>{inv.category || ""}</option>)}</datalist>
                     </div>
                     <div style={{ width: 80 }}><div style={lbl}>Qty</div><input type="number" min="1" className="filter-inp" style={{ width: "100%", textAlign: "center" }} value={item.qty}
                       onChange={e => { const n = [...form.items]; n[idx] = { ...n[idx], qty: e.target.value }; setForm({ ...form, items: n }); }} /></div>
