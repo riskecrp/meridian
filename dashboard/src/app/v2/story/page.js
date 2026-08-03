@@ -1,7 +1,7 @@
 "use client";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import {
   getLoreEntries, getCommandEntries, addKBEntry, editKBEntry, deleteKBEntry,
@@ -64,6 +64,11 @@ function V2Story() {
   ];
   const tabParam = sp.get("tab");
   const tab = TABS.some(t => t.id === tabParam) ? tabParam : "kb";
+  // ⌘K / "+ New" hand-offs: ?q= seeds a section's search, ?new=1 opens the scene form.
+  const initialQ = sp.get("q") || "";
+  const openNew = sp.get("new") === "1";
+  const router = useRouter();
+  useEffect(() => { if (openNew) router.replace(`/v2/story?tab=${tab}`, { scroll: false }); }, [openNew]);
 
   useEffect(() => { if (!auth?.loading && auth?.id) ensure(tab); }, [tab, auth?.id, auth?.loading]);
 
@@ -83,21 +88,22 @@ function V2Story() {
       </div>
       {busy && !loaded[tab] && <div className="empty">Loading…</div>}
 
-      {tab === "kb" && loaded.kb && <KB auth={auth} canMgmt={canMgmt} lore={data.kb.lore} cmds={data.kb.command} reload={() => reload("kb")} />}
+      {tab === "kb" && loaded.kb && <KB auth={auth} canMgmt={canMgmt} lore={data.kb.lore} cmds={data.kb.command} reload={() => reload("kb")} initialQ={initialQ} />}
       {tab === "changelog" && loaded.changelog && <ChangeLog auth={auth} rows={data.changelog} reload={() => reload("changelog")} />}
       {tab === "scenes" && loaded.scenes && <Scenes rows={data.scenes} />}
-      {tab === "scenelogs" && <SceneLogs auth={auth} />}
+      {tab === "scenelogs" && <SceneLogs auth={auth} openNew={openNew} />}
       {tab === "arsenal" && loaded.arsenal && <Arsenal canEdit={canEditArsenal} canMgmt={canMgmt} d={data.arsenal} reload={() => reload("arsenal")} />}
-      {tab === "npcs" && loaded.npcs && <NPCs auth={auth} npcs={data.npcs.npcs} turfs={data.npcs.turfs} reload={() => reload("npcs")} />}
+      {tab === "npcs" && loaded.npcs && <NPCs auth={auth} npcs={data.npcs.npcs} turfs={data.npcs.turfs} reload={() => reload("npcs")} initialQ={initialQ} />}
     </div>
   );
 }
 
 /* ── Knowledge Base ── */
-function KB({ auth, canMgmt, lore, cmds, reload }) {
+function KB({ auth, canMgmt, lore, cmds, reload, initialQ = "" }) {
   const canEdit = auth.level >= 2 || auth.isEventTeam;
   const [copied, copy] = useCopy();
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialQ);
+  useEffect(() => { if (initialQ) { setSearch(initialQ); setFilter(null); } }, [initialQ]);
   const [filter, setFilter] = useState(null);
   const [favs, setFavs] = useState([]);
   const [form, setForm] = useState(null);
@@ -377,10 +383,11 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
 }
 
 /* ── NPC Ecosystem — turf grouping, TP copy, filters, map, CRUD ── */
-function NPCs({ auth, npcs, turfs, reload }) {
+function NPCs({ auth, npcs, turfs, reload, initialQ = "" }) {
   const isL3 = auth.level >= 3;
   const [copied, copy] = useCopy();
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialQ);
+  useEffect(() => { if (initialQ) { setSearch(initialQ); setMapView(false); setFilter(null); } }, [initialQ]);
   const [filter, setFilter] = useState(null);
   const [mapView, setMapView] = useState(false);
   const [mapTurf, setMapTurf] = useState(null);
@@ -490,7 +497,7 @@ const sceneIsBlank = (f) => !f || (
   !String(f.otherRewards ?? "").trim() && !String(f.notes ?? "").trim() && (f.assistants?.length || 0) === 0
 );
 
-function SceneLogs({ auth }) {
+function SceneLogs({ auth, openNew = false }) {
   const [logs, setLogs] = useState([]);
   const [factions, setFactions] = useState([]);
   const [inventory, setInventory] = useState([]);
@@ -514,6 +521,8 @@ function SceneLogs({ auth }) {
     const d = loadDraft("scenes:new");
     if (d && !sceneIsBlank(d)) { setForm(d); setHasDraft(true); }
   }, []);
+  // "+ New → Scene log" lands here with ?new=1 and the form already open.
+  useEffect(() => { if (openNew) setShowForm(true); }, [openNew]);
   useDraft("scenes:new", form, { enabled: showForm, blank: sceneIsBlank });
 
   useEffect(() => {

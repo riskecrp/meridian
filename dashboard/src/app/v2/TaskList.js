@@ -13,8 +13,8 @@ import { useRun } from "./hooks.js";
 //  - full (/v2/tasks): adds an All-server tab (L3) + search, uncapped.
 // Expandable rows + the full action set (claim, complete, unclaim, reassign,
 // request info, edit) via the existing guarded server actions.
-export default function TaskList({ auth, assigned, created, team, allServer, staffList, roleTargets, qaCounts, onRefresh, full = false, viewAllHref }) {
-  const [tab, setTab] = useState("assigned");
+export default function TaskList({ auth, assigned, created, team, allServer, staffList, roleTargets, qaCounts, onRefresh, full = false, viewAllHref, initialTab = "assigned" }) {
+  const [tab, setTab] = useState(initialTab);
   const [openUid, setOpenUid] = useState(null);
   const [form, setForm] = useState(null); // { uid, kind, text, target }
   const { busy, err, setErr, run: runAction } = useRun();

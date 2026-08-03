@@ -1,7 +1,7 @@
 "use client";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import QuillEditor from "../../../lib/QuillEditor";
 import { getTeamPerformance, getGuideActivity, getMeetingNotes, saveMeetingNote, deleteMeetingNote, getNoteTargets, getAttendeesForTarget, getReviewData, getPendingQueue } from "../../fm/leadership/actions.js";
@@ -20,6 +20,9 @@ function V2Leadership() {
   const auth = useAuth();
   // Section comes from the Leadership nav dropdown via ?tab= (no in-page tab row).
   const sp = useSearchParams();
+  const router = useRouter();
+  const openNew = sp.get("new") === "1";
+  useEffect(() => { if (openNew) router.replace(`/v2/leadership?tab=${sp.get("tab") || "notes"}`, { scroll: false }); }, [openNew]);
   const can = (auth?.level || 0) >= 2 || auth?.isLeadStoryteller;
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead or Leadership access required.</div>;
@@ -32,7 +35,7 @@ function V2Leadership() {
       <div className="page-head"><div><p className="eyebrow">Leadership</p><h1>{sectionLabel}</h1><div className="sub">Switch sections from the Leadership menu in the top bar.</div></div></div>
       {tab === "approvals" && <Approvals auth={auth} />}
       {tab === "performance" && <Performance />}
-      {tab === "notes" && <MeetingNotes auth={auth} />}
+      {tab === "notes" && <MeetingNotes auth={auth} openNew={openNew} />}
       {tab === "reviews" && <Reviews />}
       {tab === "contacts" && <IcContacts />}
     </div>
@@ -172,7 +175,7 @@ function Performance() {
 /* ── Meeting Notes ── */
 const stripHtml = (h) => (h || "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ");
 
-function MeetingNotes({ auth }) {
+function MeetingNotes({ auth, openNew = false }) {
   const [notes, setNotes] = useState([]);
   const [targets, setTargets] = useState({ factions: [], teams: [], groups: [] });
   const [loading, setLoading] = useState(true);
@@ -180,6 +183,8 @@ function MeetingNotes({ auth }) {
   const [attendees, setAttendees] = useState([]);
   const load = () => getMeetingNotes().then(n => { setNotes(n || []); setLoading(false); });
   useEffect(() => { load(); getNoteTargets().then(setTargets).catch(() => {}); }, []);
+  // "+ New → Meeting note" lands here with ?new=1 and the form already open.
+  useEffect(() => { if (openNew) setForm({ targetType: "", targetKey: "", content: "", attendeeIds: new Set() }); }, [openNew]);
   useEffect(() => {
     if (!form?.targetType || !form?.targetKey) { setAttendees([]); return; }
     getAttendeesForTarget(form.targetType, form.targetKey).then(a => setAttendees(a || [])).catch(() => setAttendees([]));

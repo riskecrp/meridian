@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../lib/useAuth";
 import { getMyTasks, getMyCreatedTasks, getMyReminders, getMyTeamFactions, getStaffForCreate, getRoleTargetsForCreate, getQACountsForTasks } from "../fm/dashboard/actions.js";
-import { getPendingQueue } from "../fm/leadership/actions.js";
 import { createTask, createReminder } from "../fm/teams/actions.js";
+import { getMyAttention, completeMyReminderInstance } from "./actions.js";
 import TaskList from "./TaskList.js";
 import { targetOptions } from "./TargetPicker.js";
 import { useRun } from "./hooks.js";
@@ -100,21 +101,38 @@ function CreateAction({ mode, setMode, staffList, roleTargets, onDone, onCancel 
 
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const fmtDay = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }).toUpperCase().replace(" ", "\n");
+const ord = (n) => (n >= 11 && n <= 13) ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th";
 
-export default function V2Home() {
+export default function V2HomePage() {
+  return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Home /></Suspense>;
+}
+
+function V2Home() {
   const auth = useAuth();
+  const router = useRouter();
+  const sp = useSearchParams();
   const [tasks, setTasks] = useState({ assignedToMe: [], forMyTeam: [] });
   const [created, setCreated] = useState([]);
   const [reminders, setReminders] = useState([]);
   const [facs, setFacs] = useState({ teamName: "", factions: [] });
-  const [queue, setQueue] = useState({ rpChanges: [], deletions: [], promos: [] });
+  const [att, setAtt] = useState(null);
   const [staffList, setStaffList] = useState([]);
   const [roleTargets, setRoleTargets] = useState({ teams: [] });
   const [qaCounts, setQaCounts] = useState({});
   const [loading, setLoading] = useState(true);
   const [createMode, setCreateMode] = useState(null); // null | 'task' | 'event'
+  const [workTab, setWorkTab] = useState("assigned");
 
-  const isLeader = (auth?.level || 0) >= 2 || auth?.isLeadStoryteller;
+  const level = auth?.level || 0;
+  const isL3 = level >= 3;
+
+  // The global "+ New" menu lands here with ?create=task|event.
+  useEffect(() => {
+    const c = sp.get("create");
+    if (c === "task" || c === "event") { setCreateMode(c); router.replace("/v2", { scroll: false }); }
+  }, [sp]);
+
+  const refreshAttention = () => getMyAttention().then(setAtt).catch(() => {});
 
   const refreshTasks = () => {
     Promise.all([
@@ -125,6 +143,7 @@ export default function V2Home() {
       const uids = [...(t.assignedToMe || []), ...(t.forMyTeam || []), ...(c || [])].map(x => x.task_uid).filter(Boolean);
       if (uids.length) getQACountsForTasks(uids).then(setQaCounts).catch(() => {});
     });
+    refreshAttention();
   };
 
   useEffect(() => {
@@ -141,7 +160,7 @@ export default function V2Home() {
     });
     getStaffForCreate().then(setStaffList).catch(() => {});
     getRoleTargetsForCreate().then(setRoleTargets).catch(() => {});
-    if (isLeader) getPendingQueue().then(setQueue).catch(() => {});
+    refreshAttention();
   }, [auth?.id, auth?.loading]);
 
   if (auth?.loading || loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
@@ -151,13 +170,27 @@ export default function V2Home() {
   const upcoming = [...reminders].filter(r => r.epochMs > now).sort((a, b) => a.epochMs - b.epochMs).slice(0, 4);
   const upcoming7 = reminders.filter(r => r.epochMs > now && r.epochMs - now < 7 * 86400000).length;
   const teamUnclaimed = tasks.forMyTeam.filter(t => !t.claimed_by || t.claimed_by === "None").length;
-  const approvals = [
-    ...queue.rpChanges.map(x => ({ k: `RP Change · ${x.faction_name}`, t: `${x.execution_type}: ${x.old_value} → ${x.new_value}` })),
-    ...queue.promos.map(x => ({ k: `Staged Promo · ${x.faction_name}`, t: `T${x.current_tier} → staged` })),
-    ...queue.deletions.map(x => ({ k: `Delete · ${x.content_type}`, t: (x.original_text || "").slice(0, 48) })),
-  ].slice(0, 5);
-
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+
+  // ── The attention queue: everything that needs me, each one click from the action. ──
+  const doneInstance = async (id) => { const r = await completeMyReminderInstance(id).catch(() => null); if (r?.ok) refreshAttention(); };
+  const items = [];
+  if (att) {
+    const c = att.counts;
+    if (c.inboxUnread > 0) items.push({ chip: "INBOX", color: "var(--accent)", text: `${c.inboxUnread} unread ping${c.inboxUnread !== 1 ? "s" : ""}`, href: "/v2/inbox" });
+    if (c.teamUnclaimed > 0) items.push({ chip: "TASKS", color: "var(--amber)", text: `${c.teamUnclaimed} unclaimed task${c.teamUnclaimed !== 1 ? "s" : ""} on your team`, onClick: () => setWorkTab("team") });
+    if (c.approvals > 0) items.push({ chip: "APPROVALS", color: "var(--lock)", text: `${c.approvals} item${c.approvals !== 1 ? "s" : ""} awaiting approval`, href: "/v2/leadership?tab=approvals" });
+    (att.reminderInstances || []).forEach(ri => items.push({
+      chip: "DUE", color: "var(--rose)", text: `${ri.title} — due by the ${ri.due_day}${ord(ri.due_day)}`,
+      action: { label: "Done ✓", fn: () => doneInstance(ri.id) },
+    }));
+    if (c.reviewsDue > 0) items.push({
+      chip: "REVIEWS", color: "var(--amber)", text: `${c.reviewsDue} faction${c.reviewsDue !== 1 ? "s" : ""} not reviewed this month`,
+      href: "/v2/leadership?tab=reviews",
+      subLinks: (att.reviewsDue || []).map(f => ({ label: f.name, href: `/v2/factions/${encodeURIComponent(f.name)}?tab=review` })),
+    });
+    if (c.icActive > 0) items.push({ chip: "IC", color: "var(--sky)", text: `${c.icActive} active IC contact${c.icActive !== 1 ? "s" : ""}`, href: isL3 ? "/v2/leadership?tab=contacts" : "/v2/factions" });
+  }
 
   return (
     <div className="view">
@@ -166,10 +199,6 @@ export default function V2Home() {
           <p className="eyebrow">Faction Management</p>
           <h1>Welcome back, {auth.displayName || auth.name}</h1>
           <div className="sub">{today} · {facs.factions.length} factions in view{teamUnclaimed > 0 ? ` · ${teamUnclaimed} unclaimed on your team` : " · nothing unclaimed"}</div>
-        </div>
-        <div style={{ display: "flex", gap: 9 }}>
-          <button className="btn ghost" onClick={() => setCreateMode(m => m === "event" ? null : "event")}>+ New event</button>
-          <button className="btn" onClick={() => setCreateMode(m => m === "task" ? null : "task")}>+ New task</button>
         </div>
       </div>
 
@@ -183,15 +212,48 @@ export default function V2Home() {
           onCancel={() => setCreateMode(null)} />
       )}
 
+      {att && items.length > 0 && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="hd"><div className="t">Needs attention</div><div className="meta">{items.length}</div></div>
+          {items.map((it, i) => {
+            const inner = (
+              <>
+                <span className="chip" style={{ background: `color-mix(in srgb, ${it.color} 14%, transparent)`, color: it.color, flexShrink: 0 }}>{it.chip}</span>
+                <span style={{ fontSize: 13, color: "var(--ink-0)", fontWeight: 500 }}>{it.text}</span>
+                <span style={{ flex: 1 }} />
+                {it.action && <button className="act good" style={{ flexShrink: 0 }} onClick={e => { e.preventDefault(); it.action.fn(); }}>{it.action.label}</button>}
+                {(it.href || it.onClick) && !it.action && <span style={{ color: "var(--ink-3)", fontSize: 12, flexShrink: 0 }}>→</span>}
+              </>
+            );
+            const rowStyle = { display: "flex", alignItems: "center", gap: 10, padding: "9px 2px", borderBottom: "1px solid var(--line)", textDecoration: "none", cursor: (it.href || it.onClick) ? "pointer" : "default" };
+            return (
+              <div key={i}>
+                {it.href
+                  ? <Link href={it.href} style={rowStyle}>{inner}</Link>
+                  : <div style={rowStyle} onClick={it.onClick}>{inner}</div>}
+                {it.subLinks?.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, padding: "6px 2px 9px 6px", borderBottom: "1px solid var(--line)" }}>
+                    {it.subLinks.map(s => <Link key={s.label} href={s.href} className="chip role" style={{ textDecoration: "none" }}>{s.label} →</Link>)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {att && items.length === 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--good)", marginBottom: 18 }}>✓ All clear — nothing needs you right now.</div>
+      )}
+
       <div className="metrics">
-        <div className="metric"><div className="l">Assigned to me</div><div className="v">{tasks.assignedToMe.length}</div></div>
-        <div className={`metric${teamUnclaimed > 0 ? " attn" : ""}`}><div className="l">Team unclaimed</div><div className="v">{teamUnclaimed}</div></div>
+        <div className="metric" onClick={() => setWorkTab("assigned")} style={{ cursor: "pointer" }} title="Show assigned tasks"><div className="l">Assigned to me</div><div className="v">{tasks.assignedToMe.length}</div></div>
+        <div className={`metric${teamUnclaimed > 0 ? " attn" : ""}`} onClick={() => setWorkTab("team")} style={{ cursor: "pointer" }} title="Show team tasks"><div className="l">Team unclaimed</div><div className="v">{teamUnclaimed}</div></div>
         <div className="metric"><div className="l">Upcoming · 7d</div><div className="v">{upcoming7}</div></div>
-        <div className="metric"><div className="l">Factions</div><div className="v">{facs.factions.length}</div></div>
+        <Link className="metric" href="/v2/factions" style={{ textDecoration: "none" }}><div className="l">Factions</div><div className="v">{facs.factions.length}</div></Link>
       </div>
 
       <div className="cols">
-        <TaskList auth={auth} assigned={tasks.assignedToMe} created={created} team={tasks.forMyTeam}
+        <TaskList key={workTab} initialTab={workTab} auth={auth} assigned={tasks.assignedToMe} created={created} team={tasks.forMyTeam}
           staffList={staffList} roleTargets={roleTargets} qaCounts={qaCounts} onRefresh={refreshTasks}
           viewAllHref="/v2/tasks" />
 
@@ -209,25 +271,6 @@ export default function V2Home() {
               </div>
             )}
           </div>
-
-          {isLeader && (
-            <div className="card">
-              <div className="hd">
-                <div className="t">
-                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--lock)" strokeWidth="1.6"><rect x="3.5" y="7" width="9" height="6" rx="1" /><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" /></svg>
-                  Approvals
-                </div>
-                <div className="meta">L2+ only</div>
-              </div>
-              {approvals.length === 0 ? <div className="empty">Nothing awaiting approval.</div> : (
-                <div className="mini">
-                  {approvals.map((a, i) => (
-                    <div className="approval" key={i}><div style={{ flex: 1 }}><div className="k">{a.k}</div><div className="t">{a.t}</div></div></div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
 

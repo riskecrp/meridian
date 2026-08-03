@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../lib/useAuth";
 import { visibleAdminGroups } from "./adminNav.js";
+import { PlusMenu, Bell, CommandPalette } from "./TopTools.js";
 
 const I = {
   home: <path d="M2 7l6-5 6 5M3.5 6v7h9V6" />,
@@ -162,6 +163,15 @@ export default function V2Layout({ children }) {
   const auth = useAuth();
   const pathname = usePathname();
   const [theme, setTheme] = useState("light");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteOpen(o => !o); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     // v2 is paper-light by default; still honors an explicit saved choice.
@@ -216,6 +226,16 @@ export default function V2Layout({ children }) {
     },
   ].filter(it => (!it.min || level >= it.min) && (!it.menu || it.menu.some(m => m.id)));
 
+  // Every reachable section, for the ⌘K palette.
+  const navTargets = [
+    ...NAV.flatMap(it => it.menu
+      ? [{ kind: "Page", label: it.label, href: it.href }, ...it.menu.filter(m => m.id).map(m => ({ kind: it.label, label: m.label, href: `${it.href}?tab=${m.id}` }))]
+      : [{ kind: "Page", label: it.label, href: it.href }]),
+    { kind: "Comms", label: "Announcement", href: "/v2/comms" },
+    { kind: "Comms", label: "IC Communication", href: "/v2/comms?tab=ic" },
+    { kind: "Comms", label: "Send History", href: "/v2/comms?tab=history" },
+  ];
+
   return (
     <div className="v2-root">
       <header className="topnav">
@@ -236,13 +256,12 @@ export default function V2Layout({ children }) {
             })}
           </nav>
           <div className="tn-right">
-            <div className="search">
+            <button className="search" onClick={() => setPaletteOpen(true)} style={{ cursor: "pointer", fontFamily: "inherit" }}>
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></svg>
               Search… <span className="kbd">⌘K</span>
-            </div>
-            <button className="tb-btn" title="Inbox">
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2a3.5 3.5 0 0 0-3.5 3.5V8L3 10.5h10L11.5 8V5.5A3.5 3.5 0 0 0 8 2zM6.5 12a1.5 1.5 0 0 0 3 0" /></svg>
             </button>
+            {auth?.ok && <PlusMenu auth={auth} />}
+            {auth?.ok && <Bell auth={auth} />}
             <button className="tb-btn" onClick={toggleTheme} title="Theme">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3 5.5 5.5 0 1 0 13 9.5z" /></svg>
             </button>
@@ -256,6 +275,7 @@ export default function V2Layout({ children }) {
       </header>
       <ViewAsBanner auth={auth} />
       <main className="v2-main">{children}</main>
+      <CommandPalette auth={auth} navTargets={navTargets} open={paletteOpen} setOpen={setPaletteOpen} />
     </div>
   );
 }
