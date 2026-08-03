@@ -6,7 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../lib/useAuth";
 import { visibleAdminGroups } from "./adminNav.js";
-import { PlusMenu, Bell, CommandPalette } from "./TopTools.js";
+import { PlusMenu, CommandPalette, useInboxUnread } from "./TopTools.js";
 
 const I = {
   home: <path d="M2 7l6-5 6 5M3.5 6v7h9V6" />,
@@ -190,11 +190,14 @@ export default function V2Layout({ children }) {
   const isET = auth?.isEventTeam;
   const roleLabel = isET ? "Event Team" : level >= 3 ? "L3" : level >= 2 ? "L2" : "L1";
   const initial = (auth?.displayName || auth?.name || "?").slice(0, 1).toUpperCase();
+  // One inbox entry point: the nav item carries the live unread count
+  // (the separate bell went to the same place and was pure duplication).
+  const inboxUnread = useInboxUnread(auth);
 
   const canNPC = level >= 2 || isET || auth?.isLeadStoryteller;
   const NAV = [
     { key: "home", label: "Home", href: "/v2", icon: I.home },
-    { key: "inbox", label: "Inbox", href: "/v2/inbox", icon: I.inbox },
+    { key: "inbox", label: "Inbox", href: "/v2/inbox", icon: I.inbox, count: inboxUnread },
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
     // Library = everything you look up: reference, docs, scene records.
     {
@@ -250,7 +253,7 @@ export default function V2Layout({ children }) {
             {NAV.map(it => {
               const active = it.href && (pathname === it.href || (it.href !== "/v2" && pathname.startsWith(it.href)));
               const cls = `tn-i${active ? " on" : ""}`;
-              const inner = <><Icon d={it.icon} /> {it.label}</>;
+              const inner = <><Icon d={it.icon} /> {it.label}{it.count > 0 && <span className="ct hot">{it.count > 99 ? "99+" : it.count}</span>}</>;
               if (it.menu) return <NavDropdown key={it.key} item={it} active={active} cls={cls} inner={inner} />;
               return it.href
                 ? <Link key={it.key} href={it.href} className={cls}>{inner}</Link>
@@ -263,7 +266,6 @@ export default function V2Layout({ children }) {
               <span className="s-txt">Search…</span> <span className="kbd">⌘K</span>
             </button>
             {auth?.ok && <PlusMenu auth={auth} />}
-            {auth?.ok && <Bell auth={auth} />}
             <button className="tb-btn" onClick={toggleTheme} title="Theme">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3 5.5 5.5 0 1 0 13 9.5z" /></svg>
             </button>

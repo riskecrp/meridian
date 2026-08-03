@@ -177,15 +177,14 @@ function FactionHub() {
         </div>
       </div>
 
-      {/* Pending promo banner */}
+      {/* Pending promo banner — status only; completing/cancelling lives in ONE
+          place, the Review tab's Apply step, so there aren't two sets of the
+          same buttons on the page. */}
       {promo && isLeader && (
         <div style={{ padding: "10px 14px", borderRadius: 10, background: "var(--good-bg)", border: "1px solid color-mix(in srgb,var(--good) 30%,transparent)", marginBottom: 8 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--good)" }}>Promotion staged → Tier {promo.tier}</span>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="act good" disabled={busy} onClick={() => { if (window.confirm(`Complete promotion for ${detail.name}?`)) run(() => completePromotion(detail.id, detail.name)); }}>Complete (T{promo.tier})</button>
-              {isL3 && <button className="act warn" disabled={busy} onClick={() => { if (window.confirm("Cancel this staged promotion?")) run(() => cancelPromotion(detail.id, detail.name)); }}>Cancel</button>}
-            </div>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--good)" }}>Promotion staged → Tier {promo.tier} · complete it after the RP</span>
+            {tab !== "review" && <button className="act good" onClick={() => setTab("review")}>Open Review tab →</button>}
           </div>
           <div style={{ marginTop: 8 }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-3)", marginBottom: 4 }}>New imports being granted ({newImports.length})</div>
