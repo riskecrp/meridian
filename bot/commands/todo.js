@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { query, queryOne, run } from '../lib/db.js';
-import { sendPing, getRole } from '../lib/pings.js';
+import { sendPing, getRole, taskComponents } from '../lib/pings.js';
 import { logAudit } from '../lib/audit.js';
 export default {
   data: new SlashCommandBuilder().setName('todo').setDescription('Manage tasks')
@@ -50,7 +50,7 @@ export default {
       if (!selfAssign) {
         try {
           const routeLeadership = targetType === 'Role' && (targetId === getRole('fm_leadership') || targetId === getRole('game_affairs'));
-          posted = await sendPing('task.assigned', `📋 **NEW TASK ASSIGNED** | ${mention}\n**Assigned By:** ${author}`, { alt: routeLeadership });
+          posted = await sendPing('task.assigned', `📋 **NEW TASK ASSIGNED** | ${mention}\n**Task:** ${desc.substring(0, 300)}\n**Assigned By:** ${author}`, { alt: routeLeadership, components: taskComponents(uid) });
         } catch (e) { console.error('Task ping failed:', e.message); }
       }
       await interaction.reply({ content: posted ? `📋 Task assigned to ${mention} — posted to the ping channel.` : `📋 Task \`${uid}\` created for ${mention}.`, ephemeral: true });

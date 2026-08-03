@@ -2,7 +2,7 @@
 import { query, queryOne, run } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
 import { getChannel, getRole } from "../../../lib/discord.js";
-import { sendPing, pingChannel } from "../../../lib/pings.js";
+import { sendPing, pingChannel, taskComponents } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 
 // Returns ALL tasks visible to the current user.
@@ -383,7 +383,7 @@ export async function createMyTask(data) {
   const selfAssign = actor.level >= 3 && data.targetType === 'User' && data.targetId === actor.id;
   if (!selfAssign) {
     const tag = data.targetType === 'Role' ? '<@&' + data.targetId + '>' : '<@' + data.targetId + '>';
-    await sendPing('task.assigned', '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Assigned By:** ' + actor.name, { alt: _routesToLeadership(data.targetType, data.targetId) });
+    await sendPing('task.assigned', '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Task:** ' + (data.desc || '').substring(0, 300) + '\n**Assigned By:** ' + actor.name, { alt: _routesToLeadership(data.targetType, data.targetId), components: taskComponents(uid) });
   }
   return { ok: true };
 }

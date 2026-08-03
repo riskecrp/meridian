@@ -2,7 +2,7 @@
 import { query, queryOne, run } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
 import { getRole } from "../../../lib/discord.js";
-import { sendPing, pingChannel } from "../../../lib/pings.js";
+import { sendPing, pingChannel, taskComponents } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 
 
@@ -166,7 +166,7 @@ export async function createTask(data) {
       const gameAffairsId = getRole('game_affairs');
       const routeLeadership = data.targetType === 'Role' && (data.targetId === leadershipRoleId || data.targetId === gameAffairsId);
       const tag = data.targetType === 'Role' ? `<@&${data.targetId}>` : `<@${data.targetId}>`;
-      await sendPing('task.assigned', `📋 **NEW TASK ASSIGNED** | ${tag}\n**Assigned By:** ${actor.name}`, { alt: routeLeadership });
+      await sendPing('task.assigned', `📋 **NEW TASK ASSIGNED** | ${tag}\n**Task:** ${(data.desc || '').substring(0, 300)}\n**Assigned By:** ${actor.name}`, { alt: routeLeadership, components: taskComponents(uid) });
     }
     return { ok: true };
   } catch (e) { return { ok: false }; }

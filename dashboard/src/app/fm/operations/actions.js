@@ -1,7 +1,7 @@
 "use server";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendPing, pingChannel } from "../../../lib/pings.js";
+import { sendPing, pingChannel, taskComponents } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { today } from "../../../lib/format.js";
 import { GAME_AFFAIRS_ID } from "../../../lib/constants.js";
@@ -400,7 +400,7 @@ export async function createLeadershipTask(data) {
   const assigneeIsLeadership = (data.targetType === 'Role' && (data.targetId === leadershipRoleId || data.targetId === gameAffairsId))
     || (data.targetType === 'User' && isLeadershipRank(data.targetId));
   const tag = data.targetType === 'Role' ? '<@&' + data.targetId + '>' : '<@' + data.targetId + '>';
-  await sendPing('task.assigned', '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Assigned By:** ' + actor.name, { alt: creatorIsLeadership && assigneeIsLeadership });
+  await sendPing('task.assigned', '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Task:** ' + (data.desc || '').substring(0, 300) + '\n**Assigned By:** ' + actor.name, { alt: creatorIsLeadership && assigneeIsLeadership, components: taskComponents(uid) });
   return { ok: true };
 }
 

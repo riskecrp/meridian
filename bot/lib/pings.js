@@ -106,3 +106,18 @@ export async function sendPingVia(client, key, payload, { alt = false } = {}) {
     return false;
   }
 }
+
+/**
+ * Action row for a task-assigned ping (same contract as the dashboard's
+ * taskComponents — the task_uid inside custom_id is everything).
+ */
+export function taskComponents(uid) {
+  return [{
+    type: 1,
+    components: [
+      { type: 2, style: 1, label: "Claim", custom_id: `tsk:claim:${uid}` },
+      { type: 2, style: 3, label: "Done", custom_id: `tsk:done:${uid}` },
+      { type: 2, style: 5, label: "Open", url: `https://ecrpfm.com/fm/tasks/${uid}` },
+    ],
+  }];
+}

@@ -11,6 +11,7 @@ import { startTaskReminder } from './taskReminder.js';
 import { startPromotionReview } from './promotionReview.js';
 import { startFactionFeedback, handleFeedbackButton } from './factionFeedback.js';
 import { startFormSubmissions, handleFormButton, handleFormModal } from './formSubmissions.js';
+import { handleTaskButton, handleTaskModal } from './taskButtons.js';
 import { handleDM } from './dmHandler.js';
 import { sendPing, pingChannel, getRole } from './lib/pings.js';
 import { logAudit, actorOf } from './lib/audit.js';
@@ -119,6 +120,7 @@ client.on(Events.InteractionCreate, async interaction => {
     // Rejecting a form application asks for a reason first (frmmodal:*), so the
     // rejection itself lands here rather than on the button press.
     if (await handleFormModal(interaction)) return;
+    if (await handleTaskModal(interaction)) return;
     if (customId.startsWith('task_info_modal_')) {
       const questionId = parseInt(customId.replace('task_info_modal_', ''));
       const answer = interaction.fields.getTextInputValue('answer').trim();
@@ -171,6 +173,7 @@ client.on(Events.InteractionCreate, async interaction => {
     // gating with it.
     if (await handleFeedbackButton(interaction)) return;
     if (await handleFormButton(interaction)) return;
+    if (await handleTaskButton(interaction)) return;
     if (customId === "dismiss") {
       await interaction.update({ content: "✅ **Acknowledged.**", components: [] });
       return;

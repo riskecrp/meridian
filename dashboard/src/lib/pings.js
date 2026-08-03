@@ -72,3 +72,19 @@ export async function sendPing(key, content, { alt = false, embeds, components }
 
   return sendDiscord(channelId, body, embeds, components);
 }
+
+/**
+ * Action row for a task-assigned ping. Claim / Done are handled by the bot's
+ * tsk:* button handlers; Open links the task detail page. The task_uid inside
+ * the custom_id is the entire contract between dashboard and bot.
+ */
+export function taskComponents(uid) {
+  return [{
+    type: 1,
+    components: [
+      { type: 2, style: 1, label: "Claim", custom_id: `tsk:claim:${uid}` },
+      { type: 2, style: 3, label: "Done", custom_id: `tsk:done:${uid}` },
+      { type: 2, style: 5, label: "Open", url: `https://ecrpfm.com/fm/tasks/${uid}` },
+    ],
+  }];
+}
