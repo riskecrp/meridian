@@ -107,6 +107,10 @@ export async function getMyReminders() {
 
   const all = query("SELECT * FROM reminders WHERE status IN ('ACTIVE','WARNED') ORDER BY epoch_ms");
   return all.filter(r => {
+    // Leadership sees the whole calendar — everything live in Up-and-coming and the
+    // leadership channel — not just events aimed at them (owner ruling 2026-08-04:
+    // events showed in Discord but not on the dashboard).
+    if (level >= 3) return true;
     if (r.author_id === discordId) return true;
     const userMatch = r.target_tag?.match(/<@(\d+)>/);
     const roleMatch = r.target_tag?.match(/<@&(\d+)>/);
