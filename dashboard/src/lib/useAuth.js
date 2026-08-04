@@ -11,7 +11,7 @@ export function useAuthReal() {
       // has expired/been removed slips onto /fm pages, where reads are ungated — then
       // any write throws "Not authenticated". Detect that here (401) and route the
       // user through logout (which clears the stale cookie) to log in again.
-      if (r.status === 401 && typeof window !== "undefined" && window.location.pathname.startsWith("/fm")) {
+      if (r.status === 401 && typeof window !== "undefined" && (window.location.pathname.startsWith("/fm") || window.location.pathname.startsWith("/v2"))) {
         window.location.href = "/api/auth/logout";
         return null;
       }
