@@ -12,12 +12,11 @@ export function PlusMenu({ auth }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const level = auth?.level || 0;
   const items = [
     { label: "Task", sub: "Assign to a person or team", href: "/v2?create=task" },
     { label: "Event / Reminder", sub: "Scheduled, with optional 30-min ping", href: "/v2?create=event" },
     { label: "Scene log", sub: "Record outcome + rewards", href: "/v2/story?tab=scenelogs&new=1" },
-    ...(level >= 2 || auth?.isLeadStoryteller ? [{ label: "Meeting note", sub: "Faction, team or group", href: "/v2/leadership?tab=notes&new=1" }] : []),
+    { label: "Meeting note", sub: "Full-page editor · your factions & team", href: "/v2/notes" },
   ];
   const toggle = (e) => {
     const r = e.currentTarget.getBoundingClientRect();

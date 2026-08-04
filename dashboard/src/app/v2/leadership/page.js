@@ -3,8 +3,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
-import QuillEditor from "../../../lib/QuillEditor";
-import { getTeamPerformance, getGuideActivity, getMeetingNotes, saveMeetingNote, deleteMeetingNote, getNoteTargets, getAttendeesForTarget, getReviewData, getPendingQueue } from "../../fm/leadership/actions.js";
+import { getTeamPerformance, getGuideActivity, getMeetingNotes, deleteMeetingNote, getReviewData, getPendingQueue } from "../../fm/leadership/actions.js";
 import { approveRPChange, denyRPChange, markRPDone, executeRPChange, deleteRPChange, resolveDeletion } from "../../fm/operations/actions.js";
 import { completePromotion, cancelPromotion } from "../../fm/factions/actions.js";
 import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../fm/teams/actions.js";
@@ -22,8 +21,8 @@ function V2Leadership() {
   // Section comes from the Leadership nav dropdown via ?tab= (no in-page tab row).
   const sp = useSearchParams();
   const router = useRouter();
-  const openNew = sp.get("new") === "1";
-  useEffect(() => { if (openNew) router.replace(`/v2/leadership?tab=${sp.get("tab") || "notes"}`, { scroll: false }); }, [openNew]);
+  // Old "+New → note" deep links (?new=1) now live on the full-page editor.
+  useEffect(() => { if (sp.get("new") === "1") router.replace("/v2/notes"); }, [sp]);
   const can = (auth?.level || 0) >= 2 || auth?.isLeadStoryteller;
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead or Leadership access required.</div>;
@@ -36,7 +35,7 @@ function V2Leadership() {
       <div className="page-head"><div><p className="eyebrow">Leadership</p><h1>{sectionLabel}</h1><div className="sub">Switch sections from the Leadership menu in the top bar.</div></div></div>
       {tab === "approvals" && <Approvals auth={auth} />}
       {tab === "performance" && <Performance />}
-      {tab === "notes" && <MeetingNotes auth={auth} openNew={openNew} />}
+      {tab === "notes" && <MeetingNotes auth={auth} />}
       {tab === "reviews" && <Reviews />}
       {tab === "contacts" && <IcContacts />}
     </div>
@@ -211,37 +210,17 @@ function Performance() {
 }
 
 /* ── Meeting Notes ── */
-const stripHtml = (h) => (h || "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ");
 
-function MeetingNotes({ auth, openNew = false }) {
+function MeetingNotes({ auth }) {
   const [notes, setNotes] = useState([]);
-  const [targets, setTargets] = useState({ factions: [], teams: [], groups: [] });
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(null); // {id?, targetType, targetKey, content, attendeeIds:Set}
-  const [attendees, setAttendees] = useState([]);
   const load = () => getMeetingNotes().then(n => { setNotes(n || []); setLoading(false); });
-  useEffect(() => { load(); getNoteTargets().then(setTargets).catch(() => {}); }, []);
-  // "+ New → Meeting note" lands here with ?new=1 and the form already open.
-  useEffect(() => { if (openNew) setForm({ targetType: "", targetKey: "", content: "", attendeeIds: new Set() }); }, [openNew]);
-  useEffect(() => {
-    if (!form?.targetType || !form?.targetKey) { setAttendees([]); return; }
-    getAttendeesForTarget(form.targetType, form.targetKey).then(a => setAttendees(a || [])).catch(() => setAttendees([]));
-  }, [form?.targetType, form?.targetKey]);
-  const save = async () => {
-    const r = await saveMeetingNote({ id: form.id, targetType: form.targetType, targetKey: form.targetKey, content: form.content, attendeeIds: [...(form.attendeeIds || [])] });
-    if (r.ok) { setForm(null); load(); } else window.alert(r.error || "Failed");
-  };
-  const targetOptions = () => {
-    const o = [];
-    (targets.factions || []).forEach(f => o.push({ v: `faction:${f.id}`, l: `Faction · ${f.name}` }));
-    (targets.teams || []).forEach(t => o.push({ v: `team:${t.team_id}`, l: `Team · ${t.team_name}` }));
-    (targets.groups || []).forEach(g => o.push({ v: `group:${g.key}`, l: `Group · ${g.label}` }));
-    return o;
-  };
+  useEffect(() => { load(); }, []);
   if (loading) return <div className="empty">Loading…</div>;
   return (
     <>
-      <div style={{ marginBottom: 14 }}><button className="btn" onClick={() => setForm({ targetType: "", targetKey: "", content: "", attendeeIds: new Set() })}>+ Meeting note</button></div>
+      {/* Composing/editing happens on the full-page editor at /v2/notes. */}
+      <div style={{ marginBottom: 14 }}><Link className="btn" href="/v2/notes" style={{ textDecoration: "none" }}>+ Meeting note</Link></div>
       <div className="card">
         {notes.length === 0 ? <div className="empty">No meeting notes.</div> : notes.map(n => (
           <div className="note" key={n.id}>
@@ -251,7 +230,7 @@ function MeetingNotes({ auth, openNew = false }) {
               <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{n.date}</span>
               <span style={{ flex: 1 }} />
               {(n.author_id === auth.id || auth.level >= 3) && <>
-                <button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ id: n.id, targetType: n.target_type, targetKey: n.target_type === "faction" ? String(n.faction_id) : n.target_key, content: n.content, attendeeIds: new Set(n.attendeeIds || []) })}>Edit</button>
+                <Link className="act" style={{ padding: "2px 8px" }} href={`/v2/notes?id=${n.id}`}>Edit</Link>
                 <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete note?")) { await deleteMeetingNote(n.id); load(); } }}>Del</button>
               </>}
             </div>
@@ -262,21 +241,6 @@ function MeetingNotes({ auth, openNew = false }) {
           </div>
         ))}
       </div>
-      {form && <Modal maxWidth={720} title={`${form.id ? "Edit" : "New"} meeting note`} onClose={() => setForm(null)} onSave={save} saveDisabled={!form.targetType || !stripHtml(form.content).trim()}>
-        <select className="filter-inp" value={form.targetType && form.targetKey ? `${form.targetType}:${form.targetKey}` : ""} onChange={e => { const [tt, ...r] = e.target.value.split(":"); setForm({ ...form, targetType: tt, targetKey: r.join(":") }); }}>
-          <option value="">Select target…</option>
-          {targetOptions().map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
-        </select>
-        <QuillEditor value={form.content} onChange={v => setForm({ ...form, content: v })} placeholder="Meeting notes…" />
-        {attendees.length > 0 && <>
-          <div className="lbl" style={{ fontFamily: "var(--v2-mono)", fontSize: 9, textTransform: "uppercase", color: "var(--ink-3)" }}>Attendees</div>
-          <div style={{ maxHeight: 150, overflowY: "auto", display: "flex", flexWrap: "wrap", gap: 5 }}>
-            {attendees.map(a => { const on = form.attendeeIds?.has(a.discord_id); return (
-              <button key={a.discord_id} className={`pill${on ? " on" : ""}`} onClick={() => { const s = new Set(form.attendeeIds); on ? s.delete(a.discord_id) : s.add(a.discord_id); setForm({ ...form, attendeeIds: s }); }}>{a.display_name}</button>
-            ); })}
-          </div>
-        </>}
-      </Modal>}
     </>
   );
 }
