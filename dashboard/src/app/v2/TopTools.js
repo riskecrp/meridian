@@ -46,7 +46,22 @@ export function PlusMenu({ auth }) {
   );
 }
 
-/* ── Live inbox unread count for the Inbox nav item, refreshed every 3 minutes. ── */
+/* ── The bell IS the Inbox entry point (owner preference over a nav item —
+      one entry, not two). Badge = live unread, lit when you're on the page. ── */
+export function Bell({ auth, active }) {
+  const n = useInboxUnread(auth);
+  return (
+    <a href="/v2/inbox" className="tb-btn" title="Inbox — your pings"
+      style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", ...(active ? { color: "var(--accent)", borderColor: "var(--accent)", background: "var(--accent-bg)" } : {}) }}>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2a3.5 3.5 0 0 0-3.5 3.5V8L3 10.5h10L11.5 8V5.5A3.5 3.5 0 0 0 8 2zM6.5 12a1.5 1.5 0 0 0 3 0" /></svg>
+      {n > 0 && (
+        <span style={{ position: "absolute", top: -5, right: -5, minWidth: 15, height: 15, padding: "0 4px", borderRadius: 8, background: "var(--rose)", color: "#fff", fontSize: 9, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--v2-mono)", border: "2px solid var(--bg)" }}>{n > 99 ? "99+" : n}</span>
+      )}
+    </a>
+  );
+}
+
+/* ── Live inbox unread count, refreshed every 3 minutes. ── */
 export function useInboxUnread(auth) {
   const [n, setN] = useState(0);
   useEffect(() => {

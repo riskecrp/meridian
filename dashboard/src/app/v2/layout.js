@@ -6,7 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../lib/useAuth";
 import { visibleAdminGroups } from "./adminNav.js";
-import { PlusMenu, CommandPalette, useInboxUnread } from "./TopTools.js";
+import { PlusMenu, Bell, CommandPalette } from "./TopTools.js";
 
 const I = {
   home: <path d="M2 7l6-5 6 5M3.5 6v7h9V6" />,
@@ -190,14 +190,11 @@ export default function V2Layout({ children }) {
   const isET = auth?.isEventTeam;
   const roleLabel = isET ? "Event Team" : level >= 3 ? "L3" : level >= 2 ? "L2" : "L1";
   const initial = (auth?.displayName || auth?.name || "?").slice(0, 1).toUpperCase();
-  // One inbox entry point: the nav item carries the live unread count
-  // (the separate bell went to the same place and was pure duplication).
-  const inboxUnread = useInboxUnread(auth);
 
   const canNPC = level >= 2 || isET || auth?.isLeadStoryteller;
+  // Inbox lives on the topbar bell (owner preference) — one entry point, no nav item.
   const NAV = [
     { key: "home", label: "Home", href: "/v2", icon: I.home },
-    { key: "inbox", label: "Inbox", href: "/v2/inbox", icon: I.inbox, count: inboxUnread },
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
     // Library = everything you look up: reference, docs, scene records.
     {
@@ -236,10 +233,13 @@ export default function V2Layout({ children }) {
     },
   ].filter(it => (!it.min || level >= it.min) && (!it.menu || it.menu.some(m => m.id)));
 
-  // Every reachable section, for the ⌘K palette.
-  const navTargets = NAV.flatMap(it => it.menu
-    ? [{ kind: "Page", label: it.label, href: it.href }, ...it.menu.filter(m => m.id).map(m => ({ kind: it.label, label: m.label, href: `${it.href}?tab=${m.id}` }))]
-    : [{ kind: "Page", label: it.label, href: it.href }]);
+  // Every reachable section, for the ⌘K palette (Inbox included — it's only in the bell).
+  const navTargets = [
+    ...NAV.flatMap(it => it.menu
+      ? [{ kind: "Page", label: it.label, href: it.href }, ...it.menu.filter(m => m.id).map(m => ({ kind: it.label, label: m.label, href: `${it.href}?tab=${m.id}` }))]
+      : [{ kind: "Page", label: it.label, href: it.href }]),
+    { kind: "Page", label: "Inbox", href: "/v2/inbox" },
+  ];
 
   return (
     <div className="v2-root">
@@ -266,6 +266,7 @@ export default function V2Layout({ children }) {
               <span className="s-txt">Search…</span> <span className="kbd">⌘K</span>
             </button>
             {auth?.ok && <PlusMenu auth={auth} />}
+            {auth?.ok && <Bell auth={auth} active={pathname.startsWith("/v2/inbox")} />}
             <button className="tb-btn" onClick={toggleTheme} title="Theme">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3 5.5 5.5 0 1 0 13 9.5z" /></svg>
             </button>
