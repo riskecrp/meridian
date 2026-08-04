@@ -211,9 +211,12 @@ function Performance() {
 
 /* ── Meeting Notes ── */
 
+const notePreview = (h) => (h || "").replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+
 function MeetingNotes({ auth }) {
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [openId, setOpenId] = useState(null); // collapsed by default — headers scan, click to read
   const load = () => getMeetingNotes().then(n => { setNotes(n || []); setLoading(false); });
   useEffect(() => { load(); }, []);
   if (loading) return <div className="empty">Loading…</div>;
@@ -222,24 +225,33 @@ function MeetingNotes({ auth }) {
       {/* Composing/editing happens on the full-page editor at /v2/notes. */}
       <div style={{ marginBottom: 14 }}><Link className="btn" href="/v2/notes" style={{ textDecoration: "none" }}>+ Meeting note</Link></div>
       <div className="card">
-        {notes.length === 0 ? <div className="empty">No meeting notes.</div> : notes.map(n => (
-          <div className="note" key={n.id}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
-              <span className="chip role">{n.display_name}</span>
-              <span style={{ fontWeight: 600, color: "var(--ink-0)", fontSize: 12.5 }}>{n.author}</span>
-              <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{n.date}</span>
-              <span style={{ flex: 1 }} />
-              {(n.author_id === auth.id || auth.level >= 3) && <>
-                <Link className="act" style={{ padding: "2px 8px" }} href={`/v2/notes?id=${n.id}`}>Edit</Link>
-                <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete note?")) { await deleteMeetingNote(n.id); load(); } }}>Del</button>
-              </>}
+        {notes.length === 0 ? <div className="empty">No meeting notes.</div> : notes.map(n => {
+          const open = openId === n.id;
+          return (
+            <div key={n.id} style={{ borderBottom: "1px solid var(--line)" }}>
+              <div className="row" onClick={() => setOpenId(open ? null : n.id)} style={{ alignItems: "center" }}>
+                <span className="chip role" style={{ flexShrink: 0 }}>{n.display_name}</span>
+                <span style={{ fontWeight: 600, color: "var(--ink-0)", fontSize: 12.5, flexShrink: 0 }}>{n.author}</span>
+                <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)", flexShrink: 0 }}>{n.date}</span>
+                {!open && <span style={{ fontSize: 12, color: "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1 }}>{notePreview(n.content).slice(0, 140)}</span>}
+                {open && <span style={{ flex: 1 }} />}
+                {(n.author_id === auth.id || auth.level >= 3) && <span onClick={e => e.stopPropagation()} style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                  <Link className="act" style={{ padding: "2px 8px" }} href={`/v2/notes?id=${n.id}`}>Edit</Link>
+                  <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete note?")) { await deleteMeetingNote(n.id); load(); } }}>Del</button>
+                </span>}
+                <span className="caret" style={{ transform: open ? "rotate(180deg)" : "none" }}>▼</span>
+              </div>
+              {open && (
+                <div className="task-detail">
+                  {/* Old notes are plain text; anything written with Quill is HTML — render each accordingly. */}
+                  {/<[a-z][^>]*>/i.test(n.content || "")
+                    ? <div className="quill-content" style={{ color: "var(--ink-1)", overflowWrap: "anywhere", lineHeight: 1.6 }} dangerouslySetInnerHTML={{ __html: n.content }} />
+                    : <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--ink-1)" }}>{n.content}</div>}
+                </div>
+              )}
             </div>
-            {/* Old notes are plain text; anything written with Quill is HTML — render each accordingly. */}
-            {/<[a-z][^>]*>/i.test(n.content || "")
-              ? <div className="quill-content" style={{ color: "var(--ink-1)", overflowWrap: "anywhere", lineHeight: 1.6 }} dangerouslySetInnerHTML={{ __html: n.content }} />
-              : <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--ink-1)" }}>{n.content}</div>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </>
   );
