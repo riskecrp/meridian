@@ -19,6 +19,8 @@ import { useDraft, loadDraft, clearDraft } from "../../../lib/useDraft";
 import Modal from "../Modal.js";
 import { useCopy, useRun } from "../hooks.js";
 import DocumentsView from "./Documents.js";
+import Peds from "./Peds.js";
+import Vehicles from "./VehicleCatalog.js";
 
 const GTAMap = dynamic(() => import("../../../lib/GTAMap"), { ssr: false, loading: () => <div style={{ height: 400, display: "grid", placeItems: "center", color: "var(--ink-3)" }}>Loading map…</div> });
 
@@ -55,14 +57,18 @@ function V2Story() {
   const ensure = async (t) => { if (loaded[t] || !loaders[t]) return; setBusy(true); const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); setLoaded(l => ({ ...l, [t]: true })); setBusy(false); };
   const reload = async (t) => { const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); };
 
+  // Same order as the Library nav dropdown (A–Z); Knowledge Base stays the
+  // landing section.
   const TABS = [
-    { id: "kb", label: "Knowledge Base" },
-    { id: "docs", label: "Documents" },
-    { id: "scenelogs", label: "Scene Logs" },
-    { id: "scenes", label: "Scene Library" },
     { id: "arsenal", label: "Arsenal" },
-    ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
     { id: "changelog", label: "Change Log" },
+    { id: "docs", label: "Documents" },
+    { id: "kb", label: "Knowledge Base" },
+    ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
+    { id: "peds", label: "Peds" },
+    { id: "scenes", label: "Scene Library" },
+    { id: "scenelogs", label: "Scene Logs" },
+    { id: "vehicles", label: "Vehicle Catalog" },
   ];
   const tabParam = sp.get("tab");
   const tab = TABS.some(t => t.id === tabParam) ? tabParam : "kb";
@@ -91,6 +97,8 @@ function V2Story() {
       {busy && !loaded[tab] && <div className="empty">Loading…</div>}
 
       {tab === "docs" && <DocumentsView auth={auth} />}
+      {tab === "peds" && <Peds auth={auth} initialQ={initialQ} />}
+      {tab === "vehicles" && <Vehicles canEdit={canMgmt} />}
       {tab === "kb" && loaded.kb && <KB auth={auth} canMgmt={canMgmt} lore={data.kb.lore} cmds={data.kb.command} reload={() => reload("kb")} initialQ={initialQ} />}
       {tab === "changelog" && loaded.changelog && <ChangeLog auth={auth} rows={data.changelog} reload={() => reload("changelog")} />}
       {tab === "scenes" && loaded.scenes && <Scenes rows={data.scenes} />}

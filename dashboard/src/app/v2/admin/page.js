@@ -5,7 +5,7 @@ import { useAuth } from "../../../lib/useAuth";
 import { visibleAdminGroups, ADMIN_TAB_ALIASES } from "../adminNav.js";
 import DiscordAccessView from "../../fm/operations/discord/DiscordAccessView.js";
 import { Audit, Archive, ServerLogs, Conversations } from "./views/records.js";
-import { Inventory, Vehicles, Imports } from "./views/catalogs.js";
+import { Inventory, Imports } from "./views/catalogs.js";
 import { Links, RecurringReminders } from "./views/config.js";
 import { StaffTeams, FMHours } from "./views/people.js";
 
@@ -20,16 +20,17 @@ function V2Admin() {
   const router = useRouter();
   const canEditCatalogs = (auth?.level || 0) >= 3 || auth?.isEventTeam;
 
-  // Documents live in the Library now — keep old links and bookmarks working.
-  const isDocsLink = sp.get("tab") === "docs";
+  // Documents and the Vehicle Catalog live in the Library now — keep old links
+  // and bookmarks working.
+  const movedTab = sp.get("tab") === "docs" ? "docs" : sp.get("tab") === "vehicles" ? "vehicles" : null;
   useEffect(() => {
-    if (isDocsLink) {
+    if (movedTab) {
       const sop = sp.get("sop");
-      router.replace(`/v2/story?tab=docs${sop ? `&sop=${encodeURIComponent(sop)}` : ""}`);
+      router.replace(`/v2/story?tab=${movedTab}${sop ? `&sop=${encodeURIComponent(sop)}` : ""}`);
     }
-  }, [isDocsLink]);
+  }, [movedTab]);
 
-  if (auth?.loading || isDocsLink) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
+  if (auth?.loading || movedTab) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
 
   const visible = visibleAdminGroups({ level: auth?.level || 0, isET: auth?.isEventTeam, isLST: auth?.isLeadStoryteller, id: auth?.id });
   if (!auth?.ok || !visible.length) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead (L2) access required.</div>;
@@ -50,7 +51,6 @@ function V2Admin() {
       {viewId === "audit" ? <Audit auth={auth} />
         : viewId === "archive" ? <Archive />
         : viewId === "inventory" ? <Inventory auth={auth} />
-        : viewId === "vehicles" ? <Vehicles canEdit={canEditCatalogs} />
         : viewId === "imports" ? <Imports canEdit={canEditCatalogs} />
         : viewId === "links" ? <Links />
         : viewId === "memberlog" ? <ServerLogs />

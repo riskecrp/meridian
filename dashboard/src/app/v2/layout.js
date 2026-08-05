@@ -196,16 +196,20 @@ export default function V2Layout({ children }) {
   const NAV = [
     { key: "home", label: "Home", href: "/v2", icon: I.home },
     { key: "factions", label: "Factions", href: "/v2/factions", icon: I.factions },
-    // Library = everything you look up: reference, docs, scene records.
+    // Library = everything you look up: reference, docs, catalogues, scene
+    // records. Listed A–Z: it's a lookup menu, so alphabetical beats any
+    // curated order once there are this many sections.
     {
       key: "story", label: "Library", href: "/v2/story", icon: I.story, menu: [
-        { id: "kb", label: "Knowledge Base" },
-        { id: "docs", label: "Documents" },
-        { id: "scenelogs", label: "Scene Logs" },
-        { id: "scenes", label: "Scene Library" },
         { id: "arsenal", label: "Arsenal" },
-        ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
         { id: "changelog", label: "Change Log" },
+        { id: "docs", label: "Documents" },
+        { id: "kb", label: "Knowledge Base" },
+        ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
+        { id: "peds", label: "Peds" },
+        { id: "scenes", label: "Scene Library" },
+        { id: "scenelogs", label: "Scene Logs" },
+        { id: "vehicles", label: "Vehicle Catalog" },
       ],
     },
     {

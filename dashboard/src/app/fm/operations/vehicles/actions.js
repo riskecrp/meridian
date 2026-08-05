@@ -4,7 +4,10 @@ import { logAudit } from "../../../../lib/audit.js";
 import { requireActor } from "../../../../lib/requireActor.js";
 
 export async function listCatalog() {
-  await requireActor(2, {allowEventTeam: true, allowLeadStoryteller: true});
+  // Read-only reference for every staff member (it lives in the Library now).
+  // Creating/editing/deleting and pushing a vehicle into a faction garage below
+  // are all still L3/Event Team.
+  await requireActor(1, {allowEventTeam: true, allowLeadStoryteller: true});
   return query("SELECT id, vehicle_name, spawn_name, notes, use_count FROM fleet_vehicle_catalog ORDER BY vehicle_name");
 }
 
