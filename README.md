@@ -1,120 +1,120 @@
 # Meridian
 
-Faction Management ops hub for the ECRP FM team: a Next.js dashboard
-(https://ecrpfm.com) plus a Discord bot, sharing one SQLite database.
+Meridian is the Faction Management team's ops hub: the dashboard at
+https://ecrpfm.com plus the FM Discord bot. Everything the team tracks —
+factions, members, reviews, tasks, scenes, hours, announcements — lives in
+**one database file**. This repo contains all the code, and this page explains
+how to get at the data or take over the whole system, **without needing access
+to the server it currently runs on**.
 
-## Layout
+## The three pieces
+
+1. **This repo** — all the code for the website and the Discord bot. If you can
+   read this, you already have it.
+2. **The database** — a single file, `meridian.db`. This is the team's actual
+   information. It is *not* in the repo. A fresh backup copy
+   (`meridian-<date>.db.gz`) is made automatically every night — ask whoever
+   currently operates Meridian for the latest one; it's a small file and it
+   contains everything.
+3. **The secrets** — the bot's Discord login and similar keys, in a `.env` file
+   that is *not* in the repo (there's a `.env.example` showing what goes in it).
+   These are tied to the current setup. If you take Meridian elsewhere you
+   create your own — see "Running Meridian yourself" below.
+
+With a copy of 1 and 2, you can do everything on this page on your own
+computer. Nothing requires a login to the current server.
+
+## Getting the data into Google Sheets
+
+The database is standard **SQLite** — a very common, open format. The path to
+Sheets is: turn tables into CSV files, then import those into a spreadsheet.
+
+**No-coding route:** install the free app **DB Browser for SQLite**
+(https://sqlitebrowser.org), unzip the backup (double-click the `.gz`, or
+`gunzip meridian-<date>.db.gz`), and open the `.db` file. You can browse every
+table like a spreadsheet, and export any of them via
+*File → Export → Table(s) as CSV*.
+
+**Command-line route:** with the repo and the backup on the same machine:
+
+```
+gunzip meridian-2026-08-05.db.gz
+DATABASE_PATH=./meridian-2026-08-05.db ./scripts/export-csv.sh
+```
+
+That writes one CSV per table into `data/exports/<today>/`. By default it
+exports the tables people usually want (factions, members, reviews, staff,
+tasks, scenes, hours, money logs). Add `--list` to see every table name,
+`--all` to export all of them, or name specific tables.
+
+**Then, in Google Sheets:** open a spreadsheet, *File → Import → Upload*, pick
+a CSV, choose *Insert new sheet(s)*. Each CSV becomes one tab. (Or upload the
+whole export folder to Google Drive with *Settings → Convert uploads* switched
+on — each CSV becomes its own spreadsheet.)
+
+One quirk: date columns like `created_at` are in UTC, and event times in a
+column called `epoch_ms` are stored as a big number (milliseconds since 1970).
+To turn that number into a real date in Sheets:
+`=A2/86400000 + DATE(1970,1,1)`, then format the cell as a date.
+
+## Running Meridian yourself
+
+If you'd rather keep the dashboard and bot running than export spreadsheets,
+you can host it anywhere. Whoever does the setup should be comfortable running
+a small Linux server — it's a standard Node.js project, nothing exotic. You
+need:
+
+- this repo,
+- a database backup (unzipped, placed at `data/meridian.db`),
+- your own Discord bot application from https://discord.com/developers
+  (bot token + OAuth credentials — the dashboard's login *is* Discord),
+- a `.env` filled in from `.env.example`,
+- a small server (2 GB memory is enough) and a domain.
+
+Then: `npm install` in the repo root, `bot/`, and `dashboard/`; build the site
+with `npm run build` inside `dashboard/`; run `node bot/index.js` and
+`dashboard/start.sh` as services (ready-made service files are in `deploy/`).
+Discord IDs for roles and channels live in the database and in `.env`, so
+pointing the bot at a different Discord server means updating those — budget a
+careful afternoon for that part.
+
+## Building something new instead
+
+Nothing here is locked in. The database is plain SQLite, readable from every
+programming language and plenty of no-code tools; the CSV exports are the same
+data with zero dependencies on this codebase. If a future team wants a
+different dashboard, a Sheets-based workflow, or a bot in another framework,
+the data comes along cleanly — the code in this repo is then just a working
+reference for what each table means and how the workflows fit together
+(`schema.sql` lists every table and column).
+
+## For whoever operates the current server
+
+Day-to-day reference — only relevant with access to the box it runs on.
 
 | Path | What |
 |---|---|
-| `dashboard/` | Next.js 15 / React 19 app-router dashboard (`src/app/fm/...`) |
-| `bot/` | discord.js bot: slash commands, schedulers, DM handler, message capture |
-| `shared/` | DB (`better-sqlite3`) + Discord + config helpers used by both |
-| `schema.sql` | Full schema dump of the live DB (regenerated, not hand-maintained) |
-| `migrations/` | Numbered SQL migrations, applied once each by `scripts/migrate.mjs` |
-| `scripts/` | `deploy.sh`, `backup.sh`, `migrate.mjs`, `export-csv.sh` |
-| `deploy/` | systemd unit files (installed copies live in `/etc/systemd/system/`) |
-| `data/` | live SQLite DB + rotated backups — **not in git** |
-| `archive/` | pre-git one-time patch scripts & old backups — **not in git** |
+| `dashboard/` | the website (Next.js; current UI under `src/app/v2/`, legacy under `src/app/fm/`) |
+| `bot/` | the Discord bot (discord.js: commands, schedulers, message capture) |
+| `shared/` | database + Discord helpers used by both |
+| `schema.sql` | reference list of every table (regenerated, not hand-edited) |
+| `migrations/` | numbered database changes, applied once each by `scripts/migrate.mjs` |
+| `scripts/` | `deploy.sh`, `backup.sh`, `migrate.mjs`, `export-csv.sh`, `smoke.mjs` |
+| `deploy/` | service files (installed copies live in `/etc/systemd/system/`) |
+| `data/` | live database + nightly backups — **never in git** |
 
-## Services (systemd)
-
-- `meridian-dashboard.service` → `dashboard/start.sh` (refuses to start without a build)
-- `meridian-bot.service` → `node bot/index.js`
-- `meridian-backup.timer` → nightly `scripts/backup.sh` (backup + log-table retention)
-
-Secrets live in `/opt/meridian/.env` (see `.env.example`).
-
-## Deploying a change
-
-```
-cd /opt/meridian && ./scripts/deploy.sh            # smoke + pull + migrate + build + restart both
-./scripts/deploy.sh --dashboard | --bot | --no-pull
-```
-
-NOTE: never run multiple `next build`s in parallel on this box (2–4 GiB VM, OOMs).
-
-## Smoke test — run before restarting
-
-```
-node scripts/smoke.mjs            # exit 0 = safe to restart
-node scripts/smoke.mjs --build    # also runs next build (the only real JSX check)
-```
-
-`deploy.sh` runs it automatically before it migrates, so a failure aborts the
-deploy with the live database and the running services untouched.
-
-It checks, without connecting to Discord and without writing to the live DB
-(every phase runs in a child process against a temp `.backup` copy, with a dummy
-bot token): every bot file parses; every bot module resolves its imports; every
-command exposes the `data` + `execute` shape and a unique name that `index.js`
-requires at boot; all migrations apply cleanly to the copy; the dashboard's
-server-side libs load; and `.next` is not older than `src/`.
-
-Why the bot half matters: `bot/index.js` imports every file in `bot/commands/`
-with no `try`/`catch`, so one broken file exits the process — and with
-`Restart=always` + `RestartSec=5` that is a crash loop nothing catches before the
-restart. The dashboard has `next build` as its gate; the bot had none.
-
-## Migrations
-
-Add `migrations/NNN_short_name.sql`, then run `node scripts/migrate.mjs`
-(deploy.sh does this automatically). Applied filenames are tracked in the
-`_migrations` table. After schema changes, regenerate the reference dump:
-`sqlite3 data/meridian.db .schema > schema.sql`.
-
-## Backups
-
-Nightly timer: consistent `sqlite3 .backup` → `data/backups/meridian-<date>.db.gz`
-(14 kept locally). jax-box pulls the latest copy off-box daily. After a successful
-backup the script prunes `mentions` / `edited_message_logs` / `deleted_message_logs`
-rows older than 180 days.
-
-## Exporting data to Google Sheets
-
-All of Meridian's information lives in one SQLite database. To get any of it
-into Google Sheets, export tables to CSV (a format Sheets imports natively),
-copy the files to your machine, and import them.
-
-**1. Export on the server** (read-only, safe to run any time):
-
-```
-cd /opt/meridian
-./scripts/export-csv.sh              # the core reporting set (factions, members,
-                                     #   reviews, staff, tasks, scenes, hours, …)
-./scripts/export-csv.sh --list       # print every table name
-./scripts/export-csv.sh --all        # every table
-./scripts/export-csv.sh scene_logs treasury_logs   # just the tables you name
-```
-
-Output lands in `data/exports/<today>/`, one `<table>.csv` per table, with a
-header row of column names.
-
-**2. Copy the files to your machine:**
-
-```
-scp -r root@<fm-bot>:/opt/meridian/data/exports/<today> ./meridian-export
-```
-
-**3. Import into Google Sheets** — either way works:
-
-- In a spreadsheet: **File → Import → Upload**, pick a CSV, then
-  *Insert new sheet(s)* to add it as a tab (or *Replace current sheet* when
-  refreshing an existing tab with a newer export). Repeat per CSV — Sheets
-  imports one file per tab.
-- In bulk: upload the whole folder to Google Drive with
-  **Settings → Convert uploads to Google Docs editor format** enabled; each CSV
-  becomes its own spreadsheet.
-
-Timestamps are stored as UTC (`created_at` etc.) and event times as epoch
-milliseconds (`epoch_ms`); convert in Sheets with
-`=A2/86400000 + DATE(1970,1,1)` and format the cell as a date.
-
-To pull an export **without touching the live box**, run the script against a
-nightly backup instead: `gunzip -k meridian-<date>.db.gz`, then
-`DATABASE_PATH=/path/to/meridian-<date>.db ./scripts/export-csv.sh --all`
-(jax-box keeps 30 days of pulled backups in `/root/backups/meridian/`).
-
-There is no live Sheets sync and none is wired up: the box is private, the data
-includes confidential leadership material, and a monthly-cadence workflow doesn't
-need one — re-import a fresh CSV when you want current numbers.
+- **Deploy a change:** `cd /opt/meridian && ./scripts/deploy.sh` — runs the
+  smoke test first (aborts safely if anything's broken), then pulls, migrates,
+  builds, restarts. Flags: `--dashboard`, `--bot`, `--no-pull`. Never run two
+  site builds at once on this box — it runs out of memory.
+- **Smoke test alone:** `node scripts/smoke.mjs` (exit 0 = safe to restart).
+  It checks every bot file loads and migrations apply — all against a throwaway
+  database copy, never the live one.
+- **Migrations:** add `migrations/NNN_short_name.sql`, run
+  `node scripts/migrate.mjs`, then regenerate the reference:
+  `sqlite3 data/meridian.db .schema > schema.sql`.
+- **Backups:** nightly timer produces `data/backups/meridian-<date>.db.gz`
+  (14 kept on the box, plus an off-box copy pulled daily). This backup is the
+  file to hand to anyone who needs the data — see the top of this page.
+- **Exports on the box:** `./scripts/export-csv.sh` with no `DATABASE_PATH`
+  reads the live database directly (read-only, safe any time).
