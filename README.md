@@ -13,9 +13,14 @@ to the server it currently runs on**.
    read this, you already have it.
 2. **The database** — a single file, `meridian.db`. This is the team's actual
    information. It is *not* in the repo. A fresh backup copy
-   (`meridian-<date>.db.gz`) is made automatically every night — ask whoever
-   currently operates Meridian for the latest one; it's a small file and it
-   contains everything.
+   (`meridian-<date>.db.gz`) is made automatically every night, and you can
+   download the latest one yourself, any time, at:
+
+   **https://ecrpfm.com/api/backup**
+
+   Log in to the dashboard first (it's for leadership-level accounts; there is
+   no link to it anywhere on the site — just this URL). It's a small file and
+   it contains everything.
 3. **The secrets** — the bot's Discord login and similar keys, in a `.env` file
    that is *not* in the repo (there's a `.env.example` showing what goes in it).
    These are tied to the current setup. If you take Meridian elsewhere you
@@ -114,7 +119,8 @@ Day-to-day reference — only relevant with access to the box it runs on.
   `node scripts/migrate.mjs`, then regenerate the reference:
   `sqlite3 data/meridian.db .schema > schema.sql`.
 - **Backups:** nightly timer produces `data/backups/meridian-<date>.db.gz`
-  (14 kept on the box, plus an off-box copy pulled daily). This backup is the
-  file to hand to anyone who needs the data — see the top of this page.
+  (14 kept on the box, plus an off-box copy pulled daily). The latest one is
+  downloadable by leadership at `https://ecrpfm.com/api/backup` (unlisted;
+  downloads are recorded in the audit log).
 - **Exports on the box:** `./scripts/export-csv.sh` with no `DATABASE_PATH`
   reads the live database directly (read-only, safe any time).
