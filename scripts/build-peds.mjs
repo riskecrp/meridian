@@ -10,10 +10,15 @@
 //      Scenario female, Animals, …) and a preview image per model.
 // Union of the two; hashes for models missing from the dump are computed locally.
 //
-// Usage:  node scripts/build-peds.mjs [--no-images]
+// Usage:  node scripts/build-peds.mjs [--no-images] [--updates-only] [--out=path]
 // Writes: migrations/011_peds.sql, dashboard/public/peds/<model>.webp
 // Re-running is safe: images already on disk are skipped, and the SQL is
 // INSERT OR IGNORE + an UPDATE that leaves curated tags (tags_curated=1) alone.
+//
+// 011 is already applied everywhere, and migrate.mjs tracks migrations by
+// filename — so a later refresh (new DLC peds, a widened tag vocabulary) goes
+// out as its OWN migration rather than by editing 011:
+//   node scripts/build-peds.mjs --updates-only --out=migrations/0NN_peds_retag.sql
 
 import { writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -22,7 +27,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IMG_DIR = path.join(ROOT, "dashboard/public/peds");
-const OUT_SQL = path.join(ROOT, "migrations/011_peds.sql");
+const outArg = process.argv.find(a => a.startsWith("--out="));
+const OUT_SQL = path.join(ROOT, outArg ? outArg.slice("--out=".length) : "migrations/011_peds.sql");
+const updatesOnly = process.argv.includes("--updates-only");
 const DUMP_URL = "https://raw.githubusercontent.com/DurtyFree/gta-v-data-dumps/master/peds.json";
 const DOC_URL = "https://raw.githubusercontent.com/citizenfx/fivem-docs/master/content/docs/game-references/ped-models.md";
 const IMG_BASE = "https://docs.fivem.net/peds";
@@ -56,28 +63,30 @@ const THEME = [
   [["eastsa", "east los"], ["east los santos"]],
   [["salton", "hillbilly", "cntrybar", "country", "rurmeth", "farmer", "rancher"], ["rural"]],
   [["skidrow", "tramp", "hobo", "vagrant", "homeless"], ["skid row"]],
-  [["paparazzi", "movprem", "movspace", "movalien", "movie", "actor", "director"], ["movie"]],
+  [["paparazzi", "movprem", "movspace", "movalien", "movie", "actor", "director", "studioassist", "studioparty"], ["movie"]],
   [["casino", "croupier", "gambler"], ["casino"]],
   [["dockwork", "docks", "longshoreman", "stevedore"], ["docks"]],
-  [["sweatshop", "factory", "prod", "assembly"], ["factory"]],
+  [["sweatshop", "factory", "prod", "assembly", "warehouse"], ["factory"]],
   [["motel", "hotel", "bellboy", "concierge"], ["hotel"]],
   [["prison", "prisguard", "prisoner", "inmate"], ["prison"]],
   [["hospital", "autopsy", "morgue"], ["hospital"]],
   [["church", "priest", "preacher", "strpreach", "nun"], ["religion"]],
-  [["school", "student", "teacher", "professor"], ["education"]],
+  [["epsilon", "acult"], ["religion", "counterculture"]], // the Epsilon Program and the Altruists are both
+  [["school", "student", "teacher", "professor", "ulsa"], ["education"]],
   [["train", "lsmetro", "metro", "conductor", "subway"], ["transit"]],
   [["gunclub", "ammucity", "ammudrop", "shooting range"], ["firearms"]],
-  [["strip", "stripper", "hooker", "prostitute", "tranvest", "escort"], ["nightlife", "adult"]],
-  [["bouncer", "bartender", "barman", "waiter", "waitress", "busboy", "linecook", "chef", "cook", "sommelier", "hostess"], ["hospitality"]],
-  [["shop_high", "shop_low", "shop_mask", "shopkeep", "clerk", "cashier", "salesman", "vendor", "strvend", "retail"], ["retail"]],
+  [["strip", "stripper", "hooker", "prostitute", "tranvest", "escort", "topless", "danceburl"], ["nightlife", "adult"]],
+  [["clubcust", "clubbar", "clubhouse", "dancerave", "dancelthr", "dancer", "partygoer"], ["nightlife"]],
+  [["bouncer", "bartender", "barman", "waiter", "waitress", "busboy", "linecook", "chef", "cook", "sommelier", "hostess", "prolhost", "clubbar"], ["hospitality"]],
+  [["shop_high", "shop_low", "shop_mask", "shopkeep", "clerk", "cashier", "salesman", "vendor", "strvend", "retail", "ponsonbys", "suburban", "binco"], ["retail"]],
   // jobs & services
   [["cop", "hwaycop", "sheriff", "snowcop", "trooper", "police", "officer", "detective", "swat", "fib", "ranger", "marshal"], ["law enforcement"]],
   [["paramedic", "doctor", "nurse", "surgeon", "medic", "scrubs"], ["medical"]],
   [["fireman", "firefighter", "fire"], ["fire service"]],
   [["marine", "army", "soldier", "milita", "blackops", "military", "sniper"], ["military"]],
-  [["security", "prolsec", "highsec", "chemsec", "devinsec", "fibsec", "armoured", "guard", "bodyguard", "pescort"], ["security"]],
+  [["security", "prolsec", "highsec", "chemsec", "devinsec", "fibsec", "westsec", "armoured", "guard", "bodyguard", "pescort"], ["security"]],
   [["construct", "builder", "roadwork", "surveyor", "welder", "scaffold"], ["construction"]],
-  [["mechanic", "xmech", "autoshop", "tow", "valet", "carwash"], ["motoring"]],
+  [["mechanic", "xmech", "autoshop", "tow", "valet", "carwash", "carclub", "motox", "importexport"], ["motoring"]],
   [["gardener", "gard", "landscap", "groundskeeper"], ["groundskeeping"]],
   [["janitor", "winclean", "cleaner", "garbage", "trash", "sanitation", "maid"], ["maintenance"]],
   [["trucker", "postal", "ups", "courier", "delivery", "gentransport", "driver", "taxi", "cabbie", "chauffeur", "busdriver"], ["transport"]],
@@ -94,9 +103,9 @@ const THEME = [
   // look & lifestyle
   [["hipster", "beard", "indie"], ["hipster"]],
   [["tourist", "visitor", "hiker", "camper", "backpacker"], ["tourist"]],
-  [["bodybuild", "muscl", "stmuscl", "gym", "trainer", "athlete", "jogger", "runner", "cyclist", "skater", "boxer"], ["fitness"]],
-  [["fatlatin", "fatwhite", "fatbla", "fatcult", "obese"], ["heavyset"]],
-  [["cult", "fatcult", "hippy", "hippie", "protester", "activist"], ["counterculture"]],
+  [["bodybuild", "muscl", "stmuscl", "gym", "fitness", "trainer", "athlete", "jogger", "runner", "cyclist", "skater", "boxer"], ["fitness"]],
+  [["fatlatin", "fatwhite", "fatbla", "fatcult", "genfat", "obese"], ["heavyset"]],
+  [["cult", "fatcult", "acult", "hippy", "hippie", "protester", "activist"], ["counterculture"]],
   [["punk", "strpunk", "goth", "metal"], ["punk"]],
   [["biker", "lost", "chopper", "motorcycl"], ["biker"]],
   [["junkie", "meth", "crackhead", "addict", "drunk", "alcoholic"], ["addiction"]],
@@ -118,6 +127,12 @@ const THEME = [
   [["cartel", "colombian"], ["gang", "cartel"]],
   [["mafia", "mob", "gambetti"], ["gang", "mafia"]],
   [["robber", "thief", "burglar", "criminal", "gunman", "goon", "thug", "enforcer", "hitman"], ["criminal"]],
+  [["fooliganz", "pologoon", "importexport"], ["gang"]],
+  // look & role fragments that carry no other signal
+  [["corpse"], ["corpse"]],
+  [["juggernaut"], ["military", "costume"]],
+  [["poppymich", "miranda", "celeb"], ["celebrity"]],
+  [["genstreet", "stbla", "stwhi", "stlat"], ["street"]],
   // (animals need no keyword row — the "animal" tag comes from the ped type,
   //  and ANIMAL_KIND below names the species.)
 ];
@@ -294,7 +309,8 @@ const sql = [];
 sql.push("-- Library › Peds catalogue. GENERATED by scripts/build-peds.mjs — do not hand-edit.");
 sql.push(`-- ${rows.length} peds · ${rows.filter(r => r.image).length} with a preview image.`);
 sql.push("-- Sources: DurtyFree/gta-v-data-dumps peds.json + docs.fivem.net ped models.");
-sql.push(`CREATE TABLE IF NOT EXISTS peds (
+if (updatesOnly) sql.push("-- Refresh pass: facts and auto-tags only. Rows a human has curated (tags_curated=1) keep their tags.");
+if (!updatesOnly) sql.push(`CREATE TABLE IF NOT EXISTS peds (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   model_name TEXT NOT NULL UNIQUE,
   display_name TEXT,
@@ -314,10 +330,10 @@ sql.push(`CREATE TABLE IF NOT EXISTS peds (
   updated_at TEXT,
   updated_by TEXT
 );`);
-sql.push("CREATE INDEX IF NOT EXISTS idx_peds_model ON peds(model_name);");
+if (!updatesOnly) sql.push("CREATE INDEX IF NOT EXISTS idx_peds_model ON peds(model_name);");
 for (const r of rows) {
   const vals = [q(r.model), q(r.display), r.hash, q(r.hex), q(r.category), q(r.pedType), q(r.gender), q(r.age), q(r.dlc), q(r.image), r.props ?? "NULL", r.components ?? "NULL", q(JSON.stringify(r.tags))];
-  sql.push(`INSERT OR IGNORE INTO peds (model_name, display_name, hash, hash_hex, category, ped_type, gender, age, dlc, image, props, components, tags) VALUES (${vals.join(", ")});`);
+  if (!updatesOnly) sql.push(`INSERT OR IGNORE INTO peds (model_name, display_name, hash, hash_hex, category, ped_type, gender, age, dlc, image, props, components, tags) VALUES (${vals.join(", ")});`);
   // Refresh facts on a re-run, but never trample tags a human has curated.
   sql.push(`UPDATE peds SET display_name=${q(r.display)}, hash=${r.hash}, hash_hex=${q(r.hex)}, category=${q(r.category)}, ped_type=${q(r.pedType)}, gender=${q(r.gender)}, age=${q(r.age)}, dlc=${q(r.dlc)}, image=${q(r.image)}, props=${r.props ?? "NULL"}, components=${r.components ?? "NULL"}, tags=CASE WHEN tags_curated=1 THEN tags ELSE ${q(JSON.stringify(r.tags))} END WHERE model_name=${q(r.model)};`);
 }
