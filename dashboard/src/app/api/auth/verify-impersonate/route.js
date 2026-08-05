@@ -15,7 +15,7 @@ export async function GET(request) {
   const session = validateSession(token);
 
   if (!session || session.discord_id !== RISK_ID) {
-    return NextResponse.redirect(new URL('/fm/dashboard', origin));
+    return NextResponse.redirect(new URL('/v2', origin));
   }
 
   const verifyToken = createVerifySession(session.discord_id, session.discord_name || 'Risk');

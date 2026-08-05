@@ -78,7 +78,7 @@ export async function GET(request) {
     // Audit log
     logAudit(user.id, displayName, 'LOGIN', 'session', null, displayName, 'Level ' + clearance + ' login');
 
-    return NextResponse.redirect(new URL('/fm/dashboard', origin));
+    return NextResponse.redirect(new URL('/v2', origin));
   } catch (err) {
     console.error("Auth Error:", err);
     return NextResponse.redirect(new URL('/?error=server_error', request.url));

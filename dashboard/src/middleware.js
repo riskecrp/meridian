@@ -8,7 +8,7 @@ export function middleware(request) {
     if (!fmSession) return NextResponse.redirect(new URL('/login', request.url));
   }
   if (pathname === '/login') {
-    if (fmSession) return NextResponse.redirect(new URL('/fm/dashboard', request.url));
+    if (fmSession) return NextResponse.redirect(new URL('/v2', request.url));
   }
   if (pathname === '/verify') {
     if (!verifySession) return NextResponse.redirect(new URL('/verify/login', request.url));
