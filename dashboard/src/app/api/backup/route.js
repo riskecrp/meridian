@@ -16,7 +16,9 @@ export async function GET(request) {
     actor = await requireActor(3);
   } catch (e) {
     if (e.code === "AUTH_REQUIRED") {
-      return NextResponse.redirect(new URL("/login", request.url));
+      const host = request.headers.get("host");
+      const proto = host?.includes("localhost") ? "http" : "https";
+      return NextResponse.redirect(new URL("/login", `${proto}://${host}`));
     }
     return new NextResponse("Leadership (L3) access required.", { status: 403 });
   }
