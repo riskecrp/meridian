@@ -219,6 +219,7 @@ function PedDetail({ ped, canEdit, copied, copy, onTag, onClose, onSaved }) {
             {kv("Gender", ped.gender)}
             {kv("Age", ped.age)}
             {kv("Variations", [ped.props != null ? `${ped.props} props` : null, ped.components != null ? `${ped.components} components` : null].filter(Boolean).join(" · "))}
+            {kv("Preview", ped.image_source === "gtax.dev" ? "gtax.dev render (rear view)" : ped.image_source)}
             {kv("Curated by", ped.tags_curated ? `${ped.updated_by || "staff"}${ped.updated_at ? ` · ${ped.updated_at}` : ""}` : null)}
           </div>
         </div>

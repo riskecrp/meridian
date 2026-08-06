@@ -19,8 +19,8 @@ const parseTags = (row) => {
 export async function getPeds() {
   await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
   return query(`SELECT id, model_name, display_name, hash, hash_hex, category, ped_type,
-                       gender, age, dlc, image, props, components, tags, tags_curated,
-                       notes, updated_at, updated_by
+                       gender, age, dlc, image, image_source, props, components, tags,
+                       tags_curated, notes, updated_at, updated_by
                 FROM peds ORDER BY model_name`).map(parseTags);
 }
 

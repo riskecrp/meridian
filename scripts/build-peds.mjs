@@ -8,6 +8,8 @@
 //      DLC pack and the game's own English display name.
 //   2. docs.fivem.net ped-models doc — the category grouping (Ambient male,
 //      Scenario female, Animals, …) and a preview image per model.
+//   3. gtax.dev/browser/peds — picture fallback only, for the DLC models added
+//      after the FiveM doc's 2019 snapshot, which nothing else reachable has.
 // Union of the two; hashes for models missing from the dump are computed locally.
 //
 // Usage:  node scripts/build-peds.mjs [--no-images] [--updates-only] [--out=path]
@@ -28,11 +30,12 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IMG_DIR = path.join(ROOT, "dashboard/public/peds");
 const outArg = process.argv.find(a => a.startsWith("--out="));
-const OUT_SQL = path.join(ROOT, outArg ? outArg.slice("--out=".length) : "migrations/011_peds.sql");
+const OUT_SQL = path.resolve(ROOT, outArg ? outArg.slice("--out=".length) : "migrations/011_peds.sql");
 const updatesOnly = process.argv.includes("--updates-only");
 const DUMP_URL = "https://raw.githubusercontent.com/DurtyFree/gta-v-data-dumps/master/peds.json";
 const DOC_URL = "https://raw.githubusercontent.com/citizenfx/fivem-docs/master/content/docs/game-references/ped-models.md";
 const IMG_BASE = "https://docs.fivem.net/peds";
+const UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const doImages = !process.argv.includes("--no-images");
 
 /* ── joaat, for models the dump doesn't carry ── */
@@ -241,13 +244,31 @@ function parseDoc(md) {
 }
 
 /* ── images ── */
+// Returns model → filename on disk. Two sources, in order: the FiveM doc's
+// previews, then a gtax.dev inspection render for anything it doesn't have
+// (its list stops at 2019, so every later DLC ped falls through to the second).
+const onDisk = async () => {
+  const files = await readdir(IMG_DIR).catch(() => []);
+  return new Map(files.map(f => [f.replace(/\.(webp|png)$/, ""), f]));
+};
+
+async function gtaxImage(model) {
+  const r = await fetch(`https://gtax.dev/browser/peds/${model}`, { headers: { "user-agent": UA } });
+  if (!r.ok) return null;
+  const html = await r.text();
+  const m = html.match(new RegExp(`alt="${model} inspection render"[^>]*src="([^"]+)"`, "i"));
+  if (!m) return null;
+  const img = await fetch(new URL(m[1], "https://gtax.dev").href, { headers: { "user-agent": UA } });
+  if (!img.ok || !(img.headers.get("content-type") || "").includes("image")) return null;
+  return Buffer.from(await img.arrayBuffer());
+}
+
 async function fetchImages(models) {
   await mkdir(IMG_DIR, { recursive: true });
-  const have = new Set((await readdir(IMG_DIR).catch(() => [])).map(f => f.replace(/\.webp$/, "")));
-  const todo = models.filter(m => !have.has(m));
-  const ok = new Set(have);
-  let done = 0, missing = 0;
-  const queue = [...todo];
+  const have = await onDisk();
+  const queue = models.filter(m => !have.has(m));
+  const total = queue.length;
+  let done = 0, fromDoc = 0, fromGtax = 0, missing = 0;
   const worker = async () => {
     while (queue.length) {
       const model = queue.shift();
@@ -255,15 +276,19 @@ async function fetchImages(models) {
         const r = await fetch(`${IMG_BASE}/${model}.webp`);
         if (r.ok && (r.headers.get("content-type") || "").includes("image")) {
           await writeFile(path.join(IMG_DIR, `${model}.webp`), Buffer.from(await r.arrayBuffer()));
-          ok.add(model);
-        } else missing++;
+          have.set(model, `${model}.webp`); fromDoc++;
+        } else {
+          const png = await gtaxImage(model);
+          if (png) { await writeFile(path.join(IMG_DIR, `${model}.png`), png); have.set(model, `${model}.png`); fromGtax++; }
+          else missing++;
+        }
       } catch { missing++; }
-      if (++done % 100 === 0) process.stdout.write(`  images ${done}/${todo.length}\n`);
+      if (++done % 50 === 0) process.stdout.write(`  images ${done}/${total}\n`);
     }
   };
-  await Promise.all(Array.from({ length: 8 }, worker));
-  console.log(`  images: ${ok.size} on disk, ${missing} with no preview available`);
-  return ok;
+  await Promise.all(Array.from({ length: 6 }, worker));
+  console.log(`  images: ${have.size} on disk (+${fromDoc} FiveM, +${fromGtax} gtax), ${missing} with no preview anywhere`);
+  return have;
 }
 
 const q = (v) => v == null || v === "" ? "NULL" : `'${String(v).replace(/'/g, "''")}'`;
@@ -300,10 +325,14 @@ const rows = [...byModel.values()].map(p => {
   return { ...p, category: d.category || null, props: d.props ?? null, components: d.components ?? null, tags, gender, age };
 }).sort((a, b) => a.model.localeCompare(b.model));
 
-const withImage = doImages ? await fetchImages(rows.map(r => r.model)) : new Set(
-  (await readdir(IMG_DIR).catch(() => [])).map(f => f.replace(/\.webp$/, ""))
-);
-rows.forEach(r => { r.image = withImage.has(r.model) ? `${r.model}.webp` : null; });
+const images = doImages ? await fetchImages(rows.map(r => r.model)) : await onDisk();
+// .webp = docs.fivem.net (front-facing, transparent); .png = a gtax.dev
+// inspection render (rear three-quarter, grey plate, watermarked). Recorded so
+// the detail card can say where a picture came from.
+rows.forEach(r => {
+  r.image = images.get(r.model) || null;
+  r.imageSource = !r.image ? null : r.image.endsWith(".webp") ? "docs.fivem.net" : "gtax.dev";
+});
 
 const sql = [];
 sql.push("-- Library › Peds catalogue. GENERATED by scripts/build-peds.mjs — do not hand-edit.");
@@ -322,6 +351,7 @@ if (!updatesOnly) sql.push(`CREATE TABLE IF NOT EXISTS peds (
   age TEXT,
   dlc TEXT,
   image TEXT,
+  image_source TEXT,
   props INTEGER,
   components INTEGER,
   tags TEXT NOT NULL DEFAULT '[]',
@@ -332,10 +362,10 @@ if (!updatesOnly) sql.push(`CREATE TABLE IF NOT EXISTS peds (
 );`);
 if (!updatesOnly) sql.push("CREATE INDEX IF NOT EXISTS idx_peds_model ON peds(model_name);");
 for (const r of rows) {
-  const vals = [q(r.model), q(r.display), r.hash, q(r.hex), q(r.category), q(r.pedType), q(r.gender), q(r.age), q(r.dlc), q(r.image), r.props ?? "NULL", r.components ?? "NULL", q(JSON.stringify(r.tags))];
-  if (!updatesOnly) sql.push(`INSERT OR IGNORE INTO peds (model_name, display_name, hash, hash_hex, category, ped_type, gender, age, dlc, image, props, components, tags) VALUES (${vals.join(", ")});`);
+  const vals = [q(r.model), q(r.display), r.hash, q(r.hex), q(r.category), q(r.pedType), q(r.gender), q(r.age), q(r.dlc), q(r.image), q(r.imageSource), r.props ?? "NULL", r.components ?? "NULL", q(JSON.stringify(r.tags))];
+  if (!updatesOnly) sql.push(`INSERT OR IGNORE INTO peds (model_name, display_name, hash, hash_hex, category, ped_type, gender, age, dlc, image, image_source, props, components, tags) VALUES (${vals.join(", ")});`);
   // Refresh facts on a re-run, but never trample tags a human has curated.
-  sql.push(`UPDATE peds SET display_name=${q(r.display)}, hash=${r.hash}, hash_hex=${q(r.hex)}, category=${q(r.category)}, ped_type=${q(r.pedType)}, gender=${q(r.gender)}, age=${q(r.age)}, dlc=${q(r.dlc)}, image=${q(r.image)}, props=${r.props ?? "NULL"}, components=${r.components ?? "NULL"}, tags=CASE WHEN tags_curated=1 THEN tags ELSE ${q(JSON.stringify(r.tags))} END WHERE model_name=${q(r.model)};`);
+  sql.push(`UPDATE peds SET display_name=${q(r.display)}, hash=${r.hash}, hash_hex=${q(r.hex)}, category=${q(r.category)}, ped_type=${q(r.pedType)}, gender=${q(r.gender)}, age=${q(r.age)}, dlc=${q(r.dlc)}, image=${q(r.image)}, image_source=${q(r.imageSource)}, props=${r.props ?? "NULL"}, components=${r.components ?? "NULL"}, tags=CASE WHEN tags_curated=1 THEN tags ELSE ${q(JSON.stringify(r.tags))} END WHERE model_name=${q(r.model)};`);
 }
 await writeFile(OUT_SQL, sql.join("\n") + "\n");
 
