@@ -119,9 +119,15 @@ export async function addFaction(data) {
   const actor = await requireActor(3, {allowEventTeam: true});
   try {
     const aliases = (data.aliases || '').trim();
+    // Team is optional at creation; a chosen team resolves to its Lead's Discord
+    // id, the same rule the Staff & Teams board applies when a faction is moved.
+    let leadId = (data.leadId || '').trim();
+    if (!leadId && data.teamId) {
+      leadId = queryOne("SELECT discord_id FROM staff WHERE team_id=? AND rank LIKE '%Lead%' LIMIT 1", [data.teamId])?.discord_id || '';
+    }
     const result = run(
       "INSERT INTO factions (name, lead_discord_id, tier, last_promoted, thread_id, forum_url, discord_url, aliases) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [data.name, data.leadId || '', parseInt(data.tier) || 0, today(),
+      [data.name, leadId, parseInt(data.tier) || 0, today(),
        data.threadId || '', data.forum || '', data.discord || '', aliases]
     );
     const factionId = result.lastInsertRowid;

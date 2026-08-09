@@ -3,13 +3,14 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { getFactions, addFaction } from "../../fm/factions/actions.js";
+import { getTeamList } from "../../fm/operations/staff/actions.js";
 import Modal from "../Modal.js";
 import { useRun } from "../hooks.js";
 
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 
 const BLANK_FACTION = {
-  name: "", leadId: "", tier: "1", threadId: "", forum: "", discord: "", aliases: "", hqAddress: "",
+  name: "", teamId: "", tier: "1", threadId: "", forum: "", discord: "", aliases: "", hqAddress: "",
   guildId: "", guildName: "", accessRoleId: "", accessRoleName: "",
   commsChannelId: "", commsChannelName: "", guideRoleId: "", managementRoleId: "",
 };
@@ -19,7 +20,9 @@ const BLANK_FACTION = {
    meridiandatabase.net login, comms, watch roles and ping backfill. */
 function AddFactionModal({ onClose, onCreated }) {
   const [form, setForm] = useState(BLANK_FACTION);
+  const [teams, setTeams] = useState([]);
   const { busy, err, setErr, run } = useRun();
+  useEffect(() => { getTeamList().then(setTeams).catch(() => {}); }, []);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 3 };
   const grp = { fontFamily: "var(--v2-mono)", fontSize: 9.5, fontWeight: 700, letterSpacing: ".12em", textTransform: "uppercase", margin: "4px 0 2px" };
@@ -32,15 +35,21 @@ function AddFactionModal({ onClose, onCreated }) {
     </div>
   );
   const submit = () => {
-    if (!form.name.trim() || !form.leadId.trim()) { setErr("Faction name and Team Lead Discord ID are required."); return; }
+    if (!form.name.trim()) { setErr("Faction name is required."); return; }
     run(() => addFaction(form), () => onCreated(form.name.trim()));
   };
   return (
-    <Modal title="Add faction" maxWidth={640} onClose={onClose} onSave={submit} saveLabel="Create faction" saveDisabled={busy || !form.name.trim() || !form.leadId.trim()} error={err}>
+    <Modal title="Add faction" maxWidth={640} onClose={onClose} onSave={submit} saveLabel="Create faction" saveDisabled={busy || !form.name.trim()} error={err}>
       <div style={{ ...grp, color: "var(--accent)" }}>Dashboard info</div>
       {field("name", "Faction name", true)}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 110px", gap: 8 }}>
-        {field("leadId", "Team Lead Discord ID", true, "Right-click user → Copy User ID")}
+        <div>
+          <div style={lbl}>Assigned team (optional — assign later on Staff &amp; Teams)</div>
+          <select className="filter-inp" style={{ width: "100%" }} value={form.teamId} onChange={set("teamId")}>
+            <option value="">Unassigned</option>
+            {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </div>
         {field("tier", "Starting tier", true)}
       </div>
       {field("threadId", "Feedback thread ID", false, "Thread in #fm-faction-scenes, named after the faction")}

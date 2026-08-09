@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { useDialog } from "../../../lib/useDialog";
 import { getFactions, addFaction, completePromotion } from "./actions";
+import { getTeamList } from "../operations/staff/actions";
 import { s, tierColor } from "./_shared/styles";
 import RowMenu from "./_shared/RowMenu";
 import TableSkeleton from "../../../lib/TableSkeleton";
@@ -20,8 +21,9 @@ export default function FactionsPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState({ key: "name", dir: "asc" });
   const [showAddFaction, setShowAddFaction] = useState(false);
+  const [teams, setTeams] = useState([]);
   const [addForm, setAddForm] = useState({
-    name: "", leadId: "", tier: "0", threadId: "", forum: "", discord: "", aliases: "",
+    name: "", teamId: "", tier: "0", threadId: "", forum: "", discord: "", aliases: "",
     hqAddress: "",
     guildId: "", guildName: "",
     accessRoleId: "", accessRoleName: "",
@@ -31,6 +33,11 @@ export default function FactionsPage() {
 
   const refresh = useCallback(async () => { setFactions(await getFactions()); }, []);
   useEffect(() => { if (!auth.loading) refresh().then(() => setLoading(false)); }, [auth.loading, refresh]);
+
+  // Team list only loads when the modal opens — getTeamList is L3-gated.
+  useEffect(() => {
+    if (showAddFaction && !teams.length) getTeamList().then(setTeams).catch(() => {});
+  }, [showAddFaction, teams.length]);
 
   // Preserve old deep links (?detail=Name from the dashboard) → new detail route.
   useEffect(() => {
@@ -46,7 +53,7 @@ export default function FactionsPage() {
     await addFaction(addForm);
     setShowAddFaction(false);
     setAddForm({
-      name: "", leadId: "", tier: "0", threadId: "", forum: "", discord: "", aliases: "",
+      name: "", teamId: "", tier: "0", threadId: "", forum: "", discord: "", aliases: "",
       hqAddress: "",
       guildId: "", guildName: "",
       accessRoleId: "", accessRoleName: "",
@@ -171,7 +178,7 @@ export default function FactionsPage() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {[
                     { k: "name", l: "Faction Name", required: true },
-                    { k: "leadId", l: "Team Lead Discord ID", required: true },
+                    { k: "teamId", l: "Assigned Team (optional — assign later on Staff & Teams)", select: true },
                     { k: "tier", l: "Starting Tier", required: true },
                     { k: "threadId", l: "Feedback Thread ID", required: false },
                     { k: "forum", l: "Forum URL", required: false },
@@ -181,7 +188,14 @@ export default function FactionsPage() {
                   ].map((f) => (
                     <div key={f.k}>
                       <div style={s.label}>{f.l}{f.required && <span style={{ color: "var(--red)", marginLeft: 4 }}>*</span>}</div>
-                      <input style={s.input} value={addForm[f.k]} onChange={(e) => setAddForm({ ...addForm, [f.k]: e.target.value })} />
+                      {f.select ? (
+                        <select style={s.input} value={addForm[f.k]} onChange={(e) => setAddForm({ ...addForm, [f.k]: e.target.value })}>
+                          <option value="">Unassigned</option>
+                          {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        </select>
+                      ) : (
+                        <input style={s.input} value={addForm[f.k]} onChange={(e) => setAddForm({ ...addForm, [f.k]: e.target.value })} />
+                      )}
                     </div>
                   ))}
                 </div>
