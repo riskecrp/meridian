@@ -112,7 +112,12 @@ export function CommandPalette({ auth, navTargets, open, setOpen }) {
     : (navTargets || [])
   ).slice(0, 12);
 
-  const go = (item) => { setOpen(false); router.push(item.href); };
+  const go = (item) => {
+    setOpen(false);
+    // External targets (e.g. Meridian Database) can't go through the app router.
+    if (/^https?:\/\//.test(item.href)) { window.open(item.href, "_blank", "noopener"); return; }
+    router.push(item.href);
+  };
   const onKey = (e) => {
     if (e.key === "Escape") { setOpen(false); return; }
     if (e.key === "ArrowDown") { e.preventDefault(); setSel(s => Math.min(s + 1, shown.length - 1)); }

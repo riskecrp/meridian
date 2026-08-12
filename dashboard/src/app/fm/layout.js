@@ -15,6 +15,7 @@ const SECTIONS = [
       { name: "Teams", href: "/fm/teams", blurb: "Team rosters and their assigned factions" },
       { name: "Scenes", href: "/fm/scenes", blurb: "Scene logs and rewards handed out", eventTeam: true },
       { name: "Documents", href: "/fm/documents", blurb: "Written guidance and reference docs", eventTeam: true },
+      { name: "Meridian Database ↗", href: "https://meridiandatabase.net", external: true, blurb: "MeridianDatabase.net — opens in a new tab", eventTeam: true },
     ],
   },
   {

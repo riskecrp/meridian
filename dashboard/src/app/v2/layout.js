@@ -16,6 +16,7 @@ const I = {
   comms: <path d="M2 6l9-3v10l-9-3zM2 6v4M11 6.5c1.5.3 1.5 2.7 0 3" />,
   leadership: <path d="M8 2l5 2v3.5c0 3-2.2 5.3-5 6.5-2.8-1.2-5-3.5-5-6.5V4z" />,
   admin: <><circle cx="8" cy="8" r="2" /><path d="M8 1v2M8 13v2M15 8h-2M3 8H1M13 3l-1.4 1.4M4.4 11.6L3 13" /></>,
+  db: <><ellipse cx="8" cy="3.5" rx="5" ry="2" /><path d="M3 3.5v9c0 1.1 2.2 2 5 2s5-.9 5-2v-9M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" /></>,
 };
 const Icon = ({ d }) => <svg className="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">{d}</svg>;
 
@@ -235,6 +236,8 @@ export default function V2Layout({ children }) {
       menu: visibleAdminGroups({ level, isET, isLST: auth?.isLeadStoryteller, id: auth?.id })
         .flatMap(g => [{ heading: g.label }, ...g.items.map(([id, label]) => ({ id, label }))]),
     },
+    // External sister site, not a dashboard page — opens in a new tab.
+    { key: "database", label: "Database", href: "https://meridiandatabase.net", icon: I.db, external: true },
   ].filter(it => (!it.min || level >= it.min) && (!it.menu || it.menu.some(m => m.id)));
 
   // Every reachable section, for the ⌘K palette (Inbox included — it's only in the bell).
@@ -259,6 +262,11 @@ export default function V2Layout({ children }) {
               const cls = `tn-i${active ? " on" : ""}`;
               const inner = <><Icon d={it.icon} /> {it.label}{it.count > 0 && <span className="ct hot">{it.count > 99 ? "99+" : it.count}</span>}</>;
               if (it.menu) return <NavDropdown key={it.key} item={it} active={active} cls={cls} inner={inner} />;
+              if (it.external) return (
+                <a key={it.key} href={it.href} target="_blank" rel="noopener noreferrer" className={cls}>
+                  {inner}<span style={{ fontSize: 9, opacity: 0.6, marginLeft: 2 }}>↗</span>
+                </a>
+              );
               return it.href
                 ? <Link key={it.key} href={it.href} className={cls}>{inner}</Link>
                 : <span key={it.key} className={`${cls} soon`} style={{ cursor: "default" }} title="Coming soon">{inner}</span>;
