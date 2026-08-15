@@ -18,6 +18,11 @@
  * Complete / Snooze / Cancel on the nudge. Snooze buys SNOOZE_DAYS of quiet
  * instead of the normal cadence, for when something is genuinely in progress.
  *
+ * Closing is not final: the closing message keeps a Reopen button (and pressing
+ * any stale button on a closed item offers one). Reopening steps the status back
+ * to wherever it was, unarchives the thread, restarts the nudges, and puts a
+ * card back in #fm-feedback linking the thread.
+ *
  * Why polling and not the push we already have: api/notify is pinged by the
  * form's Apps Script on submit, but that payload carries only the faction name.
  * The answers exist solely in the sheet, and the answers are the point.
@@ -36,7 +41,7 @@ import { logAudit } from './lib/audit.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import {
   nowStr, plusHours, plusDays,
-  discordFetch, discordPost, discordPatch, hideThreadCard,
+  discordFetch, discordPost, discordPatch, discordDelete, hideThreadCard,
   STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
 } from './lib/formIntake.js';
 
@@ -136,6 +141,20 @@ const nudgeRow = (id) => actionRow(
   button(`Snooze ${SNOOZE_DAYS} days`, BTN.SECONDARY, `fbk:snooze:${id}`),
   button('Cancel', BTN.SECONDARY, `fbk:cancel:${id}`),
 );
+
+const reopenRow = (id) => actionRow(
+  button('Reopen', BTN.SECONDARY, `fbk:reopen:${id}`),
+);
+
+// The "that item is closed" reply, everywhere a stale button can be pressed on a
+// completed or cancelled item. It carries a Reopen button of its own, so the
+// items closed before Reopen existed — whose closing messages have no buttons —
+// still have a way back.
+const alreadyEnded = (interaction, id, status) => interaction.reply({
+  content: `This feedback is already ${status}.`,
+  components: [reopenRow(id)],
+  ephemeral: true,
+});
 
 // ── Sheet polling ──────────────────────────────────────────────────────────────
 
@@ -445,7 +464,7 @@ async function retitleThread(interaction, threadId, tag, { archive = false } = {
 async function handleDone(interaction, id) {
   const row = queryOne('SELECT status, claimed_by_name, discord_username, faction, character_name, thread_id FROM faction_feedback WHERE id = ?', [id]);
   if (!row) return interaction.reply({ content: 'This feedback record no longer exists.', ephemeral: true });
-  if (ENDED_STATUSES.includes(row.status)) return interaction.reply({ content: `This feedback is already ${row.status}.`, ephemeral: true });
+  if (ENDED_STATUSES.includes(row.status)) return alreadyEnded(interaction, id, row.status);
   if (row.status === 'claimed') return interaction.reply({ content: `Already marked done by ${row.claimed_by_name}.`, ephemeral: true });
 
   const who = actorName(interaction);
@@ -467,9 +486,9 @@ async function handleDone(interaction, id) {
 }
 
 async function handleEnd(interaction, id, status) {
-  const row = queryOne('SELECT status, faction, character_name, thread_id FROM faction_feedback WHERE id = ?', [id]);
+  const row = queryOne('SELECT status, faction, character_name, thread_id, reopen_card_id FROM faction_feedback WHERE id = ?', [id]);
   if (!row) return interaction.reply({ content: 'This feedback record no longer exists.', ephemeral: true });
-  if (ENDED_STATUSES.includes(row.status)) return interaction.reply({ content: `Already ${row.status}.`, ephemeral: true });
+  if (ENDED_STATUSES.includes(row.status)) return alreadyEnded(interaction, id, row.status);
 
   const who = actorName(interaction);
   const verb = status === 'completed' ? 'Completed' : 'Cancelled';
@@ -484,15 +503,23 @@ async function handleEnd(interaction, id, status) {
       description: `${verb} by **${who}** <t:${unix}:f>. No further reminders will be sent.`,
       color: EMBED_COLOR,
     }],
-    components: [],
+    components: [reopenRow(id)],
   });
   await retitleThread(interaction, row.thread_id, STATUS_TAGS[status], { archive: true });
+
+  // If this item had been reopened before, its reopen card is still sitting in
+  // the channel — take it down the same way the original card is taken down.
+  if (row.reopen_card_id) {
+    const channelId = pingChannel('feedback.new');
+    if (channelId) await discordDelete(`/channels/${channelId}/messages/${row.reopen_card_id}`).catch(() => {});
+    run('UPDATE faction_feedback SET reopen_card_id = NULL WHERE id = ?', [id]);
+  }
 }
 
 async function handleSnooze(interaction, id) {
   const row = queryOne('SELECT status, faction, character_name FROM faction_feedback WHERE id = ?', [id]);
   if (!row) return interaction.reply({ content: 'This feedback record no longer exists.', ephemeral: true });
-  if (ENDED_STATUSES.includes(row.status)) return interaction.reply({ content: `Already ${row.status}.`, ephemeral: true });
+  if (ENDED_STATUSES.includes(row.status)) return alreadyEnded(interaction, id, row.status);
 
   const who = actorName(interaction);
   const nextDue = plusDays(SNOOZE_DAYS);
@@ -508,6 +535,94 @@ async function handleSnooze(interaction, id) {
     }],
     components: [],
   });
+}
+
+/**
+ * Bring a completed or cancelled item back. The status steps back to wherever it
+ * was — claimed if the submitter had already been acknowledged, new if not — and
+ * the nudge clock restarts, so a reopened item is chased like any other open one.
+ *
+ * Closing deleted the thread's card from the channel, and Discord offers no way
+ * to restore a deleted message — so reopening unarchives the thread and posts a
+ * fresh card in #fm-feedback linking it. The card's id is kept on the record so
+ * closing the item again takes it down with everything else.
+ *
+ * The press can come from the closing message in the thread OR from the
+ * ephemeral "already completed" reply, so the working buttons go on a fresh
+ * message in the thread rather than on whichever message was pressed — an
+ * ephemeral message is gone the moment the presser dismisses it.
+ */
+async function handleReopen(interaction, id) {
+  const row = queryOne(
+    'SELECT status, claimed_by_id, faction, character_name, discord_username, thread_id, reopen_card_id FROM faction_feedback WHERE id = ?', [id]);
+  if (!row) return interaction.reply({ content: 'This feedback record no longer exists.', ephemeral: true });
+  if (!ENDED_STATUSES.includes(row.status)) {
+    return interaction.reply({ content: `This feedback is already open — it is ${STATUS_LABELS[row.status] || row.status}.`, ephemeral: true });
+  }
+
+  // Unarchive FIRST: when the press happens inside the archived thread, nothing
+  // in it — including the pressed message — can be edited until the thread is
+  // live again. The retag rides in the same PATCH.
+  const status = row.claimed_by_id ? 'claimed' : 'new';
+  if (row.thread_id) {
+    try {
+      const thread = await discordFetch('GET', `/channels/${row.thread_id}`);
+      await discordPatch(`/channels/${row.thread_id}`, {
+        archived: false,
+        ...(thread?.name ? { name: retag(thread.name, STATUS_TAGS[status]) } : {}),
+      });
+    } catch (e) {
+      console.error(`[FEEDBACK] unarchive ${row.thread_id} failed:`, e.message);
+    }
+  }
+
+  const who = actorName(interaction);
+  run(`UPDATE faction_feedback SET status = ?, concluded_by_name = NULL, concluded_at = NULL,
+         due_at = ?, last_reminder_at = NULL WHERE id = ?`,
+    [status, plusHours(REMINDER_HOURS), id]);
+  audit(interaction, 'REOPEN', id, `${row.faction} — ${row.character_name}`, `Back to ${STATUS_LABELS[status]}`);
+
+  const unix = Math.floor(Date.now() / 1000);
+  await interaction.update({
+    content: null,
+    embeds: [{
+      description: `Reopened by **${who}** <t:${unix}:f>.`,
+      color: EMBED_COLOR,
+    }],
+    components: [],
+  });
+
+  if (!row.thread_id) return;
+
+  // The working prompt, matching where the item now stands.
+  await discordPost(`/channels/${row.thread_id}/messages`, {
+    embeds: [{
+      title: 'Reopened',
+      description: `**${who}** reopened this — it is back to **${STATUS_LABELS[status]}**.\n\n`
+        + (status === 'claimed'
+          ? 'When the review is concluded, press **Complete**, or **Cancel** to end it again.'
+          : `Reach out to **${row.discord_username}** on Discord to let them know the feedback was received, then mark this as **Done**.`),
+      color: EMBED_COLOR,
+      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed or cancelled.` },
+    }],
+    components: [status === 'claimed' ? reviewRow(id) : ackRow(id)],
+    allowed_mentions: NO_MENTIONS,
+  }).catch((e) => console.error(`[FEEDBACK] reopen prompt for #${id} failed:`, e.message));
+
+  // Put the thread back in the channel. The original card (the thread-created
+  // message) is gone for good, so this is a fresh one linking the thread.
+  const channelId = pingChannel('feedback.new');
+  if (!channelId) return;
+  if (row.reopen_card_id) await discordDelete(`/channels/${channelId}/messages/${row.reopen_card_id}`).catch(() => {});
+  try {
+    const card = await discordPost(`/channels/${channelId}/messages`, {
+      content: `🔄 **${row.faction} · ${row.character_name}** was reopened by **${who}** — <#${row.thread_id}>`,
+      allowed_mentions: NO_MENTIONS,
+    });
+    run('UPDATE faction_feedback SET reopen_card_id = ? WHERE id = ?', [String(card.id), id]);
+  } catch (e) {
+    console.error(`[FEEDBACK] reopen card for #${id} failed:`, e.message);
+  }
 }
 
 /**
@@ -535,6 +650,7 @@ export async function handleFeedbackButton(interaction) {
     else if (action === 'complete') await handleEnd(interaction, id, 'completed');
     else if (action === 'cancel') await handleEnd(interaction, id, 'cancelled');
     else if (action === 'snooze') await handleSnooze(interaction, id);
+    else if (action === 'reopen') await handleReopen(interaction, id);
   } catch (e) {
     console.error('[FEEDBACK] button error:', e.message);
     if (!interaction.replied && !interaction.deferred) {
