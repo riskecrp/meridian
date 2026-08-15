@@ -820,7 +820,7 @@ CREATE TABLE faction_feedback (
   concluded_by_name TEXT,
   concluded_at      TEXT,
   created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
-);
+, reopen_card_id TEXT);
 CREATE INDEX idx_faction_feedback_status ON faction_feedback(status);
 CREATE TABLE faction_feedback_state (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -903,3 +903,24 @@ CREATE TABLE form_submission_checklist (
   UNIQUE (submission_id, item_key)
 );
 CREATE INDEX idx_form_checklist_submission ON form_submission_checklist(submission_id);
+CREATE TABLE peds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_name TEXT NOT NULL UNIQUE,
+  display_name TEXT,
+  hash INTEGER NOT NULL,
+  hash_hex TEXT NOT NULL,
+  category TEXT,
+  ped_type TEXT,
+  gender TEXT,
+  age TEXT,
+  dlc TEXT,
+  image TEXT,
+  props INTEGER,
+  components INTEGER,
+  tags TEXT NOT NULL DEFAULT '[]',
+  tags_curated INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  updated_at TEXT,
+  updated_by TEXT
+, image_source TEXT);
+CREATE INDEX idx_peds_model ON peds(model_name);
