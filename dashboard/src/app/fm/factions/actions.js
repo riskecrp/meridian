@@ -33,7 +33,7 @@ async function getLeadPing(factionId) {
 
 export async function getFactions() {
   try {
-    await requireActor(1);
+    await requireActor(1, {allowEventTeam: true});
     const factions = query(`SELECT f.*,
       COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id = f.id), 0) as allTime,
       COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id = f.id AND sl.created_at >= datetime('now', '-30 days')), 0) as scenes30d
@@ -86,7 +86,7 @@ export async function getFactions() {
 
 export async function getFactionDetail(factionName) {
   try {
-    await requireActor(1);
+    await requireActor(1, {allowEventTeam: true});
     const f = queryOne("SELECT * FROM factions WHERE name = ?", [factionName]);
     if (!f) return null;
     const members    = query("SELECT id, character_name, phone, residence, is_leader FROM faction_members WHERE faction_id = ?", [f.id]);
@@ -421,7 +421,7 @@ export async function directDelete(type, id) {
 // ── IMPORTS ───────────────────────────────────────────────────────────────────
 
 export async function getFactionImports(factionId) {
-  await requireActor(1);
+  await requireActor(1, {allowEventTeam: true});
   const allItems = query("SELECT * FROM import_items ORDER BY tier, name");
   const authorized = query("SELECT item_id FROM faction_imports WHERE faction_id = ? AND permitted = 1", [factionId]);
   const authSet = new Set(authorized.map(a => a.item_id));
@@ -620,7 +620,7 @@ export async function aiSummarize(factionName) {
 // ── FACTION LIST HELPERS ──────────────────────────────────────────────────────
 
 export async function getFactionNames() {
-  await requireActor(1);
+  await requireActor(1, {allowEventTeam: true});
   return query("SELECT name FROM factions WHERE archived = 0 ORDER BY name").map(r => r.name);
 }
 

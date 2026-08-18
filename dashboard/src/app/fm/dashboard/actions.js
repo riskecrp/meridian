@@ -573,7 +573,7 @@ export async function getAllServerTasks() {
 export async function getMyCreatedTasks() {
   // Self-scoped (WHERE created_by_id = actor.id) — every member may track the
   // tasks they created, so the floor is L1, not L2.
-  const actor = await requireActor(1);
+  const actor = await requireActor(1, {allowEventTeam: true});
 
   const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
   const gameAffairsRoleId = getRole('game_affairs');
