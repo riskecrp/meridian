@@ -1,10 +1,10 @@
 "use client";
-// Admin › Catalogs: Inventory, Import Catalog.
+// Admin › Catalogs: Inventory, Import Catalog, Properties.
 // Split out of admin/page.js — content unchanged. (The Vehicle Catalog moved
 // to the Library on 2026-08-05; it lives in v2/story/VehicleCatalog.js.)
 import React, { useEffect, useState } from "react";
 import { getInventory, addInventoryItem, deleteInventoryItem, getDistributionStats } from "../../../fm/inventory/actions.js";
-import { getGlobalImports, addImportItem, editImportItem, deleteImportItem } from "../../../fm/operations/actions.js";
+import { getGlobalImports, addImportItem, editImportItem, deleteImportItem, getGlobalProperties, addGlobalProperty, assignProperty, confiscateProperty, deleteProperty, editPropertyDetail } from "../../../fm/operations/actions.js";
 
 /* ── Inventory ── */
 function Inventory({ auth }) {
@@ -163,4 +163,121 @@ function Imports({ canEdit }) {
   );
 }
 
-export { Inventory, Imports };
+/* ── Properties (global list — port of /fm/operations/properties) ── */
+const P_EMPTY = { address: "", faction: "", type: "Property", isHQ: false, owner: "", notes: "" };
+function Properties({ canEdit }) {
+  const [props, setProps] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [form, setForm] = useState(null);     // {id?, ...P_EMPTY} — modal for add + edit (faction only on add; Assign moves it)
+  const [assign, setAssign] = useState(null); // {id, address, faction}
+  const load = () => getGlobalProperties().then(p => { setProps(p || []); setLoading(false); });
+  useEffect(() => { load(); }, []);
+  if (loading) return <div className="empty">Loading…</div>;
+  const isUnassigned = f => !f || !f.trim() || f.toLowerCase() === "none";
+  const filtered = props.filter(p => {
+    const s = q.toLowerCase();
+    if (q && !p.address?.toLowerCase().includes(s) && !p.faction?.toLowerCase().includes(s) && !p.current_owner?.toLowerCase().includes(s)) return false;
+    if (filter === "active") return !p.confiscated && !isUnassigned(p.faction);
+    if (filter === "confiscated") return p.confiscated;
+    if (filter === "unassigned") return !p.confiscated && isUnassigned(p.faction);
+    return true;
+  });
+  const submit = async () => {
+    if (!form.address.trim()) return;
+    if (form.id) await editPropertyDetail(form.id, { address: form.address, type: form.type, isHQ: form.isHQ, owner: form.owner, notes: form.notes });
+    else await addGlobalProperty({ address: form.address, faction: form.faction || "", type: form.type || "Property", isHQ: !!form.isHQ, owner: form.owner || "", notes: form.notes || "" });
+    setForm(null); load();
+  };
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <div className="sub-tabs" style={{ padding: 0 }}>
+          {["all", "active", "confiscated", "unassigned"].map(f => (
+            <button key={f} className={`tab${filter === f ? " on" : ""}`} onClick={() => setFilter(f)}>{f}</button>
+          ))}
+        </div>
+        <input className="filter-inp" placeholder="Search address, faction, owner…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 300 }} />
+        <span style={{ flex: 1 }} />
+        {canEdit && <button className="btn" onClick={() => setForm({ ...P_EMPTY })}>Add property +</button>}
+      </div>
+      <div className="card">
+        <div style={{ overflowX: "auto" }}>
+          <table className="dtable" style={{ minWidth: 760 }}>
+            <thead><tr><th>Status</th><th>Faction</th><th>Address</th><th>Type</th><th>Owner</th>{canEdit && <th></th>}</tr></thead>
+            <tbody>
+              {filtered.map(p => {
+                const none = isUnassigned(p.faction);
+                const status = p.confiscated ? "CONF" : none ? "NONE" : "ACTIVE";
+                const col = p.confiscated ? "var(--rose)" : none ? "var(--ink-3)" : "var(--good)";
+                return (
+                  <tr key={p.id}>
+                    <td><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, fontWeight: 700, color: col }}>{status}</span></td>
+                    <td style={{ fontWeight: 600 }}>{none ? <span style={{ color: "var(--ink-3)" }}>—</span> : p.faction}</td>
+                    <td>
+                      <div style={{ fontFamily: "var(--v2-mono)", fontSize: 12, color: "var(--ink-1)" }}>{p.address}</div>
+                      {p.notes && <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2, lineHeight: 1.4 }}>{p.notes}</div>}
+                    </td>
+                    <td>{p.type || "Property"}{p.is_hq ? <> <span className="chip lock">HQ</span></> : null}</td>
+                    <td style={{ color: p.current_owner ? "var(--ink-1)" : "var(--ink-3)" }}>{p.current_owner || <span style={{ fontStyle: "italic", fontSize: 11 }}>—</span>}</td>
+                    {canEdit && (
+                      <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                        <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ id: p.id, address: p.address, type: p.type || "Property", isHQ: !!p.is_hq, owner: p.current_owner || "", notes: p.notes || "" })}>Edit</button>{" "}
+                        <button className="act" style={{ padding: "2px 7px" }} onClick={() => setAssign({ id: p.id, address: p.address, faction: p.faction || "" })}>Assign</button>{" "}
+                        {!p.confiscated && !none && <><button className="act" style={{ padding: "2px 7px", color: "var(--amber)" }} onClick={async () => { if (window.confirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { await confiscateProperty(p.id); load(); } }}>Conf.</button>{" "}</>}
+                        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this property?")) { await deleteProperty(p.id); load(); } }}>Del</button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {filtered.length === 0 && <div className="empty">No properties found.</div>}
+      </div>
+      {form && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setForm(null)} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 480, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 14 }}>{form.id ? `Edit "${form.address}"` : "Add property"}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input className="filter-inp" placeholder="Address *" value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} />
+              {!form.id && <input className="filter-inp" placeholder="Faction (blank = unassigned)" value={form.faction} onChange={e => setForm({ ...form, faction: e.target.value })} />}
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input className="filter-inp" placeholder="Type (e.g. HQ, Warehouse, Property)" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} />
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", whiteSpace: "nowrap", fontSize: 12, color: "var(--ink-1)" }}>
+                  <input type="checkbox" checked={form.isHQ} onChange={e => setForm({ ...form, isHQ: e.target.checked })} /> Mark as HQ
+                </label>
+              </div>
+              <input className="filter-inp" placeholder="Current owner (character name)" value={form.owner} onChange={e => setForm({ ...form, owner: e.target.value })} />
+              <textarea className="filter-inp" rows={2} style={{ resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 }} placeholder="Notes — any relevant details…" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button className="act" onClick={() => setForm(null)}>Cancel</button>
+              <button className="act primary" disabled={!form.address.trim()} onClick={submit}>{form.id ? "Save" : "Add"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {assign && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={() => setAssign(null)} />
+          <div style={{ position: "relative", width: "100%", maxWidth: 420, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 6 }}>Assign property</div>
+            <div style={{ fontSize: 12, color: "var(--ink-2)", marginBottom: 12, fontFamily: "var(--v2-mono)" }}>{assign.address}</div>
+            <input className="filter-inp" placeholder="Faction name (exact)" value={assign.faction} onChange={e => setAssign({ ...assign, faction: e.target.value })} />
+            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>Assigning also clears any confiscation and resets the given-date to today.</div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button className="act" onClick={() => setAssign(null)}>Cancel</button>
+              <button className="act primary" disabled={!assign.faction.trim()} onClick={async () => { await assignProperty(assign.id, assign.faction.trim()); setAssign(null); load(); }}>Assign</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export { Inventory, Imports, Properties };

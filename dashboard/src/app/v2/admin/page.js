@@ -5,7 +5,7 @@ import { useAuth } from "../../../lib/useAuth";
 import { visibleAdminGroups, ADMIN_TAB_ALIASES } from "../adminNav.js";
 import DiscordAccessView from "../../fm/operations/discord/DiscordAccessView.js";
 import { Audit, Archive, ServerLogs, Conversations } from "./views/records.js";
-import { Inventory, Imports } from "./views/catalogs.js";
+import { Inventory, Imports, Properties } from "./views/catalogs.js";
 import { Links, RecurringReminders } from "./views/config.js";
 import { StaffTeams, FMHours } from "./views/people.js";
 
@@ -52,6 +52,7 @@ function V2Admin() {
         : viewId === "archive" ? <Archive />
         : viewId === "inventory" ? <Inventory auth={auth} />
         : viewId === "imports" ? <Imports canEdit={canEditCatalogs} />
+        : viewId === "properties" ? <Properties canEdit={canEditCatalogs} />
         : viewId === "links" ? <Links />
         : viewId === "memberlog" ? <ServerLogs />
         : viewId === "convos" ? <Conversations />

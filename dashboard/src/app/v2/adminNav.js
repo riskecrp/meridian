@@ -8,7 +8,9 @@ export const ADMIN_GROUPS = [
   { id: "people", label: "People", items: [["staff", "Staff & Teams"], ["hours", "FM Hours", "l3"]] },
   // Vehicle Catalog moved to the Library (all-staff reference, 2026-08-05) —
   // same catalogue, same edit gates, just where people look things up.
-  { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", "l2"], ["imports", "Import Catalog", "l2"]] },
+  // Properties = the old /fm/operations/properties global list (same gates:
+  // L2/ET/LST read, L3/ET edit); per-faction instances stay in the hub.
+  { id: "catalogs", label: "Catalogs", items: [["inventory", "Inventory", "l2"], ["imports", "Import Catalog", "l2"], ["properties", "Properties", "l2"]] },
   // Documents moved to Library (all-staff reference, 2026-08-03) — with it gone,
   // nothing here is L1 and the Admin nav disappears for guides entirely.
   { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l3"], ["discord", "Discord & Access"]] },
