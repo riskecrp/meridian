@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { validateSession, getRoleFlags } from '../../../../lib/session.js';
 import { queryOne } from '../../../../lib/db.js';
-import { RISK_DISCORD_ID } from '../../../../lib/constants.js';
+import { isOwner } from '../../../../lib/constants.js';
 
 function _effectiveLevel(discordId, baseLevel) {
   const override = queryOne("SELECT level FROM dashboard_access WHERE discord_id = ?", [discordId]);
@@ -16,7 +16,7 @@ export async function GET() {
   if (!s) return NextResponse.json({ authenticated: false }, { status: 401 });
 
   const viewAsId = cookieStore.get('meridian_viewas')?.value;
-  if (viewAsId && s.discord_id === RISK_DISCORD_ID) {
+  if (viewAsId && isOwner(s.discord_id)) {
     const t = queryOne(
       "SELECT discord_id, display_name, discord_name, clearance, team_id, team_name, rank FROM staff WHERE discord_id = ?",
       [viewAsId]
@@ -30,7 +30,7 @@ export async function GET() {
         clearance: _effectiveLevel(t.discord_id, t.clearance || 0), displayName: t.display_name,
         teamId: t.team_id || '', teamName: t.team_name || '', rank: t.rank || '',
         isEventTeam, isLeadStoryteller,
-        _impersonating: true, _realId: RISK_DISCORD_ID,
+        _impersonating: true, _realId: s.discord_id,
       });
     }
   }

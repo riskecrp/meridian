@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers';
 import { validateSession, getRoleFlags } from './session.js';
 import { queryOne } from './db.js';
-import { RISK_DISCORD_ID } from './constants.js';
+import { isOwner } from './constants.js';
 
 // Returns the effective clearance for a discord_id, boosted by any
 // individual dashboard_access grant on top of the base role-derived level.
@@ -22,7 +22,7 @@ export async function requireActor(minLevel = 1, { allowEventTeam = false, allow
   }
 
   const viewAsId = cookieStore.get('meridian_viewas')?.value;
-  if (viewAsId && session.discord_id === RISK_DISCORD_ID) {
+  if (viewAsId && isOwner(session.discord_id)) {
     const target = queryOne(
       "SELECT discord_id, display_name, discord_name, clearance, team_id, team_name, rank FROM staff WHERE discord_id = ?",
       [viewAsId]
@@ -51,7 +51,7 @@ export async function requireActor(minLevel = 1, { allowEventTeam = false, allow
         teamName: target.team_name || '',
         rank: target.rank || '',
         _impersonating: true,
-        _realId: RISK_DISCORD_ID,
+        _realId: session.discord_id,
       };
     }
   }

@@ -5,6 +5,7 @@ import { Suspense, useState, useEffect } from "react";
 import { useAuth } from "../../lib/useAuth";
 import { DialogProvider } from "../../lib/useDialog";
 import { AuthContext } from "../../lib/AuthContext.js";
+import { isOwner } from "../../lib/constants.js";
 
 const SECTIONS = [
   {
@@ -200,7 +201,7 @@ function SidebarInner({ mobile, setMobile, theme, toggleTheme, auth }) {
 
       {/* Footer */}
       <div style={{ padding: "8px 10px 10px", borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 6 }}>
-        {(auth.id === '738214924760907907' || auth._realId === '738214924760907907') && !auth._impersonating && (
+        {(isOwner(auth.id) || isOwner(auth._realId)) && !auth._impersonating && (
           <ImpersonateControl />
         )}
         {(auth.level === 3 || auth._realLevel === 3) && !auth._impersonating && (

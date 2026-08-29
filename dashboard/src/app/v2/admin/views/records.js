@@ -3,11 +3,11 @@
 // Split out of admin/page.js — content unchanged.
 import { useEffect, useMemo, useState } from "react";
 import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../../fm/operations/actions.js";
-import { OWNER_ID } from "../../adminNav.js";
+import { isOwner as ownerId } from "../../../../lib/constants.js";
 
 /* ── Audit Log (pruning is owner-only — an editable audit trail isn't one) ── */
 function Audit({ auth }) {
-  const isOwner = auth?.id === OWNER_ID || auth?._realId === OWNER_ID;
+  const isOwner = ownerId(auth?.id) || ownerId(auth?._realId);
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);

@@ -2,8 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { validateSession } from '../../../../lib/session.js';
 import { createVerifySession } from '../../../../lib/verifySession.js';
-
-const RISK_ID = '738214924760907907';
+import { isOwner } from '../../../../lib/constants.js';
 
 export async function GET(request) {
   const host  = request.headers.get('host');
@@ -14,7 +13,7 @@ export async function GET(request) {
   const token   = cookieStore.get('meridian_session')?.value;
   const session = validateSession(token);
 
-  if (!session || session.discord_id !== RISK_ID) {
+  if (!session || !isOwner(session.discord_id)) {
     return NextResponse.redirect(new URL('/v2', origin));
   }
 

@@ -20,13 +20,13 @@ export const ADMIN_GROUPS = [
   { id: "handover", label: "Handover", items: [["handover", "Handover", "l3"]] },
 ];
 
-export const OWNER_ID = "738214924760907907";
+import { isOwner } from "../../lib/constants.js";
 
 export function adminItemVisible([, , access], { level = 0, isET, isLST, id }) {
   if (access === "l1") return true;
   if (access === "l2") return level >= 2 || isET || isLST;
   if (access === "l3") return level >= 3;
-  if (access === "risk") return id === OWNER_ID;
+  if (access === "risk") return isOwner(id);
   return level >= 3 || isET;
 }
 

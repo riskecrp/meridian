@@ -2,13 +2,12 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { validateSession } from '../../../../lib/session.js';
 import { query, queryOne } from '../../../../lib/db.js';
-
-const RISK_ID = '738214924760907907';
+import { isOwner } from '../../../../lib/constants.js';
 
 function isRisk(cookieStore) {
   const token = cookieStore.get('meridian_session')?.value;
   const s = validateSession(token);
-  return s?.discord_id === RISK_ID ? s : null;
+  return isOwner(s?.discord_id) ? s : null;
 }
 
 // GET — return staff list for dropdown

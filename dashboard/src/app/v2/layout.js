@@ -20,7 +20,7 @@ const I = {
 };
 const Icon = ({ d }) => <svg className="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">{d}</svg>;
 
-const RISK_ID = "738214924760907907";
+import { isOwner as ownerId } from "../../lib/constants.js";
 
 /* Nav item whose sections open as a dropdown menu (deep-linked with ?tab=).
    The label itself still navigates; the caret opens the menu. The menu is
@@ -71,7 +71,7 @@ function ViewAsMenu({ auth }) {
   const [open, setOpen] = useState(false);
   const [staff, setStaff] = useState(null);
   const [busy, setBusy] = useState(false);
-  const isOwner = auth.id === RISK_ID || auth._realId === RISK_ID;
+  const isOwner = ownerId(auth.id) || ownerId(auth._realId);
   const isL3Real = auth.level === 3 || auth._realLevel === 3;
   if (auth._realId || (!isL3Real && !isOwner)) return null; // cookie-impersonation exits via the banner
 
