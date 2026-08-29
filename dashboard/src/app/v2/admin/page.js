@@ -8,6 +8,7 @@ import { Audit, Archive, ServerLogs, Conversations } from "./views/records.js";
 import { Inventory, Imports, Properties } from "./views/catalogs.js";
 import { Links, RecurringReminders } from "./views/config.js";
 import { StaffTeams, FMHours } from "./views/people.js";
+import { Handover } from "./views/handover.js";
 
 export default function V2AdminPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Admin /></Suspense>;
@@ -60,6 +61,7 @@ function V2Admin() {
         : viewId === "discord" ? <DiscordAccessView />
         : viewId === "staff" ? <StaffTeams />
         : viewId === "hours" ? <FMHours />
+        : viewId === "handover" ? <Handover />
         : null}
     </div>
   );

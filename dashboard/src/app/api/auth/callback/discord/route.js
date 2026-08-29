@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { queryOne, run } from '../../../../../lib/db.js';
 import { createSession } from '../../../../../lib/session.js';
 import { logAudit } from '../../../../../lib/audit.js';
+import { RISK_DISCORD_ID } from '../../../../../lib/constants.js';
 
 export async function GET(request) {
   try {
@@ -52,6 +53,9 @@ export async function GET(request) {
       const override = queryOne("SELECT level FROM dashboard_access WHERE discord_id = ?", [user.id]);
       if (override) clearance = override.level;
     }
+    // The owner always gets in: a fresh self-hosted copy has no matching roles
+    // and no access grants yet, so RISK_DISCORD_ID in .env is the bootstrap.
+    if (clearance === 0 && user.id === RISK_DISCORD_ID) clearance = 3;
     if (clearance === 0 && !isEventTeam && !isLeadStoryteller) return NextResponse.redirect(new URL('/?error=unauthorized', origin));
 
     // Upsert staff

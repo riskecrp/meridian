@@ -15,6 +15,9 @@ export const ADMIN_GROUPS = [
   // nothing here is L1 and the Admin nav disappears for guides entirely.
   { id: "config", label: "Config", items: [["links", "Important Links"], ["reminders", "Recurring Reminders", "l3"], ["discord", "Discord & Access"]] },
   { id: "records", label: "Records", items: [["audit", "Audit Log"], ["archive", "Archive"], ["memberlog", "Server Logs", "l3"], ["convos", "Conversations"]] },
+  // Handover = the whole system, movable: self-host guide, data exports for
+  // Sheets, the server runbook. L3 like /api/backup — the exports hold everything.
+  { id: "handover", label: "Handover", items: [["handover", "Handover", "l3"]] },
 ];
 
 export const OWNER_ID = "738214924760907907";

@@ -29,6 +29,13 @@ to the server it currently runs on**.
 With a copy of 1 and 2, you can do everything on this page on your own
 computer. Nothing requires a login to the current server.
 
+**The easiest starting point is inside the dashboard: Admin → Handover.**
+It has one-click downloads (a CSV bundle ready for Google Sheets, the database
+file, and the code as a zip — no GitHub account needed), a plain-English
+walkthrough for running Meridian on your own computer, and the technical
+server-migration runbook. This README is the same information for whoever
+only has the repo.
+
 ## Getting the data into Google Sheets
 
 The database is standard **SQLite** — a very common, open format. The path to
@@ -73,8 +80,11 @@ need:
 - a database backup (unzipped, placed at `data/meridian.db`),
 - your own Discord bot application from https://discord.com/developers
   (bot token + OAuth credentials — the dashboard's login *is* Discord),
-- a `.env` filled in from `.env.example`,
-- a small server (2 GB memory is enough) and a domain.
+- a `.env` filled in from `.env.example` — put your own Discord user ID in
+  `RISK_DISCORD_ID` so your first login gets full access before any roles are
+  mapped,
+- a small server (2 GB memory is enough) and a domain — or just a laptop with
+  `BASE_URL=http://localhost:3000` to try it out.
 
 Then: `npm install` in the repo root, `bot/`, and `dashboard/`; build the site
 with `npm run build` inside `dashboard/`; run `node bot/index.js` and
