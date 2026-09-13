@@ -136,8 +136,13 @@ export async function setReviewStatus(reviewId, status) {
 }
 
 // ══════════════════════════════════════════════
-// PERSONAL LEADERSHIP NOTES (L3 only)
+// PERSONAL LEADERSHIP NOTES
 // ══════════════════════════════════════════════
+//
+// Written by FM Leadership (L3). READ by Team Leads too: the notes are the
+// leadership's feedback on a faction, and the lead who owns that faction is the
+// one who has to act on it — this month's in the summary, earlier months in
+// the History view. Writing and editing stay L3.
 
 export async function getFactionLeadershipSummary(factionId) {
   await requireActor(2);
@@ -161,7 +166,7 @@ export async function getMyPersonalNotes(factionId) {
 }
 
 export async function getAllLeadershipNotes(factionId) {
-  await requireActor(3);
+  await requireActor(2);
   return query(
     "SELECT * FROM leadership_personal_notes WHERE faction_id = ? ORDER BY created_at DESC",
     [factionId]

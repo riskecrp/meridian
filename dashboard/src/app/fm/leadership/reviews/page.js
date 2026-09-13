@@ -223,7 +223,7 @@ export default function ReviewsPage() {
                         </div>
                         <div className="flex justify-between items-center gap-2 flex-wrap">
                           <button onClick={async () => {
-                            const [h, ln] = await Promise.all([getReviewHistory(f.id), auth.level >= 3 ? getAllLeadershipNotes(f.id) : Promise.resolve([])]);
+                            const [h, ln] = await Promise.all([getReviewHistory(f.id), getAllLeadershipNotes(f.id)]);
                             setReviewHistory(h); setLeadershipNoteHistory(ln || []); setReviewHistoryView(f);
                           }} style={s.btnGhost}>History</button>
                           <div className="flex gap-2 items-center">
