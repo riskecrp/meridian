@@ -610,17 +610,19 @@ function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, lea
           </div>}
         </div>
 
-        {isL3 && (
-          <div className="card">
-            <StepHead n={++n} title="Leadership notes" done={notesDone} meta={`${(leadSummary.notes || []).length} recorded · ${(leadSummary.pending || []).length} pending`} />
+        {/* Leadership's notes on the faction are what the lead acts on for the
+            15th message, so every viewer of this tab reads them. Only L3 writes one. */}
+        <div className="card">
+          <StepHead n={++n} title="Leadership notes" done={notesDone} meta={`${(leadSummary.notes || []).length} recorded · ${(leadSummary.pending || []).length} pending`} />
+          {isL3 && <>
             <textarea className="filter-inp" rows={3} placeholder="Private note this month…" value={noteTextLs} onChange={e => setNoteTextLs(e.target.value)} style={{ margin: "6px 0" }} />
             <button className="act primary" disabled={busy || !noteTextLs.trim()} onClick={async () => { const ok = await run(() => submitPersonalNote(detail.id, detail.name, noteTextLs, recForm.recommendation || "Hold")); if (ok) setNoteTextLs(""); }}>Save note</button>
-            <div style={{ marginTop: 10 }}>
-              {(leadSummary.notes || []).length === 0 ? <div className="empty">No notes yet.</div> : (leadSummary.notes || []).map((note, i) => <div className="note" key={i}>{note.note}{note.status ? <span className="chip role" style={{ marginLeft: 6 }}>{note.status}</span> : null}<div className="by">— {note.author_name || note.author_id}</div></div>)}
-              {(leadSummary.pending || []).length > 0 && <div style={{ paddingTop: 8, fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>Awaiting: {(leadSummary.pending || []).map(p => p.display_name).join(", ")}</div>}
-            </div>
+          </>}
+          <div style={{ marginTop: 10 }}>
+            {(leadSummary.notes || []).length === 0 ? <div className="empty">No notes yet.</div> : (leadSummary.notes || []).map((note, i) => <div className="note" key={i}>{note.note}{note.status ? <span className="chip role" style={{ marginLeft: 6 }}>{note.status}</span> : null}<div className="by">— {note.author_name || note.author_id}</div></div>)}
+            {(leadSummary.pending || []).length > 0 && <div style={{ paddingTop: 8, fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>Awaiting: {(leadSummary.pending || []).map(p => p.display_name).join(", ")}</div>}
           </div>
-        )}
+        </div>
 
         <div className="card">
           <StepHead n={++n} title="Feedback to the faction" done={!!fbSent?.sent} meta={fbSent?.sent ? `sent by ${fbSent.by}` : "the 15th message"} />
