@@ -10,7 +10,7 @@ import { useRun } from "../hooks.js";
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 
 const BLANK_FACTION = {
-  name: "", teamId: "", tier: "1", threadId: "", forum: "", discord: "", aliases: "", hqAddress: "",
+  name: "", teamId: "", tier: "1", forum: "", discord: "", aliases: "", hqAddress: "",
   guildId: "", guildName: "", accessRoleId: "", accessRoleName: "",
   commsChannelId: "", commsChannelName: "", factionChannelId: "", factionChannelName: "",
   guideRoleId: "", managementRoleId: "",
@@ -53,7 +53,6 @@ function AddFactionModal({ onClose, onCreated }) {
         </div>
         {field("tier", "Starting tier", true)}
       </div>
-      {field("threadId", "Feedback thread ID", false, "Thread in #fm-faction-scenes, named after the faction")}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         {field("forum", "Forum URL")}
         {field("discord", "Discord URL")}

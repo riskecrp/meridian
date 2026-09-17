@@ -23,7 +23,7 @@ export default function FactionsPage() {
   const [showAddFaction, setShowAddFaction] = useState(false);
   const [teams, setTeams] = useState([]);
   const [addForm, setAddForm] = useState({
-    name: "", teamId: "", tier: "0", threadId: "", forum: "", discord: "", aliases: "",
+    name: "", teamId: "", tier: "0", forum: "", discord: "", aliases: "",
     hqAddress: "",
     guildId: "", guildName: "",
     accessRoleId: "", accessRoleName: "",
@@ -54,7 +54,7 @@ export default function FactionsPage() {
     await addFaction(addForm);
     setShowAddFaction(false);
     setAddForm({
-      name: "", teamId: "", tier: "0", threadId: "", forum: "", discord: "", aliases: "",
+      name: "", teamId: "", tier: "0", forum: "", discord: "", aliases: "",
       hqAddress: "",
       guildId: "", guildName: "",
       accessRoleId: "", accessRoleName: "",
@@ -182,7 +182,6 @@ export default function FactionsPage() {
                     { k: "name", l: "Faction Name", required: true },
                     { k: "teamId", l: "Assigned Team (optional — assign later on Staff & Teams)", select: true },
                     { k: "tier", l: "Starting Tier", required: true },
-                    { k: "threadId", l: "Feedback Thread ID", required: false },
                     { k: "forum", l: "Forum URL", required: false },
                     { k: "discord", l: "Discord URL", required: false },
                     { k: "aliases", l: "Forum Aliases (comma-separated alt names for post matching)", required: false },
