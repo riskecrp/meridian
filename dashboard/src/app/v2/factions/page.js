@@ -12,7 +12,8 @@ const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const BLANK_FACTION = {
   name: "", teamId: "", tier: "1", threadId: "", forum: "", discord: "", aliases: "", hqAddress: "",
   guildId: "", guildName: "", accessRoleId: "", accessRoleName: "",
-  commsChannelId: "", commsChannelName: "", guideRoleId: "", managementRoleId: "",
+  commsChannelId: "", commsChannelName: "", factionChannelId: "", factionChannelName: "",
+  guideRoleId: "", managementRoleId: "",
 };
 
 /* Faction onboarding (L3) — full port of the /fm Add Faction form: dashboard
@@ -69,8 +70,10 @@ function AddFactionModal({ onClose, onCreated }) {
           {field("guildName", "Discord server name")}
           {field("accessRoleId", "Access role ID")}
           {field("accessRoleName", "Access role name")}
-          {field("commsChannelId", "Comms channel ID")}
-          {field("commsChannelName", "Comms channel name")}
+          {field("commsChannelId", "Command channel ID", false, "Leadership announcements · Right-click channel → Copy ID")}
+          {field("commsChannelName", "Command channel name", false, "e.g. #command")}
+          {field("factionChannelId", "Faction-wide channel ID", false, "Whole-faction announcements · Right-click channel → Copy ID")}
+          {field("factionChannelName", "Faction-wide channel name", false, "e.g. #announcements")}
           {field("guideRoleId", "ECRP Guide role ID")}
           {field("managementRoleId", "ECRP Management role ID")}
         </div>

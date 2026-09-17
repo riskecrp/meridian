@@ -141,10 +141,11 @@ export async function addFaction(data) {
       const existing = queryOne("SELECT id FROM bot_server_configs WHERE guild_id=?", [data.guildId.trim()]);
       if (!existing) {
         const configResult = run(
-          "INSERT INTO bot_server_configs (guild_id, guild_name, faction_id, access_role_id, access_role_name, comms_channel_id, comms_channel_name) VALUES (?,?,?,?,?,?,?)",
+          "INSERT INTO bot_server_configs (guild_id, guild_name, faction_id, access_role_id, access_role_name, comms_channel_id, comms_channel_name, faction_channel_id, faction_channel_name) VALUES (?,?,?,?,?,?,?,?,?)",
           [data.guildId.trim(), data.guildName?.trim() || '', factionId,
            data.accessRoleId?.trim() || '', data.accessRoleName?.trim() || '',
-           data.commsChannelId?.trim() || '', data.commsChannelName?.trim() || '']
+           data.commsChannelId?.trim() || '', data.commsChannelName?.trim() || '',
+           data.factionChannelId?.trim() || '', data.factionChannelName?.trim() || '']
         );
         const configId = configResult.lastInsertRowid;
         const watchRoles = [];

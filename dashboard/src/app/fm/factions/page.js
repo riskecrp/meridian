@@ -28,6 +28,7 @@ export default function FactionsPage() {
     guildId: "", guildName: "",
     accessRoleId: "", accessRoleName: "",
     commsChannelId: "", commsChannelName: "",
+    factionChannelId: "", factionChannelName: "",
     guideRoleId: "", managementRoleId: "",
   });
 
@@ -58,6 +59,7 @@ export default function FactionsPage() {
       guildId: "", guildName: "",
       accessRoleId: "", accessRoleName: "",
       commsChannelId: "", commsChannelName: "",
+      factionChannelId: "", factionChannelName: "",
       guideRoleId: "", managementRoleId: "",
     });
     refresh();
@@ -210,8 +212,10 @@ export default function FactionsPage() {
                     { k: "guildName", l: "Discord Server Name" },
                     { k: "accessRoleId", l: "Access Role ID" },
                     { k: "accessRoleName", l: "Access Role Name" },
-                    { k: "commsChannelId", l: "Comms Channel ID" },
-                    { k: "commsChannelName", l: "Comms Channel Name" },
+                    { k: "commsChannelId", l: "Command Channel ID" },
+                    { k: "commsChannelName", l: "Command Channel Name" },
+                    { k: "factionChannelId", l: "Faction-Wide Channel ID" },
+                    { k: "factionChannelName", l: "Faction-Wide Channel Name" },
                   ].map((f) => (
                     <div key={f.k}>
                       <div style={s.label}>{f.l}</div>
