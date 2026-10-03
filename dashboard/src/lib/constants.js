@@ -10,7 +10,7 @@ export const RISK_DISCORD_ID  = process.env.RISK_DISCORD_ID || '7382149247609079
 // Owner-only powers (view-as another staffer, prune the audit log). RISK plus the
 // head of FM (lightningbolt9, added 2026-08-29). Plain strings so client
 // components can import this too.
-export const OWNER_IDS = [RISK_DISCORD_ID, '232331558676070401'];
+export const OWNER_IDS = [RISK_DISCORD_ID, '232331558676070401', '225429360411279360'];
 export const isOwner = (id) => !!id && OWNER_IDS.includes(String(id));
 
 // The FM management guild — where IC-contact / intake threads live.
