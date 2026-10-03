@@ -9,4 +9,5 @@ export const PING_GROUPS = [
   { key: 'comms',        label: 'Communications',      blurb: 'Copies of announcements filed in FM channels.' },
   { key: 'storytelling', label: 'Storytelling',        blurb: 'Change log, scene ideas and scene logs.' },
   { key: 'records',      label: 'Records & Reports',   blurb: 'Documents, hours reports and the forum feed.' },
+  { key: 'logs',         label: 'Server Log',          blurb: 'Join/leave, edit/delete and trigger-word alerts posted to Discord.' },
 ];

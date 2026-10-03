@@ -14,7 +14,7 @@ import { startFormSubmissions, handleFormButton, handleFormModal } from './formS
 import { handleTaskButton, handleTaskModal } from './taskButtons.js';
 import { handleRPButton, handleRPModal } from './rpButtons.js';
 import { handleDM } from './dmHandler.js';
-import { sendPing, pingChannel, getRole } from './lib/pings.js';
+import { sendPing, sendPingVia, pingChannel, pingRoleIds, getRole } from './lib/pings.js';
 import { logAudit, actorOf } from './lib/audit.js';
 
 dotenv.config({ path: '/opt/meridian/.env' });
@@ -302,6 +302,26 @@ client.on(Events.MessageCreate, async msg => {
 
 const RISK_DISCORD_ID = process.env.RISK_DISCORD_ID || '738214924760907907';
 
+// ── Server log channel ────────────────────────────────────────────────────────
+// Everything the server log records in the DB (joins, leaves, edits, deletes,
+// trigger words) is also posted as an embed to the channel on the 'logs.events'
+// / 'logs.keyword' ping routes. All user-written text lives inside the embed,
+// so nothing in it can ping; the only mention Discord may honour is the roles
+// configured on the route. Posting is best-effort — a missing channel or a
+// disabled route never blocks the DB write.
+const clip = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const LOG_COLOURS = { join: 0x57f287, leave: 0xed4245, edit: 0xfee75c, delete: 0xed4245, keyword: 0xeb459e };
+
+async function postServerLog(routeKey, embed) {
+  try {
+    const roles = pingRoleIds(routeKey);
+    await sendPingVia(client, routeKey, {
+      embeds: [{ timestamp: new Date().toISOString(), ...embed }],
+      allowedMentions: { parse: [], roles },
+    });
+  } catch (e) { console.error(`[SERVER_LOG] ${routeKey}:`, e.message); }
+}
+
 // Keyword scanning — checks message content against server_log_keywords table.
 // Fires a DM to risk and logs the alert. event_type: 'message' | 'edit'
 async function checkKeywords(content, message, eventType, run, query) {
@@ -333,6 +353,17 @@ async function checkKeywords(content, message, eventType, run, query) {
         `**Content:** ${content.substring(0, 500)}`
       );
     } catch (e) { console.error('[KW_ALERT] DM failed:', e.message); }
+    await postServerLog('logs.keyword', {
+      color: LOG_COLOURS.keyword,
+      title: `🚨 Trigger word — "${clip(kw.phrase, 100)}"`,
+      fields: [
+        { name: 'Type',    value: eventType === 'edit' ? 'Edited message' : 'New message', inline: true },
+        { name: 'Author',  value: `<@${authorId}> (${clip(authorName, 60)})`, inline: true },
+        { name: 'Channel', value: `<#${message.channel.id}> · ${clip(guildName, 60)}`, inline: true },
+        { name: 'Content', value: clip(content, 1000) || '[no text]' },
+        { name: 'Link',    value: message.url || `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id}` },
+      ],
+    });
   }
 }
 
@@ -362,6 +393,17 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
       await checkKeywords(after, newMessage, 'edit', run, query);
     }
     console.log(`[EDIT] ${authorName} edited msg ${newMessage.id} in #${newMessage.channel.name} (${newMessage.guild.name})`);
+    await postServerLog('logs.events', {
+      color: LOG_COLOURS.edit,
+      title: '✏️ Message edited',
+      fields: [
+        { name: 'Author',  value: authorId ? `<@${authorId}> (${clip(authorDisplay, 60)})` : '[unknown]', inline: true },
+        { name: 'Channel', value: `<#${newMessage.channel.id}> · ${clip(newMessage.guild.name, 60)}`, inline: true },
+        { name: 'Before',  value: clip(before, 1000) },
+        { name: 'After',   value: clip(after, 1000) },
+        { name: 'Link',    value: newMessage.url },
+      ],
+    });
   } catch (e) { console.error('[EDIT_LOG]', e.message); }
 });
 
@@ -414,6 +456,17 @@ client.on(Events.MessageDelete, async message => {
     );
     const who = deleterId ? `deleted by ${deleterName}` : 'self-deleted or unknown';
     console.log(`[DELETE] msg ${message.id} in #${message.channel.name} (${message.guild.name}) — ${isPartial ? 'not cached' : 'content logged'}, ${who}`);
+    await postServerLog('logs.events', {
+      color: LOG_COLOURS.delete,
+      title: '🗑️ Message deleted',
+      fields: [
+        { name: 'Author',     value: authorId ? `<@${authorId}> (${clip(authorDisplay, 60)})` : '[not cached]', inline: true },
+        { name: 'Channel',    value: `<#${message.channel.id}> · ${clip(message.guild.name, 60)}`, inline: true },
+        { name: 'Deleted by', value: deleterId ? `<@${deleterId}> (${clip(deleterName, 60)})` : 'Self-deleted or unknown', inline: true },
+        { name: 'Content',    value: isPartial ? '[not cached — message predates the bot\'s last restart]' : clip(content, 1000) },
+      ],
+      footer: { text: `Message ID ${message.id}` },
+    });
   } catch (e) { console.error('[DELETE_LOG]', e.message); }
 });
 
@@ -499,6 +552,16 @@ client.on(Events.GuildMemberAdd, async member => {
        member.user.username, member.user.globalName || member.user.username]
     );
     console.log(`[JOIN] ${member.user.username} joined ${member.guild.name}`);
+    await postServerLog('logs.events', {
+      color: LOG_COLOURS.join,
+      title: '📥 Member joined',
+      fields: [
+        { name: 'User',    value: `<@${member.user.id}> (${clip(member.user.username, 60)})`, inline: true },
+        { name: 'Server',  value: clip(member.guild.name, 60), inline: true },
+        { name: 'Account created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
+      ],
+      footer: { text: `User ID ${member.user.id}` },
+    });
   } catch (e) { console.error('[JOIN_LOG]', e.message); }
 });
 
@@ -512,6 +575,16 @@ client.on(Events.GuildMemberRemove, async member => {
        member.user.username, member.user.globalName || member.user.username]
     );
     console.log(`[LEAVE] ${member.user.username} left ${member.guild.name}`);
+    await postServerLog('logs.events', {
+      color: LOG_COLOURS.leave,
+      title: '📤 Member left',
+      fields: [
+        { name: 'User',   value: `<@${member.user.id}> (${clip(member.user.username, 60)})`, inline: true },
+        { name: 'Server', value: clip(member.guild.name, 60), inline: true },
+        { name: 'Joined', value: member.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>` : '[unknown]', inline: true },
+      ],
+      footer: { text: `User ID ${member.user.id}` },
+    });
   } catch (e) { console.error('[LEAVE_LOG]', e.message); }
 });
 
