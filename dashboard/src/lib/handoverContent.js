@@ -175,7 +175,6 @@ export const RUNBOOK = [
         ["`OPENAI_API_KEY`", "AI faction summaries (`/summarize`, summaries). Optional; features degrade without it"],
         ["`IMGBB_API_KEY`", "Image uploads (imgbb). Optional"],
         ["`NOTIFY_SECRET`", "Shared secret for the form-submission notify endpoint"],
-        ["`AGENDA_SECRET`", "Shared secret for the read-only my-agenda endpoint"],
       ] } },
       { note: { tone: "danger", text: "Never commit `.env` or paste its **values** anywhere shared (including this page — that's why only names are listed). Lock it down: `chmod 600 /opt/meridian/.env`." } },
       { p: "Install dependencies for both apps (this compiles `better-sqlite3` for the new host):" },
@@ -366,7 +365,7 @@ export const SELF_HOST_GUIDE = [
         ["`SESSION_SECRET`", "Any long random text — mash the keyboard for 40+ characters"],
         ["`RISK_DISCORD_ID`", "Remove the `#` at the start of this line and put **your own Discord user ID**. This makes you the owner: full access on your very first login, before any roles are set up"],
       ] } },
-      { note: { tone: "info", text: "`OPENAI_API_KEY`, `IMGBB_API_KEY`, `NOTIFY_SECRET` and `AGENDA_SECRET` are optional extras (AI summaries, image uploads, form-intake and agenda links). Leave them blank; those features simply stay off." } },
+      { note: { tone: "info", text: "`OPENAI_API_KEY`, `IMGBB_API_KEY` and `NOTIFY_SECRET` are optional extras (AI summaries, image uploads and form-intake). Leave them blank; those features simply stay off." } },
     ],
   },
   {
