@@ -324,13 +324,29 @@ async function postServerLog(routeKey, embed) {
 
 // Keyword scanning — checks message content against server_log_keywords table.
 // Fires a DM to risk and logs the alert. event_type: 'message' | 'edit'
+// Stored invite for the server a message came from: the guild's Bot Servers
+// entry names its faction, and the faction carries its Discord invite. Empty
+// when the guild isn't configured or the faction has no invite on file.
+function storedInviteFor(guildId, query) {
+  const row = query(
+    `SELECT f.discord_url FROM bot_server_configs bc
+       JOIN factions f ON f.id = bc.faction_id
+      WHERE bc.guild_id = ? AND f.discord_url <> ''
+      ORDER BY f.archived, bc.id LIMIT 1`,
+    [guildId]
+  )[0];
+  return row?.discord_url || '';
+}
+
 async function checkKeywords(content, message, eventType, run, query) {
   if (!content || !message.guild) return;
   const keywords = query("SELECT id, phrase FROM server_log_keywords");
   if (!keywords.length) return;
   const lower = content.toLowerCase();
+  let invite;
   for (const kw of keywords) {
     if (!lower.includes(kw.phrase.toLowerCase())) continue;
+    if (invite === undefined) invite = storedInviteFor(message.guild.id, query);
     const guildName   = message.guild?.name || '';
     const channelName = message.channel?.name || message.channel?.id || '';
     const authorId    = message.author?.id || '';
@@ -350,7 +366,8 @@ async function checkKeywords(content, message, eventType, run, query) {
         `**Type:** ${label}\n` +
         `**Server:** ${guildName} · #${channelName}\n` +
         `**Author:** ${authorName} (${authorId})\n` +
-        `**Content:** ${content.substring(0, 500)}`
+        `**Content:** ${content.substring(0, 500)}\n` +
+        `**Invite:** ${invite ? `<${invite}>` : 'none stored for this server'}`
       );
     } catch (e) { console.error('[KW_ALERT] DM failed:', e.message); }
     await postServerLog('logs.keyword', {
@@ -362,6 +379,7 @@ async function checkKeywords(content, message, eventType, run, query) {
         { name: 'Channel', value: `<#${message.channel.id}> · ${clip(guildName, 60)}`, inline: true },
         { name: 'Content', value: clip(content, 1000) || '[no text]' },
         { name: 'Link',    value: message.url || `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id}` },
+        { name: 'Server invite', value: invite || 'None stored for this server' },
       ],
     });
   }
