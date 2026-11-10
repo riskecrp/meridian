@@ -6,15 +6,18 @@
  * if the THREAD's CURRENT NAME says the item is finished, and that is true even
  * for threads whose database row was since removed. Dry run unless --apply.
  */
-import { discordFetch, hideThreadCard } from '/opt/meridian/bot/lib/formIntake.js';
+import { discordFetch, hideThreadCard } from '../bot/lib/formIntake.js';
+import { pingChannel } from '../shared/pings.js';
 
 const APPLY = process.argv.includes('--apply');
 
 // Scoped to form-submissions by owner's call 2026-08-02 — the fm-feedback cards
 // stay. Add channels back here to sweep them.
+// The channel comes from the ping registry (every form.* route posts to the
+// form-submissions channel), so a retargeted route moves this sweep with it.
 const CHANNELS = [
-  ['form-submissions', '1457571102019555463'],
-];
+  ['form-submissions', process.env.FORM_SUBMISSIONS_CHANNEL_ID || pingChannel('form.rcf_application', { ignoreEnabled: true })],
+].filter(([, id]) => id);
 
 const CONCLUDED = ['[Completed]', '[Rejected]', '[Cancelled]'];
 
