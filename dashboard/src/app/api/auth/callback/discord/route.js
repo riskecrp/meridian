@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { queryOne, run } from '../../../../../lib/db.js';
-import { createSession } from '../../../../../lib/session.js';
+import { createSession, pruneSessions } from '../../../../../lib/session.js';
 import { logAudit } from '../../../../../lib/audit.js';
-import { RISK_DISCORD_ID } from '../../../../../lib/constants.js';
+import { RISK_DISCORD_ID, isOwner as isOwnerId } from '../../../../../lib/constants.js';
+
+const fail = (origin, code) => NextResponse.redirect(new URL(`/login?error=${code}`, origin));
 
 export async function GET(request) {
   try {
@@ -12,7 +14,11 @@ export async function GET(request) {
     const proto = host?.includes('localhost') ? 'http' : 'https';
     const origin = `${proto}://${host}`;
     const redirectUri = `${origin}/api/auth/callback/discord`;
-    if (!code) return NextResponse.redirect(new URL('/?error=no_code', origin));
+    if (!code) return fail(origin, 'no_code');
+    const state = request.nextUrl.searchParams.get('state');
+    const cookieStore = await cookies();
+    const expected = cookieStore.get('meridian_oauth_state')?.value;
+    if (!state || !expected || state !== expected) return fail(origin, 'bad_state');
 
     // Exchange code for token
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
@@ -20,16 +26,16 @@ export async function GET(request) {
       body: new URLSearchParams({ client_id: process.env.DISCORD_CLIENT_ID, client_secret: process.env.DISCORD_CLIENT_SECRET, grant_type: 'authorization_code', code, redirect_uri: redirectUri })
     });
     const tokenData = await tokenRes.json();
-    if (!tokenData.access_token) return NextResponse.redirect(new URL('/?error=oauth_failed', origin));
+    if (!tokenData.access_token) return fail(origin, 'oauth_failed');
 
     // Get user
     const userRes = await fetch('https://discord.com/api/users/@me', { headers: { authorization: `Bearer ${tokenData.access_token}` } });
     const user = await userRes.json();
 
     // Check guild membership + roles
-    const guildId = process.env.GUILD_ID || '1457188814916423855';
+    const guildId = process.env.GUILD_ID || process.env.NEXT_PUBLIC_GUILD_ID || '1457188814916423855';
     const memberRes = await fetch(`https://discord.com/api/v10/guilds/${guildId}/members/${user.id}`, { headers: { authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}` } });
-    if (!memberRes.ok) return NextResponse.redirect(new URL('/?error=not_in_server', origin));
+    if (!memberRes.ok) return fail(origin, 'not_in_server');
     const member = await memberRes.json();
     const roles = member.roles || [];
 
@@ -56,11 +62,12 @@ export async function GET(request) {
     // The owner always gets in: a fresh self-hosted copy has no matching roles
     // and no access grants yet, so RISK_DISCORD_ID in .env is the bootstrap.
     if (clearance === 0 && user.id === RISK_DISCORD_ID) clearance = 3;
-    if (clearance === 0 && !isEventTeam && !isLeadStoryteller) return NextResponse.redirect(new URL('/?error=unauthorized', origin));
+    if (clearance === 0 && !isEventTeam && !isLeadStoryteller) return fail(origin, 'unauthorized');
 
     // Upsert staff
     const displayName = member.nick || user.global_name || user.username;
-    let staff = queryOne("SELECT id FROM staff WHERE discord_id = ?", [user.id]);
+    let staff = queryOne("SELECT id, active FROM staff WHERE discord_id = ?", [user.id]);
+    if (staff && staff.active === 0 && !isOwnerId(user.id)) return fail(origin, 'retired');
     if (!staff) {
       run("INSERT INTO staff (discord_id, discord_name, display_name, clearance) VALUES (?, ?, ?, ?)", [user.id, displayName, displayName, clearance]);
       staff = queryOne("SELECT id FROM staff WHERE discord_id = ?", [user.id]);
@@ -71,12 +78,11 @@ export async function GET(request) {
     // Invalidate existing sessions for this user so clearance changes take immediate effect
     run("DELETE FROM sessions WHERE discord_id = ?", [user.id]);
 
-    // Prune all globally expired sessions while we're here
-    run("DELETE FROM sessions WHERE expires_at < datetime('now')");
+    pruneSessions();
 
     // Create session
     const session = createSession(staff.id, user.id, displayName, clearance, isEventTeam ? 1 : 0, isLeadStoryteller ? 1 : 0);
-    const cookieStore = await cookies();
+    cookieStore.delete('meridian_oauth_state');
     cookieStore.set('meridian_session', session.token, { path: '/', maxAge: 3 * 86400, httpOnly: true, secure: proto === 'https', sameSite: 'lax' });
 
     // Audit log
@@ -85,6 +91,6 @@ export async function GET(request) {
     return NextResponse.redirect(new URL('/v2', origin));
   } catch (err) {
     console.error("Auth Error:", err);
-    return NextResponse.redirect(new URL('/?error=server_error', request.url));
+    return NextResponse.redirect(new URL('/login?error=server_error', request.url));
   }
 }
