@@ -29,7 +29,8 @@ const ET = { allowEventTeam: true };
 // The one spelling of "no turf". npcs.turf is never '' or 'Unaffiliated' any
 // more (migration 021 normalised old rows); claimable is derived from it.
 const NO_TURF = 'Neutral';
-const isNoTurf = (t) => str(t).toLowerCase() === NO_TURF.toLowerCase();
+const NO_TURF_SPELLINGS = ['', 'neutral', 'unaffiliated', 'none'];
+const isNoTurf = (t) => NO_TURF_SPELLINGS.includes(str(t).toLowerCase());
 const claimableFor = (turf) => (isNoTurf(turf) ? 0 : 1);
 
 // Ammo types a compatibility row may carry; classification is by whole token

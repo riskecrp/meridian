@@ -335,7 +335,7 @@ function Scenes({ auth, rows, reload, initialQ = "" }) {
   };
   const toggleAssistant = (s) => setLogForm(f => { const has = f.assistants.some(a => a.staff_id === s.discord_id); return { ...f, assistants: has ? f.assistants.filter(a => a.staff_id !== s.discord_id) : [...f.assistants, { staff_id: s.discord_id, staff_name: s.display_name }] }; });
   const submitLog = () => { if (!logForm.faction) { setErr("Pick a faction."); return; } if (!logForm.notes.trim()) { setErr("Scene notes are required."); return; } run(() => submitScene(logForm), () => { setLogFor(null); setLogForm(EMPTY_LOG); say("Scene logged to Scene Logs."); }); };
-  const chip = (on, label, onClick, tone) => <button key={label} className={`pill${on ? ` on${tone ? ` ${tone}` : ""}` : ""}`} onClick={onClick}>{label}</button>;
+  const chip = (k, on, label, onClick, tone) => <button key={k} className={`pill${on ? ` on${tone ? ` ${tone}` : ""}` : ""}`} onClick={onClick}>{label}</button>;
 
   return (
     <>
@@ -347,13 +347,13 @@ function Scenes({ auth, rows, reload, initialQ = "" }) {
         {canSuggest && <button className="btn" onClick={openAdd}>+ Add Scene</button>}
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
-        {[["all", "All"], ["idea", "Idea"], ["approved", "Approved"]].map(([v, l]) => chip(statusF === v, l, () => setStatusF(v)))}
+        {[["all", "All"], ["idea", "Idea"], ["approved", "Approved"]].map(([v, l]) => chip(`st-${v}`, statusF === v, l, () => setStatusF(v)))}
         <span style={{ fontSize: 10, color: "var(--ink-3)", marginLeft: 6 }}>SPAWNING</span>
-        {[["all", "Any"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => chip(spawnF === v, l, () => setSpawnF(v), "amber"))}
+        {[["all", "Any"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => chip(`sp-${v}`, spawnF === v, l, () => setSpawnF(v), "amber"))}
         <span style={{ fontSize: 10, color: "var(--ink-3)", marginLeft: 6 }}>PEDS</span>
-        {[["all", "Any"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => chip(pedF === v, l, () => setPedF(v)))}
+        {[["all", "Any"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => chip(`pd-${v}`, pedF === v, l, () => setPedF(v)))}
         <span style={{ fontSize: 10, color: "var(--ink-3)", marginLeft: 6 }}>MAX STAFF</span>
-        {[[0, "Any"], [1, "1"], [2, "2"], [3, "3"], [4, "4"], [5, "5+"]].map(([v, l]) => chip(staffMax === v, l, () => setStaffMax(v)))}
+        {[[0, "Any"], [1, "1"], [2, "2"], [3, "3"], [4, "4"], [5, "5+"]].map(([v, l]) => chip(`mx-${v}`, staffMax === v, l, () => setStaffMax(v)))}
       </div>
       {flash && <div className="empty" style={{ marginBottom: 12, color: "var(--good)" }}>{flash}</div>}
       {err && !idea && !feedback && !logFor && <div className="err" style={{ marginBottom: 12 }}>{err}</div>}
