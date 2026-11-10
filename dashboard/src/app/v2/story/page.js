@@ -829,7 +829,7 @@ function SceneLogs({ auth, openNew = false }) {
         const isAuthor = log.author_id === auth.id;
         return (
           <div key={log.id} className="card">
-            <div className="hd"><div className="t" style={{ textTransform: "none", letterSpacing: 0 }}>{log.faction}</div><div className="meta">{log.date}</div></div>
+            <div className="hd"><div className="t" style={{ textTransform: "none", letterSpacing: 0 }}>{log.faction}</div><div className="meta">{log.dateLabel || log.date}</div></div>
             {editId === log.id ? (
               <div style={{ margin: "8px 0" }}>
                 <textarea className="filter-inp" style={{ width: "100%", minHeight: 100 }} value={editText} onChange={e => setEditText(e.target.value)} />

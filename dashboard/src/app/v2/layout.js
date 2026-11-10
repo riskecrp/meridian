@@ -226,7 +226,7 @@ export default function V2Layout({ children }) {
         { id: "history", label: "Send History" },
       ],
     },
-    { key: "feedback", label: "Feedback", href: "/v2/feedback", icon: I.feedback, min: 1 },
+    { key: "feedback", label: "Feedback", href: "/v2/feedback", icon: I.feedback, min: 2 },
     {
       key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2, lst: true, menu: [
         { id: "approvals", label: "Approvals" },
