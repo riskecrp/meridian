@@ -47,8 +47,7 @@ function PromoteInner() {
         // If a promotion is already staged, load THAT tier + import set so L3 can
         // review and adjust exactly what was staged. Otherwise pre-fill target =
         // current + 1 and the faction's currently-authorized imports.
-        let pending = null;
-        try { if (d.pendingPromo) pending = JSON.parse(d.pendingPromo); } catch (e) {}
+        const pending = d.promo || null;
         setPromoTier(String(pending?.tier ?? (d.tier + 1)));
         setSelectedImports(pending?.imports ?? d.authorizedItems ?? []);
       }
@@ -120,8 +119,8 @@ function PromoteInner() {
   const handleStage = async () => {
     if (!detail || !promoTier) return;
     if (targetTierNum <= detail.tier) {
-      const ok = await showConfirm(`Target tier (T${targetTierNum}) is not higher than current (T${detail.tier}). Stage anyway?`);
-      if (!ok) return;
+      await showAlert(`Target tier (T${targetTierNum}) must be higher than the current T${detail.tier}. Use Demote on the faction's Review tab for a lower tier.`);
+      return;
     }
     if (ineligibleAuthorized.length > 0) {
       const names = ineligibleAuthorized.map(i => i.name).join(', ');
@@ -132,8 +131,9 @@ function PromoteInner() {
     // Filter selectedImports to only tier-eligible items (safety)
     const eligibleNames = new Set(eligibleItems.map(i => i.name));
     const finalImports = selectedImports.filter(n => eligibleNames.has(n));
-    await stagePromotion(detail.id, detail.name, promoTier, finalImports);
+    const r = await stagePromotion(detail.id, detail.name, promoTier, finalImports).catch(e => ({ ok: false, error: e.message }));
     setSubmitting(false);
+    if (r?.ok === false) { await showAlert(r.error || 'Could not stage the promotion.'); return; }
     await showAlert(`✅ Promotion staged for ${detail.name} → Tier ${promoTier}.\n\nFlag: faction card now shows PENDING.\nTag: team-lead channel notified.\nAwaiting RP confirmation.`);
     router.push('/fm/factions');
   };
@@ -143,6 +143,7 @@ function PromoteInner() {
   if (!factionName) return <div className="p-10 text-sm" style={{color:'var(--red)'}}>No faction specified. Open this page via "Stage Promotion" from a faction card.</div>;
   if (loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading faction dossier...</div>;
   if (!detail) return <div className="p-10 text-sm" style={{color:'var(--red)'}}>Faction not found: {factionName}</div>;
+  if (detail.archived) return <div className="p-10 text-sm" style={{color:'var(--red)'}}>{detail.name} is archived — restore it before staging a promotion.</div>;
 
   const hasPending = !!detail.pendingPromo;
 
@@ -178,7 +179,7 @@ function PromoteInner() {
         <div className="flex items-end gap-4">
           <div className="flex-1">
             <div style={s.label}>Target Tier</div>
-            <input type="number" min="0" max="9" style={{ ...s.input, maxWidth: 120, fontSize: 18, fontWeight: 700 }} value={promoTier} onChange={e => setPromoTier(e.target.value)} />
+            <input type="number" min={detail.tier + 1} max="9" style={{ ...s.input, maxWidth: 120, fontSize: 18, fontWeight: 700 }} value={promoTier} onChange={e => setPromoTier(e.target.value)} />
           </div>
           <div className="flex-1 text-[12px]" style={{ color: 'var(--fg-3)' }}>
             <div style={s.label}>Promotion Path</div>

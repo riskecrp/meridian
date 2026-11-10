@@ -155,7 +155,7 @@ function SidebarInner({ mobile, setMobile, theme, toggleTheme, auth }) {
               const active = isActive(item);
               return (
                 <Link
-                  key={`${item.href}-${item.tabId || "main"}`}
+                  key={item.href}
                   href={buildHref(item)}
                   target={item.external ? "_blank" : undefined}
                   rel={item.external ? "noopener noreferrer" : undefined}

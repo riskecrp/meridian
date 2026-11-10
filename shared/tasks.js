@@ -15,13 +15,13 @@ import { randomUUID } from 'node:crypto';
 import { query, queryOne, run } from './db.js';
 import { sendPing, getRole, taskComponents, urls } from './pings.js';
 import { nowIso } from './dates.js';
-import { isLeadershipStaff } from './actor.js';
+import { isLeadershipStaff, auditName } from './actor.js';
 import { str, missing, isSnowflake, fail, TASK_TARGET_TYPES } from './validate.js';
 
 function audit(actor, action, targetId, label, details) {
   try {
     run("INSERT INTO site_audit_log (actor_id, actor_name, action, target_type, target_id, target_label, details, source) VALUES (?, ?, ?, 'task', ?, ?, ?, ?)",
-      [actor.id || '', actor.name || '', action, String(targetId || ''), label || '', details || '', actor.source === 'bot' ? 'bot' : 'site']);
+      [actor.id || '', auditName(actor) || '', action, String(targetId || ''), label || '', details || '', actor.source === 'bot' ? 'bot' : 'site']);
   } catch (e) { console.error('[AUDIT]', e.message); }
 }
 
@@ -130,7 +130,7 @@ export async function createTask(actor, data = {}, { via = '' } = {}) {
   if (bad) return fail(bad);
   const uid = randomUUID();
   const now = nowIso();
-  const nextReminder = data.enableDM ? String(Date.now() + 86400000) : null;
+  const nextReminder = data.enableDM ? new Date(Date.now() + 86400000).toISOString() : null;
   const toLeadership = routesToLeadership(targetType, targetId);
   const notifyCreator = (!isLeadershipStaff(actor.id) && toLeadership) ? 1 : 0;
   run("INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, next_reminder, created_at, notify_creator, status) VALUES (?, ?, ?, ?, 'None', ?, ?, ?, ?, ?, 'open')",

@@ -44,7 +44,7 @@ import {
   nowStr, plusHours, plusDays,
   discordFetch, discordPost, discordPatch, discordDelete, hideThreadCard,
   STATUS_TAGS, titled, retag, chunks, fetchSheetRows, valueByHeader, rowPayload, TIMESTAMP_HEADER,
-  rowKey, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
+  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
 } from './lib/formIntake.js';
 
 // Responses sheet of the ECRP roleplay feedback form. The id and tab come from
@@ -192,7 +192,7 @@ async function pollSheet() {
     // First run: everything already in the sheet is history. Those rows predate
     // the feature and would otherwise arrive as a wall of threads, each with its
     // own ping and its own 48-hour nudge cycle.
-    markAllRowsSeen(SOURCE, data);
+    markAllRowsSeen(SOURCE, header, data);
     run('UPDATE faction_feedback_state SET last_row = ?, initialized = 1 WHERE id = 1', [data.length]);
     console.log(`[FEEDBACK] initialised at row ${data.length}; watching for new submissions`);
     recordSyncOk('feedback_poll', `initialised at sheet row ${data.length}; no backfill`);
@@ -200,9 +200,10 @@ async function pollSheet() {
   }
 
   let posted = 0, held = null;
+  const keys = rowKeys(header, data);
   for (let idx = 0; idx < data.length; idx++) {
     const row = data[idx];
-    const key = rowKey(row);
+    const key = keys[idx];
     if (rowSeen(SOURCE, key)) continue;
     const sheetRow = idx + 2;   // 1-based, plus the header — informational only
     if ((row[teamCol] || '').trim() !== TEAM_VALUE) { markRowSeen(SOURCE, key, sheetRow); continue; }

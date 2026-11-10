@@ -6,7 +6,8 @@
 // L3-only; every download goes through /api/handover and is audit-logged.
 import { useEffect, useState } from "react";
 import { useCopy } from "../../hooks.js";
-import { listTables, getTableExport } from "../../../fm/handover/actions.js";
+import { listTables } from "../../../fm/handover/actions.js";
+import { useAuth } from "../../../../lib/useAuth.js";
 import { RUNBOOK, SELF_HOST_GUIDE, TABLE_DOCS } from "../../../../lib/handoverContent.js";
 
 /* ── inline markup: **bold** and `code` ── */
@@ -71,13 +72,6 @@ function Sections({ sections }) {
 }
 
 /* ── Export the data ── */
-function downloadText(filename, text, mime) {
-  const url = URL.createObjectURL(new Blob([text], { type: mime }));
-  const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 function Download({ href, title, desc, primary, size }) {
   return (
     <a href={href} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "13px 15px", borderRadius: 10, textDecoration: "none", border: `1px solid ${primary ? "transparent" : "var(--line)"}`, background: primary ? "var(--accent)" : "var(--panel)", color: primary ? "#fff" : "var(--ink-0)", minWidth: 0 }}>
@@ -89,12 +83,7 @@ function Download({ href, title, desc, primary, size }) {
 }
 
 function TableRow({ t }) {
-  const [busy, setBusy] = useState(false);
-  const dl = async () => {
-    setBusy(true);
-    try { const r = await getTableExport(t.name, "csv", 0); downloadText(`${t.name}.csv`, r.text, "text/csv"); } catch (e) { alert(e.message || "Export failed"); }
-    setBusy(false);
-  };
+  // Streams the whole table through the route: server actions are capped at 20 000 rows.
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -106,12 +95,13 @@ function TableRow({ t }) {
         </div>
         {TABLE_DOCS[t.name] && <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.45, marginTop: 2 }}>{TABLE_DOCS[t.name]}</div>}
       </div>
-      <button className="act" onClick={dl} disabled={busy}>{busy ? "…" : "CSV"}</button>
+      <a className="act" href={`/api/handover?what=table&name=${encodeURIComponent(t.name)}`}>CSV</a>
     </div>
   );
 }
 
 function ExportTab() {
+  const auth = useAuth();
   const [tables, setTables] = useState(null);
   const [filter, setFilter] = useState("");
   const [showAll, setShowAll] = useState(false);
@@ -127,7 +117,7 @@ function ExportTab() {
       <div className="card">
         <div className="hd"><span className="t">For Google Sheets</span><span className="meta">{tables ? `${core.length} tables · ${coreRows.toLocaleString()} rows` : "…"}</span></div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, margin: "12px 0" }}>
-          <Download primary href="/api/handover?what=sheets" title="Download for Google Sheets" desc="One zip with a CSV file per table, a TABLES list explaining each one in plain English, and step-by-step import notes. The core data only — no pings, logs or logins." />
+          <Download primary href="/api/handover?what=sheets" title="Download for Google Sheets" desc="One zip with a CSV file per core table (factions, members, properties, NPCs, peds, turfs, scenes, arsenal, inventory, fleet, treasury, staff, reviews, the RP-change pipeline, documents, knowledge base, config, ping routes), a TABLES list explaining each one, and import notes. No message/audit logs, tasks, reminders, pings or logins. Cells starting with = + - @ are quoted so a spreadsheet never runs them." />
           <Download href="/api/handover?what=sheets&scope=all" title="Same, but every table" desc="Includes the message logs, audit log, tasks, reminders and other everyday clutter. Bigger; only if you want absolutely everything." />
         </div>
         <p style={{ ...P, fontSize: 12.5, color: "var(--ink-2)" }}>{md("**Then in Google Sheets:** *File → Import → Upload*, pick a CSV, choose *Insert new sheet(s)*. Each file becomes one tab. To import the lot in one go, upload the unzipped folder to Google Drive with *Settings → Convert uploads* switched on. Times in a column called `epoch_ms` are a big number; `=A2/86400000 + DATE(1970,1,1)` turns it into a date.")}</p>
@@ -136,10 +126,10 @@ function ExportTab() {
       <div className="card">
         <div className="hd"><span className="t">For running Meridian elsewhere</span></div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, margin: "12px 0" }}>
-          <Download href="/api/handover?what=db" title="Download the database" desc="A clean, complete copy of meridian.db — every record. This is what the “Run it yourself” guide puts in the data folder. Also opens in the free DB Browser for SQLite." />
-          <Download href="/api/handover?what=code" title="Download the code" desc="The website and bot source at the version running right now, as a zip. Same as the GitHub repository, no GitHub account needed." />
+          <Download href="/api/handover?what=db" title="Download the database" desc="The complete meridian.db — every table including logs, tasks and pings, with indexes and views, exactly as the dashboard uses it. The only change: every login token (sessions, mdb_sessions) is blanked, so the copy cannot be used to sign in; everyone logs in again on the new install. This is what the “Run it yourself” guide puts in the data folder. Also opens in the free DB Browser for SQLite." />
+          {auth?.isOwner && <Download href="/api/handover?what=code" title="Download the code (site owner only)" desc="A zip of the website and bot source at the version running right now, from the git checkout on the server. Everyone else gets the code from the GitHub repository (ask the owner for access)." />}
         </div>
-        <p style={{ ...P, fontSize: 12.5, color: "var(--ink-2)" }}>{md("The nightly compressed backup is also available at `/api/backup`. Keep the database file somewhere safe: it is the only thing that can't be re-downloaded from the internet.")}</p>
+        <p style={{ ...P, fontSize: 12.5, color: "var(--ink-2)" }}>{md("The nightly compressed backup is also available at `/api/backup`. Keep the database file somewhere safe: it is the only thing that can't be re-downloaded from the internet. Both downloads contain leadership-only material; store them accordingly.")}</p>
       </div>
 
       <div className="card">

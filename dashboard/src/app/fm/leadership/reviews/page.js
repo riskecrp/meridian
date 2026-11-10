@@ -92,7 +92,7 @@ export default function ReviewsPage() {
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
             <div>
               <div style={{fontSize:13,fontWeight:700,fontFamily:'var(--font-display)'}}>Mid-Month Reviews — {new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</div>
-              <div style={{fontSize:10,color:'var(--fg-4)',marginTop:2,fontFamily:'var(--font-mono)'}}>One per faction per month · all team leads can view · edit your own team · Unsaved feedback auto-saves</div>
+              <div style={{fontSize:10,color:'var(--fg-4)',marginTop:2,fontFamily:'var(--font-mono)'}}>One per faction per month · all team leads can view · edit your own team · outcome = majority of leadership votes · Unsaved feedback auto-saves</div>
             </div>
             <span className="badge badge-dim">{reviewData.filter(r=>r.currentReview).length} / {reviewData.length}</span>
           </div>
@@ -231,11 +231,10 @@ export default function ReviewsPage() {
                             {canReview && <button style={s.btn} onClick={async () => {
                               if (!form.recommendation) return showAlert('Please select a recommendation.');
                               if (!form.feedback.trim()) return showAlert('Please provide feedback.');
-                              if (hasReview) {
-                                await editReview(f.currentReview.id, { recommendation: form.recommendation, feedback: form.feedback });
-                              } else {
-                                await submitReview({ factionId: f.id, factionName: f.name, recommendation: form.recommendation, feedback: form.feedback });
-                              }
+                              const res = hasReview
+                                ? await editReview(f.currentReview.id, { recommendation: form.recommendation, feedback: form.feedback }).catch(e => ({ ok: false, error: e.message }))
+                                : await submitReview({ factionId: f.id, recommendation: form.recommendation, feedback: form.feedback }).catch(e => ({ ok: false, error: e.message }));
+                              if (res?.ok === false) return showAlert(res.error || 'Could not save the review.');
                               setReviewData(await getReviewData());
                               // Saved — drop the local draft so the field tracks the server value.
                               setReviewForm(prev => { const n = { ...prev }; delete n[f.id]; return n; });
@@ -347,9 +346,9 @@ export default function ReviewsPage() {
                                   if (!confirmed) return;
                                   setFeedbackSending(f.id);
                                   setFeedbackResult(prev => ({...prev, [f.id]: null}));
-                                  const res = await markFeedbackSent(f.id);
+                                  const res = await markFeedbackSent(f.id).catch(e => ({ ok: false, error: e.message }));
                                   setFeedbackSending(null);
-                                  setFeedbackResult(prev => ({...prev, [f.id]: res ? { ...res, manual: true } : res}));
+                                  setFeedbackResult(prev => ({...prev, [f.id]: res ? { ...res, manual: true, error: res.already ? `Already marked as sent by ${res.by}.` : res.error, ok: res.ok && !res.already } : res}));
                                 }}>
                                 ✓ Mark as Sent
                               </button>
@@ -361,7 +360,7 @@ export default function ReviewsPage() {
                                   if (!confirmed) return;
                                   setFeedbackSending(f.id);
                                   setFeedbackResult(prev => ({...prev, [f.id]: null}));
-                                  const res = await sendFeedbackToFaction(f.id, msg);
+                                  const res = await sendFeedbackToFaction(f.id, msg).catch(e => ({ ok: false, error: e.message }));
                                   setFeedbackSending(null);
                                   setFeedbackResult(prev => ({...prev, [f.id]: res}));
                                   if (res.ok) setFeedbackMsg(prev => ({...prev, [f.id]: ''}));
@@ -409,8 +408,9 @@ export default function ReviewsPage() {
                                   <div style={{display:'flex', gap:6}}>
                                     <button disabled={noteEditSaving} style={{...s.btn, opacity:noteEditSaving?0.5:1}} onClick={async () => {
                                       setNoteEditSaving(true);
-                                      await editPersonalNote(thisMonthNote.id, editingNote.note, editingNote.status);
+                                      const res = await editPersonalNote(thisMonthNote.id, editingNote.note, editingNote.status).catch(e => ({ ok: false, error: e.message }));
                                       setNoteEditSaving(false);
+                                      if (res?.ok === false) return showAlert(res.error || 'Could not save the note.');
                                       setEditingNote(null);
                                       await loadFactionNotes(f.id);
                                       setReviewData(await getReviewData());
@@ -457,8 +457,9 @@ export default function ReviewsPage() {
                                     const note = (personalNoteText[f.id]||'').trim();
                                     if (!note) return;
                                     setNoteSubmitting(f.id);
-                                    await submitPersonalNote(f.id, f.name, note, selectedStatus);
+                                    const res = await submitPersonalNote(f.id, f.name, note, selectedStatus).catch(e => ({ ok: false, error: e.message }));
                                     setNoteSubmitting(null);
+                                    if (res?.ok === false) return showAlert(res.error || 'Could not save the note.');
                                     setPersonalNoteText(prev => ({...prev, [f.id]:''}));
                                     setPersonalNoteStatus(prev => ({...prev, [f.id]:''}));
                                     await loadFactionNotes(f.id);

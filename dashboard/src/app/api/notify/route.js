@@ -67,7 +67,8 @@ export async function POST(req) {
   // Faction Feedback — conditional role based on department
   if (formType === 'faction_feedback') {
     const department = str(body.department, { max: 80 });
-    const entryName = str(body.entryName, { max: 120 });
+    // Form text is never allowed to mention anyone (an entry name of "<@&…>" must not ping that role).
+    const entryName = str(body.entryName, { max: 120 }).replace(/<@[!&]?\d+>/g, '').replace(/@(everyone|here)/gi, '@\u200b$1').trim();
     const mapping = FEEDBACK_DEPT_MAP[department];
     if (!mapping) return NextResponse.json({ error: 'Unknown department.' }, { status: 400 });
     if (!entryName) return NextResponse.json({ error: 'entryName is required.' }, { status: 400 });

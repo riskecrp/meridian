@@ -54,7 +54,7 @@ import {
   discordFetch, discordPost, discordPatch, hideThreadCard,
   OPEN_STATUS_TAGS, DECISION_STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
   TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers, rowPayload,
-  rowKey, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
+  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
 } from './lib/formIntake.js';
 
 // Sheet ids/tabs and the links the setup checklist hands out come from the
@@ -342,7 +342,7 @@ async function pollForm(form) {
     // First run: everything already in the sheet is history. Those rows predate
     // the feature and would otherwise arrive as a wall of threads, each with its
     // own ping and its own 48-hour nudge cycle.
-    markAllRowsSeen(source, data);
+    markAllRowsSeen(source, header, data);
     run('UPDATE form_submission_state SET last_row = ?, initialized = 1 WHERE form_key = ?', [data.length, form.key]);
     console.log(`[FORMS] ${form.key} initialised at row ${data.length}; watching for new submissions`);
     recordSyncOk(job, `initialised at sheet row ${data.length}; no backfill`);
@@ -350,8 +350,9 @@ async function pollForm(form) {
   }
 
   let posted = 0, held = null;
+  const keys = rowKeys(header, data);
   for (let idx = 0; idx < data.length; idx++) {
-    const key = rowKey(data[idx]);
+    const key = keys[idx];
     if (rowSeen(source, key)) continue;
     const sheetRow = idx + 2;   // 1-based, plus the header — informational only
     try {
@@ -408,7 +409,7 @@ function recordFailure(formKey, sheetRow, key, err) {
  * dry run can be posted through this exact code path (rather than a second
  * renderer that would drift from it) without notifying anyone.
  */
-async function postSubmission(form, header, row, sheetRow, { silent = false, key = rowKey(row) } = {}) {
+async function postSubmission(form, header, row, sheetRow, { silent = false, key = rowKeys(header, [row])[0] } = {}) {
   const { title, contact } = identify(form, header, row);
 
   const payload = rowPayload(header, row);
@@ -538,7 +539,7 @@ export async function postLatestRowForTest(formKey, wantRow = null, { accepted =
   const sheetRow = wantRow ?? rows.length;
   if (sheetRow < 2 || sheetRow > rows.length) throw new Error(`row ${sheetRow} is not in the sheet`);
   ensureIntakeSchema();
-  const key = rowKey(rows[sheetRow - 1]);
+  const key = rowKeys(rows[0], rows.slice(1))[sheetRow - 2];
   const id = await postSubmission(form, rows[0], rows[sheetRow - 1], sheetRow, { silent: true, key });
   markRowSeen(`form:${formKey}`, key, sheetRow, id);
   const item = queryOne('SELECT id, title, thread_id FROM form_submissions WHERE id = ?', [id]);

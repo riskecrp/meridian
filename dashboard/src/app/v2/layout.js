@@ -216,9 +216,11 @@ export default function V2Layout({ children }) {
         { id: "scenelogs", label: "Scene Logs" },
         { id: "vehicles", label: "Vehicle Catalog" },
       ],
+      // Aliases v2/story/page.js resolves (TAB_ALIASES there); keep the two lists in step.
+      extraTabs: ["library", "scene", "ideas", "network", "npc", "turfs", "loadouts", "weapons", "spawner", "spawn", "spawns", "changes", "log", "knowledge", "lore", "documents", "sop", "sops", "ped", "scenelog", "logs", "vehicle", "catalog", "garage"],
     },
     {
-      key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms, min: 1, menu: [
+      key: "comms", label: "Comms", href: "/v2/comms", icon: I.comms, min: 2, menu: [
         { id: "announce", label: "Announcement" },
         { id: "ic", label: "IC Communication" },
         { id: "history", label: "Send History" },
@@ -237,7 +239,7 @@ export default function V2Layout({ children }) {
     // Admin has per-view gates: the dropdown lists only what this user can open.
     {
       key: "admin", label: "Admin", href: "/v2/admin", icon: I.admin,
-      defaultId: (level >= 3 || isET) ? "audit" : undefined,
+      defaultId: level >= 3 ? "audit" : undefined,
       extraTabs: [...Object.keys(ADMIN_TAB_ALIASES), "docs", "vehicles"],
       menu: visibleAdminGroups({ level, isET, isLST, id: auth?.id })
         .flatMap(g => [{ heading: g.label }, ...g.items.map(([id, label]) => ({ id, label }))]),

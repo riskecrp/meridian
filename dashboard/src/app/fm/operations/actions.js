@@ -2,7 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendPing, pingChannel, urls } from "../../../lib/pings.js";
+import { sendPing, pingChannel } from "../../../lib/pings.js";
 import { getRole } from "../../../lib/discord.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { isOwner } from "../../../lib/constants.js";
@@ -10,7 +10,7 @@ import { resolveFaction } from "../../../lib/access.js";
 import { TIER_DEFAULTS, getEffectiveLimits, fleetState, checkFleetAdd } from "../../../lib/fleet.js";
 import * as rp from "../../../../../shared/rpChanges.js";
 import * as tasks from "../../../../../shared/tasks.js";
-import { str, toInt, toNum, isSnowflake, fail, missing, PROPERTY_TYPES } from "../../../../../shared/validate.js";
+import { str, toInt, toNum, isSnowflake, fail, PROPERTY_TYPES } from "../../../../../shared/validate.js";
 import { todayIso, nowIso } from "../../../../../shared/dates.js";
 
 // All Operations actions are L3-only unless explicitly noted otherwise.

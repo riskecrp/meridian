@@ -9,13 +9,14 @@ import { s, tierColor } from "./_shared/styles";
 import RowMenu from "./_shared/RowMenu";
 import TableSkeleton from "../../../lib/TableSkeleton";
 
+const PORTAL_BASE = process.env.NEXT_PUBLIC_PORTAL_URL || "https://meridiandatabase.net";
 const th = { padding: "9px 12px", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--fg-4)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", userSelect: "none", cursor: "pointer", borderBottom: "1px solid var(--border)" };
 const td = { padding: "10px 12px", fontSize: 13, color: "var(--fg-2)", whiteSpace: "nowrap", borderBottom: "1px solid var(--border)" };
 
 export default function FactionsPage() {
   const auth = useAuth();
   const router = useRouter();
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
   const [factions, setFactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -51,7 +52,8 @@ export default function FactionsPage() {
 
   const handleAddFaction = async () => {
     if (!addForm.name.trim()) return;
-    await addFaction(addForm);
+    const r = await addFaction(addForm).catch((e) => ({ ok: false, error: e.message }));
+    if (r?.ok === false) { await showAlert(r.error || "Could not create the faction."); return; }
     setShowAddFaction(false);
     setAddForm({
       name: "", teamId: "", tier: "0", forum: "", discord: "", aliases: "",
@@ -66,8 +68,9 @@ export default function FactionsPage() {
   };
 
   const handleCompletePromo = async (fac) => {
-    if (!(await showConfirm(`Complete promotion for ${fac.name}?`))) return;
-    await completePromotion(fac.id, fac.name);
+    if (!(await showConfirm(`Complete promotion for ${fac.name}? Do this after the RP has run.`))) return;
+    const r = await completePromotion(fac.id).catch((e) => ({ ok: false, error: e.message }));
+    if (r?.ok === false) await showAlert(r.error || "Could not complete the promotion.");
     refresh();
   };
 
@@ -129,14 +132,14 @@ export default function FactionsPage() {
             </thead>
             <tbody>
               {sorted.map((fac) => {
-                let promo = null;
-                try { if (fac.pendingPromo) promo = JSON.parse(fac.pendingPromo); } catch (e) {}
-                const canPromo = promo && (auth.level >= 2 || auth.isLeadStoryteller);
+                const promo = fac.promo || null;
+                // Completing is for the owning team's lead (or L3): the server scopes it the same way.
+                const canPromo = promo && auth.level >= 2 && fac.writable;
                 const newImports = promo ? (promo.imports || []).filter((n) => !(fac.authorizedItems || []).includes(n)) : [];
                 const actions = [
                   fac.discord && { label: "Open Discord ↗", onClick: () => window.open(fac.discord, "_blank") },
                   fac.forum && { label: "Open Forum ↗", onClick: () => window.open(fac.forum, "_blank") },
-                  { label: "Open Portal ↗", onClick: () => window.open(`https://meridiandatabase.net/faction/${encodeURIComponent(fac.name)}`, "_blank") },
+                  { label: "Open Portal ↗", onClick: () => window.open(`${PORTAL_BASE}/faction/${encodeURIComponent(fac.name)}`, "_blank") },
                   canPromo && { label: `Complete promotion (T${promo.tier}, ${newImports.length} new imports)`, onClick: () => handleCompletePromo(fac) },
                 ];
                 return (
@@ -144,7 +147,7 @@ export default function FactionsPage() {
                     <td style={{ ...td, fontWeight: 700, color: "var(--fg-0)", fontFamily: "var(--font-display)" }}>{fac.name}</td>
                     <td style={{ ...td, textAlign: "center" }}>
                       <span style={{ fontWeight: 700, color: tierColor(fac.tier) }}>T{fac.tier}</span>
-                      {canPromo && <span title={`Staged → T${promo.tier} · New imports: ${newImports.join(", ") || "none"}`} style={{ marginLeft: 5, color: "var(--green)", fontSize: 11 }}>▲</span>}
+                      {promo && auth.level >= 2 && <span title={`Staged → T${promo.tier} · New imports: ${newImports.join(", ") || "none"}`} style={{ marginLeft: 5, color: "var(--green)", fontSize: 11 }}>▲</span>}
                     </td>
                     <td style={{ ...td, color: "var(--accent)" }}>{fac.leadName}</td>
                     <td style={{ ...td, textAlign: "center", fontFamily: "var(--font-mono)", color: "var(--fg-0)" }}>{fac.scenes30d}</td>

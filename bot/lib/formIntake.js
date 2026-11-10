@@ -390,15 +390,31 @@ export async function fetchSheetRows(sheetId, gid) {
 
 // ── Row identity ───────────────────────────────────────────────────────────────
 //
-// A response is identified by a hash of what it says — its timestamp plus every
-// answer — not by where it sits in the sheet. Deleting or reordering rows in the
-// sheet then neither re-posts old submissions nor hides new ones (BOT-10).
+// A response is identified by its own timestamp — Google Forms stamps every
+// submission to the second — not by where it sits in the sheet, so deleting or
+// reordering rows neither re-posts old submissions nor hides new ones (BOT-10).
+// Two submissions in the same second are told apart by their order; a sheet
+// with no Timestamp column falls back to a hash of the row's contents. Either
+// way a key survives questions being added, renamed or reordered.
 
-/** Stable key for one sheet row: sha1 of timestamp + answers, 24 hex chars. */
+/** Content hash of one row (the no-timestamp fallback): sha1 of the trimmed cells, 24 hex chars. */
 export function rowKey(row) {
   const cells = (row || []).map(v => String(v ?? '').trim());
   while (cells.length && !cells[cells.length - 1]) cells.pop();
   return createHash('sha1').update(cells.join('\u001f')).digest('hex').slice(0, 24);
+}
+
+/** Stable keys for every data row of a sheet, in order. */
+export function rowKeys(header, data) {
+  const tsCol = (header || []).findIndex(h => TIMESTAMP_HEADER.test(String(h || '').trim()));
+  const seen = new Map();
+  return (data || []).map(row => {
+    const ts = tsCol >= 0 ? String(row[tsCol] ?? '').trim() : '';
+    if (!ts) return rowKey(row);
+    const n = seen.get(ts) || 0;
+    seen.set(ts, n + 1);
+    return createHash('sha1').update(`${ts}#${n}`).digest('hex').slice(0, 24);
+  });
 }
 
 /**
@@ -440,10 +456,10 @@ export function markRowSeen(source, key, sheetRow, recordId = null) {
 }
 
 /** Mark every current row as history (first run: no backfill). */
-export function markAllRowsSeen(source, data) {
-  let n = 0;
-  for (let idx = 0; idx < data.length; idx++) { markRowSeen(source, rowKey(data[idx]), idx + 2); n++; }
-  return n;
+export function markAllRowsSeen(source, header, data) {
+  const keys = rowKeys(header, data);
+  for (let idx = 0; idx < data.length; idx++) markRowSeen(source, keys[idx], idx + 2);
+  return keys.length;
 }
 
 /**

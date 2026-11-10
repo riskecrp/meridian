@@ -91,7 +91,7 @@ export default function RemindersPage() {
                   {r.body && <p className="text-xs mt-2 whitespace-pre-wrap" style={{color:'var(--fg-2)'}}>{r.body.substring(0, 200)}{r.body.length > 200 ? '...' : ''}</p>}
                 </div>
                 <div className="flex flex-col gap-2 shrink-0">
-                  {auth.level >= 3 && r.active && <button style={st.btnGhost} onClick={() => openProgress(r)}>Progress</button>}
+                  {canEdit && r.active && <button style={st.btnGhost} onClick={() => openProgress(r)}>Progress</button>}
                   {auth.level >= 3 && r.active && <button style={{...st.btnGhost, color:'var(--accent)'}} onClick={async () => {
                     if (await showConfirm('Force-send "' + r.title + '" now? Pings the channel and creates this month\'s instances if missing.')) {
                       const res = await forceSendRecurringReminder(r.id);

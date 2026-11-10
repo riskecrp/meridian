@@ -38,14 +38,16 @@ function ownsReminder(actor, def) {
 /** null when the target is valid for this actor, else the error text. */
 function validateTarget(actor, targetType, targetId) {
   if (!TARGET_TYPES.includes(targetType)) return 'Target type must be Role, Team or User.';
-  if (!isSnowflake(targetId)) return 'Pick a target.';
+  if (!targetId) return 'Pick a target.';
   if (targetType === 'Role') {
     if (actor.level < 3) return 'Only Leadership can target a role; target your team instead.';
-    if (!queryOne("SELECT 1 FROM discord_roles WHERE role_id = ?", [targetId])) return 'Unknown role.';
+    if (!isSnowflake(targetId) || !queryOne("SELECT 1 FROM discord_roles WHERE role_id = ?", [targetId])) return 'Unknown role.';
   } else if (targetType === 'Team') {
+    // Team ids are the team's Discord role id; the row must exist either way.
     if (!queryOne("SELECT 1 FROM teams WHERE team_id = ?", [targetId])) return 'Unknown team.';
     if (actor.level < 3 && targetId !== actor.teamId) return 'You can only target your own team.';
   } else {
+    if (!isSnowflake(targetId)) return 'Pick a target.';
     const s = queryOne(`SELECT team_id FROM staff WHERE discord_id = ? AND ${ACTIVE_STAFF}`, [targetId]);
     if (!s) return 'That person is not an active staff member.';
     if (actor.level < 3 && s.team_id !== actor.teamId) return 'You can only target someone on your own team.';

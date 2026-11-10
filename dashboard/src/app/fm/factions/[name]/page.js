@@ -7,7 +7,7 @@ import { useDialog } from "../../../../lib/useDialog";
 import { s, tierColor } from "../_shared/styles";
 import RowMenu from "../_shared/RowMenu";
 import {
-  getFactions, getFactionDetail, deleteFaction, updateFactionLinks,
+  getFactionDetail, deleteFaction, restoreFaction, updateFactionLinks,
   addMember, updateMember, deleteMember, addFactionProperty, editFactionProperty, deleteFactionProperty,
   addNote, editNote, addOOCNote, editOOCNote,
   editSceneLog, editFactionSceneRewards, requestDeletion, directDelete, aiSummarize,
@@ -18,8 +18,13 @@ import {
   getFactionPortalMessages, postPortalMessage, deletePortalMessage, togglePortalMessagePin,
   getFactionContacts, markContactRead,
 } from "../actions";
+import { sanitizeHtml } from "../../leadership/_shared/sanitize.js";
+import { PROPERTY_TYPES } from "../../../../../../shared/validate.js";
 
 const MAIN_TABS = ["overview", "activity", "portal", "admin"];
+const PORTAL_BASE = process.env.NEXT_PUBLIC_PORTAL_URL || "https://meridiandatabase.net";
+// Every server action returns { ok, error }; surface a refusal instead of silently reloading.
+const failed = (r) => (r && r.ok === false) ? (r.error || "Action failed.") : null;
 
 export default function FactionDetailPage() {
   const auth = useAuth();
@@ -66,13 +71,21 @@ export default function FactionDetailPage() {
 
   const canEdit = (authorId) => authorId === auth.id;
   const showAdminTab = auth.level >= 2; // Audit is L2+, Imports/Config gated to L3 inside
+  // The server says whether this viewer may change the faction (team scope,
+  // archived, ET/LST read-only); every write control keys off it.
+  const canWrite = !!detail?.writable;
+  const archived = !!detail?.archived;
+  const act = async (fn, onOk) => {
+    try { const r = await fn(); const e = failed(r); if (e) { await showAlert(e); return false; } if (onOk) await onOk(r); return true; }
+    catch (e) { await showAlert(`Failed: ${e.message}`); return false; }
+  };
 
   // ── Data ──
   const load = useCallback(async () => {
-    const [d, all] = await Promise.all([getFactionDetail(name), getFactions()]);
+    const d = await getFactionDetail(name);
     setDetail(d);
     if (!d) { setNotFound(true); return null; }
-    setInfo(all.find((f) => f.name === name) || {});
+    setInfo(d);
     return d;
   }, [name]);
 
@@ -99,19 +112,18 @@ export default function FactionDetailPage() {
   // ── Handlers (ported 1:1 from the old dossier) ──
   const handleSaveMember = async () => {
     if (!memberForm.name.trim() || !detail) return;
-    if (editMemberId) await updateMember(editMemberId, memberForm);
-    else await addMember(detail.id, detail.name, memberForm);
+    const ok = await act(() => editMemberId ? updateMember(editMemberId, memberForm) : addMember(detail.id, detail.name, memberForm));
+    if (!ok) return;
     setShowAddMember(false); setEditMemberId(null); setMemberForm({ name: "", phone: "N/A", residence: "N/A", role: 0 });
     load();
   };
   const handleDeleteMember = async (m) => {
     if (!(await showConfirm(`Remove ${m.character_name}?`))) return;
-    await deleteMember(m.id, m.character_name, detail.id, detail.name);
-    load();
+    if (await act(() => deleteMember(m.id))) load();
   };
   const handleSaveLink = async () => {
     if (!detail || !showLinkEdit) return;
-    await updateFactionLinks(detail.id, showLinkEdit, linkValue);
+    if (!(await act(() => updateFactionLinks(detail.id, showLinkEdit, linkValue)))) return;
     setShowLinkEdit(null);
     load();
   };
@@ -123,97 +135,99 @@ export default function FactionDetailPage() {
     const absent = absentMembers.map((m) => m.display_name);
     const finalText = `<h3>Attendance</h3><p><strong>Present:</strong> ${present.join(", ") || "None"}</p><p><strong>Absent:</strong> ${absent.join(", ") || "None"}</p><hr/>${oocText}`;
     const attendeeIds = presentMembers.map((m) => m.discord_id);
-    await addOOCNote(detail.id, detail.name, finalText, attendeeIds);
+    if (!(await act(() => addOOCNote(detail.id, detail.name, finalText, attendeeIds)))) return;
     setShowOOCEditor(false); setOocText("");
     setActivitySub("ooc");
     load();
   };
   const openOOCEditor = async () => {
-    const staff = await getStaffForTeam(detail.name);
-    setOocStaff(staff);
-    const att = {}; staff.forEach((m) => (att[m.discord_id] = false));
+    const staff = await getStaffForTeam(detail.name).catch(() => []);
+    setOocStaff(staff || []);
+    const att = {}; (staff || []).forEach((m) => (att[m.discord_id] = false));
     setOocAttendance(att); setOocText(""); setShowOOCEditor(true);
   };
   const handleEditNote = (type, id, text) => { setEditNoteId(id); setEditNoteText(text); };
   const handleSaveEditNote = async (type) => {
-    try {
-      if (type === "intel") await editNote(editNoteId, editNoteText);
-      else if (type === "ooc") await editOOCNote(editNoteId, editNoteText);
-      else if (type === "scene") await editSceneLog(editNoteId, editNoteText);
-      setEditNoteId(null);
-      load();
-    } catch (e) { await showAlert(`Failed to save: ${e.message}`); }
+    const ok = await act(() => type === "intel" ? editNote(editNoteId, editNoteText) : type === "ooc" ? editOOCNote(editNoteId, editNoteText) : editSceneLog(editNoteId, editNoteText));
+    if (!ok) return;
+    setEditNoteId(null);
+    load();
   };
   const handleReqDelete = async (type, text, id) => {
     if (!(await showConfirm(`Request deletion of this ${type}?`))) return;
-    await requestDeletion(type, text, id);
-    await showAlert("Deletion request submitted.");
+    await act(() => requestDeletion(type, text, id), () => showAlert("Deletion request submitted."));
   };
   const handleDirectDelete = async (type, id) => {
     if (!(await showConfirm("L3 OVERRIDE: Permanently delete this entry?"))) return;
-    await directDelete(type, id);
-    load();
+    if (await act(() => directDelete(type, id))) load();
   };
   const handleSummarize = async () => {
     setSummarizing(true);
-    const r = await aiSummarize(detail.name);
+    const r = await aiSummarize(detail.name).catch((e) => ({ ok: false, error: e.message }));
     setSummary(r.ok ? r.summary : `Error: ${r.error}`);
     setSummarizing(false);
   };
   const handleCompletePromo = async () => {
-    if (!(await showConfirm(`Complete promotion for ${detail.name}?`))) return;
-    await completePromotion(detail.id, detail.name);
-    load();
+    if (!(await showConfirm(`Complete promotion for ${detail.name}? Do this after the RP has run.`))) return;
+    if (await act(() => completePromotion(detail.id))) load();
   };
   const handleCancelPromo = async () => {
     if (!(await showConfirm("Cancel this staged promotion?"))) return;
-    await cancelPromotion(detail.id, detail.name);
-    load();
+    if (await act(() => cancelPromotion(detail.id))) load();
   };
   const handleDeleteFaction = async () => {
-    if (!(await showConfirm(`Archive ${detail.name}? It will be moved to Operations > Archive and can be restored later.`, "Delete Faction"))) return;
-    await deleteFaction(detail.id, detail.name);
-    router.push("/fm/factions");
+    if (!(await showConfirm(`Archive ${detail.name}? It clears any staged promotion, denies its open RP requests and can be restored later.`, "Archive Faction"))) return;
+    if (await act(() => deleteFaction(detail.id))) router.push("/fm/factions");
+  };
+  const handleRestoreFaction = async () => {
+    if (!(await showConfirm(`Restore ${detail.name} to the active list?`))) return;
+    if (await act(() => restoreFaction(detail.id))) load();
   };
   const handleRename = async () => {
     const n = await showPrompt("Rename faction:", detail.name);
-    if (n && n !== detail.name) {
-      await renameFaction(detail.id, detail.name, n);
-      router.replace(`/fm/factions/${encodeURIComponent(n)}`);
+    if (n && n.trim() && n.trim() !== detail.name) {
+      await act(() => renameFaction(detail.id, detail.name, n.trim()), (r) => router.replace(`/fm/factions/${encodeURIComponent(r.name || n.trim())}`));
     }
   };
   const handleStageRP = async () => {
-    const [npcData, propData] = await Promise.all([getNPCsForRP(), getFactionProperties(detail.id)]);
-    const npcOpts = npcData.map((n) => ({ label: n.name + " (" + n.npc_type + ") — " + n.turf, value: n.name + "|" + n.npc_type + "|" + n.turf }));
+    const [npcData, propData] = await Promise.all([getNPCsForRP().catch(() => []), getFactionProperties(detail.id).catch(() => [])]);
+    const npcOpts = npcData.map((n) => ({ label: n.name + " (" + n.npc_type + ") — " + n.turf, value: String(n.id) }));
     const npcTypeOpts = [...new Set(npcData.map((n) => n.npc_type))].sort().map((t) => ({ label: t, value: t }));
+    const turfOpts = [...new Set(npcData.map((n) => n.turf))].sort().map((t) => ({ label: t, value: t }));
     const propOpts = propData.map((p) => ({ label: (p.is_hq ? "HQ: " : "") + p.address, value: p.address }));
     const typeRes = await showForm("Stage RP Change — Step 1", [
-      { name: "type", label: "Change Type", type: "select", options: [{ label: "NPC Change", value: "NPC" }, { label: "HQ Relocation", value: "HQ" }, { label: "Other", value: "Other" }], placeholder: "Select type..." },
+      { name: "type", label: "Change Type", type: "select", options: [{ label: "NPC Change", value: "NPC" }, { label: "HQ Relocation", value: "HQ" }, { label: "Turf Change", value: "TURF" }, { label: "Other", value: "Other" }], placeholder: "Select type..." },
     ]);
     if (!typeRes || !typeRes.type) return;
-    let res;
+    let payload = null;
     if (typeRes.type === "NPC") {
-      res = await showForm("Stage NPC Change", [
-        { name: "oldVal", label: "Current NPC", type: "select", options: npcOpts, placeholder: "Select NPC..." },
+      const res = await showForm("Stage NPC Change", [
+        { name: "npcId", label: "Current NPC", type: "select", options: npcOpts, placeholder: "Select NPC..." },
         { name: "newVal", label: "New NPC Type", type: "select", options: npcTypeOpts, placeholder: "Select new type..." },
       ]);
-      if (res) { const parts = res.oldVal.split("|"); res.turf = parts[2] || ""; res.type = "NPC"; res.oldVal = parts[1] || res.oldVal; }
+      if (res?.npcId && res?.newVal) { const npc = npcData.find((n) => String(n.id) === res.npcId); payload = { type: "NPC", npcId: npc?.id, oldValue: npc?.npc_type || "N/A", newValue: res.newVal, turf: npc?.turf || "N/A" }; }
     } else if (typeRes.type === "HQ") {
-      res = await showForm("Stage HQ Relocation", [
+      const res = await showForm("Stage HQ Relocation", [
         { name: "oldVal", label: "Current Address", type: "select", options: propOpts, placeholder: "Select property..." },
         { name: "newVal", label: "New Address", type: "text", placeholder: "New HQ address" },
       ]);
-      if (res) { res.type = "HQ"; res.turf = "N/A"; }
+      if (res?.newVal) payload = { type: "HQ", oldValue: res.oldVal || "N/A", newValue: res.newVal, turf: "N/A" };
+    } else if (typeRes.type === "TURF") {
+      const res = await showForm("Stage Turf Change", [
+        { name: "turf", label: "Turf", type: "select", options: turfOpts, placeholder: "Select turf..." },
+        { name: "oldVal", label: "Current State", type: "text", placeholder: "e.g. unclaimed / held by X" },
+        { name: "newVal", label: "Requested Change", type: "text" },
+      ]);
+      if (res?.newVal) payload = { type: "TURF", turf: res.turf || "N/A", oldValue: res.oldVal || "N/A", newValue: res.newVal };
     } else {
-      res = await showForm("Stage RP Change", [
+      const res = await showForm("Stage RP Change", [
         { name: "oldVal", label: "Current State", type: "text" },
         { name: "newVal", label: "New State", type: "text" },
       ]);
-      if (res) { res.type = "Other"; res.turf = "N/A"; }
+      if (res?.newVal) payload = { type: "Other", oldValue: res.oldVal || "N/A", newValue: res.newVal, turf: "N/A" };
     }
-    if (res && res.newVal) {
-      await requestRPChange({ faction: detail.name, type: res.type || "Other", oldValue: res.oldVal || "N/A", newValue: res.newVal, turf: res.turf || "N/A" });
-      await showAlert("RP change staged. FM Leadership notified.");
+    if (payload) {
+      await act(() => requestRPChange({ factionId: detail.id, ...payload }), () => showAlert("RP change requested. FM Leadership has been pinged to approve it."));
     }
   };
 
@@ -226,11 +240,10 @@ export default function FactionDetailPage() {
     </div>
   );
 
-  let promo = null;
-  try { if (detail.pendingPromo) promo = JSON.parse(detail.pendingPromo); } catch (e) {}
+  const promo = detail.promo || null;
   // Only the NEW imports this promotion grants — staged set minus what the faction already has.
   const newImports = promo ? (promo.imports || []).filter((n) => !(detail.authorizedItems || []).includes(n)) : [];
-  const portalUrl = `https://meridiandatabase.net/faction/${encodeURIComponent(detail.name)}`;
+  const portalUrl = `${PORTAL_BASE}/faction/${encodeURIComponent(detail.name)}`;
 
   return (
     <div className="w-full max-w-[1400px] mx-auto p-4 lg:p-6 space-y-5">
@@ -241,22 +254,32 @@ export default function FactionDetailPage() {
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-black uppercase italic tracking-tighter" style={{ fontFamily: "var(--font-display)" }}>{detail.name}</h1>
             <span style={{ ...s.badge, color: tierColor(detail.tier) }}>TIER {detail.tier}</span>
-            {auth.level >= 3 && <button onClick={handleRename} style={{ fontSize: 12, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", fontWeight: 700 }}>✏️</button>}
+            {archived && <span style={{ ...s.badge, color: "var(--amber)" }}>ARCHIVED</span>}
+            {auth.level >= 3 && !archived && <button onClick={handleRename} title="Rename" style={{ fontSize: 12, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", fontWeight: 700 }}>✏️</button>}
           </div>
           <div className="flex items-center gap-2">
-            {(auth.level >= 2 || auth.isLeadStoryteller) && <button onClick={handleStageRP} style={{ ...s.btnGhost, color: "var(--amber)" }}>Stage RP Change</button>}
+            {auth.level >= 2 && canWrite && <button onClick={handleStageRP} style={{ ...s.btnGhost, color: "var(--amber)" }}>Stage RP Change</button>}
             <a href={portalUrl} target="_blank" rel="noreferrer" style={s.btnGhost}>Portal ↗</a>
           </div>
         </div>
+        {archived && (
+          <div style={{ padding: "10px 14px", borderRadius: 10, background: "var(--amber-bg)", border: "1px solid var(--amber)" }} className="flex items-center justify-between gap-3 flex-wrap">
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--amber)" }}>This faction is archived{detail.archivedAt ? ` (since ${String(detail.archivedAt).slice(0, 10)})` : ""} — read-only until restored.</span>
+            {auth.level >= 3 && <button onClick={handleRestoreFaction} style={s.btnGhost}>Restore</button>}
+          </div>
+        )}
+        {!archived && !canWrite && auth.level >= 1 && (
+          <div style={{ fontSize: 11, color: "var(--fg-4)" }}>Read-only: {info.teamName ? `${info.teamName} manages this faction` : "this faction is outside your team"}.</div>
+        )}
         {/* Pending promotion banner */}
-        {promo && (auth.level >= 2 || auth.isLeadStoryteller) && (
+        {promo && auth.level >= 2 && (
           <div style={{ padding: "10px 14px", borderRadius: 10, background: "var(--green-bg)", border: "1px solid var(--green)" }}>
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <span style={{ fontSize: 12, fontWeight: 700, color: "var(--green)" }}>Promotion staged → Tier {promo.tier}</span>
               <div className="flex gap-2">
-                <button onClick={handleCompletePromo} style={{ ...s.btn, background: "var(--green)" }}>Complete (T{promo.tier})</button>
+                {canWrite && <button onClick={handleCompletePromo} style={{ ...s.btn, background: "var(--green)" }}>Complete (T{promo.tier})</button>}
                 {auth.level >= 3 && <a href={`/fm/factions/promote?name=${encodeURIComponent(detail.name)}`} style={{ ...s.btnGhost, textDecoration: "none" }}>Adjust</a>}
-                {auth.level >= 3 && <button onClick={handleCancelPromo} style={{ ...s.btnGhost, color: "var(--red)" }}>Cancel</button>}
+                {canWrite && <button onClick={handleCancelPromo} style={{ ...s.btnGhost, color: "var(--red)" }}>Cancel</button>}
               </div>
             </div>
             {/* NEW imports this promotion grants — visible to leads (L2+) and LST who complete it */}
@@ -329,7 +352,7 @@ export default function FactionDetailPage() {
                     {isUrl
                       ? <a href={val} target="_blank" rel="noreferrer" style={s.link}>Open ↗</a>
                       : <span className="text-xs font-mono" style={{ color: val ? "var(--accent)" : "var(--fg-4)" }}>{val || "—"}</span>}
-                    {auth.level >= 3 && <button title="Edit" style={{ fontSize: 11, color: "var(--fg-3)", background: "none", border: "none", cursor: "pointer", padding: 0 }} onClick={() => { setShowLinkEdit(field); setLinkValue(val || ""); }}>✎</button>}
+                    {auth.level >= 2 && canWrite && <button title="Edit" style={{ fontSize: 11, color: "var(--fg-3)", background: "none", border: "none", cursor: "pointer", padding: 0 }} onClick={() => { setShowLinkEdit(field); setLinkValue(val || ""); }}>✎</button>}
                   </div>
                 );
               })}
@@ -341,7 +364,7 @@ export default function FactionDetailPage() {
             <div style={s.section}>
               <div className="flex justify-between items-center mb-4">
                 <div className="font-bold text-xs uppercase tracking-widest">Known Command</div>
-                {auth.level >= 1 && <button style={s.btnGhost} onClick={() => { setEditMemberId(null); setMemberForm({ name: "", phone: "N/A", residence: "N/A", role: 0 }); setShowAddMember(true); }}>Add +</button>}
+                {canWrite && <button style={s.btnGhost} onClick={() => { setEditMemberId(null); setMemberForm({ name: "", phone: "N/A", residence: "N/A", role: 0 }); setShowAddMember(true); }}>Add +</button>}
               </div>
               <div className="space-y-3">
                 {detail.members?.map((m) => (
@@ -350,7 +373,7 @@ export default function FactionDetailPage() {
                       <div className="font-bold text-sm">{m.character_name} {m.is_leader >= 2 ? <span style={{ color: "var(--accent)", fontSize: 11 }}>(Leader)</span> : m.is_leader === 1 ? <span style={{ color: "var(--fg-3)", fontSize: 11 }}>(Command)</span> : null}</div>
                       <div className="text-xs font-mono mt-1" style={{ color: "var(--fg-3)" }}>📞 {m.phone} · 🏠 {m.residence}</div>
                     </div>
-                    {auth.level >= 1 && <RowMenu actions={[
+                    {canWrite && <RowMenu actions={[
                       { label: "Edit", onClick: () => { setEditMemberId(m.id); setMemberForm({ name: m.character_name, phone: m.phone, residence: m.residence, role: m.is_leader }); setShowAddMember(true); } },
                       { label: "Delete", danger: true, onClick: () => handleDeleteMember(m) },
                     ]} />}
@@ -362,15 +385,15 @@ export default function FactionDetailPage() {
             <div style={s.section}>
               <div className="flex justify-between items-center mb-4">
                 <div className="font-bold text-xs uppercase tracking-widest">Registered Properties</div>
-                {auth.level >= 1 && <button style={s.btnGhost} onClick={async () => { const res = await showForm("Add Property", [{ name: "address", label: "Address", type: "text" }, { name: "type", label: "Type", type: "text", placeholder: "e.g. HQ, Warehouse, Property" }, { name: "isHQ", label: "Mark as HQ?", type: "checkbox" }]); if (res?.address) { await addFactionProperty(detail.id, detail.name, { address: res.address, type: res.type || "Property", isHQ: !!res.isHQ }); load(); } }}>Add +</button>}
+                {auth.level >= 2 && canWrite && <button style={s.btnGhost} onClick={async () => { const res = await showForm("Add Property", [{ name: "address", label: "Address", type: "text" }, { name: "type", label: "Type", type: "select", options: PROPERTY_TYPES.map((t) => ({ label: t, value: t })), default: "Property" }, { name: "isHQ", label: "Mark as HQ? (replaces the current HQ)", type: "checkbox" }]); if (res?.address) { if (await act(() => addFactionProperty(detail.id, detail.name, { address: res.address, type: res.type || "Property", isHQ: !!res.isHQ }))) load(); } }}>Add +</button>}
               </div>
               <div className="space-y-2">
                 {detail.properties?.map((p) => (
                   <div key={p.id} className="flex justify-between items-center p-2.5 rounded" style={{ background: "var(--bg-1)" }}>
-                    <span className="text-xs font-mono" style={{ color: p.isHQ ? "var(--accent)" : "var(--fg-2)" }}>{p.isHQ ? "🏰 HQ:" : "📍"} {p.address}</span>
-                    {auth.level >= 1 && <RowMenu actions={[
-                      { label: "Edit", onClick: async () => { const res = await showForm("Edit Property", [{ name: "address", label: "Address", type: "text", default: p.address }, { name: "type", label: "Type", type: "text", default: p.property_type || "Property", placeholder: "e.g. HQ, Warehouse, Property" }, { name: "isHQ", label: "Mark as HQ?", type: "checkbox", default: p.isHQ }]); if (res) { await editFactionProperty(p.id, { address: res.address, type: res.type || "Property", isHQ: res.isHQ }); load(); } } },
-                      { label: "Delete", danger: true, onClick: async () => { if (await showConfirm("Remove this property?")) { await deleteFactionProperty(p.id, detail.name); load(); } } },
+                    <span className="text-xs font-mono" style={{ color: p.isHQ ? "var(--accent)" : "var(--fg-2)" }}>{p.isHQ ? "🏰 HQ:" : "📍"} {p.address}<span style={{ color: "var(--fg-4)", marginLeft: 6 }}>{p.property_type}</span></span>
+                    {auth.level >= 2 && canWrite && <RowMenu actions={[
+                      { label: "Edit", onClick: async () => { const res = await showForm("Edit Property", [{ name: "address", label: "Address", type: "text", default: p.address }, { name: "type", label: "Type", type: "select", options: PROPERTY_TYPES.map((t) => ({ label: t, value: t })), default: PROPERTY_TYPES.includes(p.property_type) ? p.property_type : "Property" }, { name: "isHQ", label: "Mark as HQ? (replaces the current HQ)", type: "checkbox", default: p.isHQ }]); if (res) { if (await act(() => editFactionProperty(p.id, { address: res.address, type: res.type || "Property", isHQ: res.isHQ }))) load(); } } },
+                      { label: "Delete", danger: true, onClick: async () => { if (await showConfirm("Remove this property?")) { if (await act(() => deleteFactionProperty(p.id))) load(); } } },
                     ]} />}
                   </div>
                 ))}
@@ -391,9 +414,9 @@ export default function FactionDetailPage() {
               ))}
             </div>
             <div className="flex gap-2">
-              {activitySub === "intel" && <button style={s.btnGhost} onClick={async () => { const t = await showPrompt("Add Intelligence Note", "", { multiline: true, placeholder: "Enter your observation..." }); if (t) { try { const res = await addNote(detail.id, detail.name, t); if (res?.ok) load(); else await showAlert("Failed to save note."); } catch (e) { await showAlert(`Failed to save note: ${e.message}`); } } }}>Add Note +</button>}
-              {activitySub === "ooc" && auth.level >= 1 && <button style={s.btn} onClick={openOOCEditor}>Document Meeting +</button>}
-              {activitySub === "intel" && auth.level >= 2 && (
+              {activitySub === "intel" && canWrite && <button style={s.btnGhost} onClick={async () => { const t = await showPrompt("Add Intelligence Note", "", { multiline: true, placeholder: "Enter your observation..." }); if (t) { if (await act(() => addNote(detail.id, detail.name, t))) load(); } }}>Add Note +</button>}
+              {activitySub === "ooc" && canWrite && <button style={s.btn} onClick={openOOCEditor}>Document Meeting +</button>}
+              {activitySub === "intel" && auth.level >= 2 && canWrite && (
                 <button onClick={handleSummarize} disabled={summarizing} style={{ ...s.btn, opacity: summarizing ? 0.5 : 1 }}>{summarizing ? "Generating..." : "AI Summarize ✨"}</button>
               )}
             </div>
@@ -410,9 +433,9 @@ export default function FactionDetailPage() {
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-mono" style={{ color: "var(--fg-4)" }}>{n.date}</span>
                       <RowMenu actions={[
-                        canEdit(n.author_id) && { label: "Edit", onClick: () => handleEditNote("intel", n.id, n.text) },
-                        canEdit(n.author_id) && { label: "Request deletion", onClick: () => handleReqDelete("intel_note", n.text, n.id) },
-                        auth.level >= 3 && { label: "Delete", danger: true, onClick: () => handleDirectDelete("intel_note", n.id) },
+                        (canEdit(n.author_id) || auth.level >= 3) && !archived && { label: "Edit", onClick: () => handleEditNote("intel", n.id, n.text) },
+                        canEdit(n.author_id) && auth.level < 3 && !archived && { label: "Request deletion", onClick: () => handleReqDelete("intel_note", n.text, n.id) },
+                        auth.level >= 3 && !archived && { label: "Delete", danger: true, onClick: () => handleDirectDelete("intel_note", n.id) },
                       ]} />
                     </div>
                   </div>
@@ -437,10 +460,10 @@ export default function FactionDetailPage() {
                     <div className="flex items-center gap-2">
                       {l.rewards !== "None" && <span className="text-[9px] font-bold px-2 py-0.5 rounded" style={{ background: "var(--green-bg)", color: "var(--green)" }}>Rewards</span>}
                       <RowMenu actions={[
-                        canEdit(l.author_id) && { label: "Edit", onClick: () => handleEditNote("scene", l.id, l.notes) },
-                        canEdit(l.author_id) && { label: "Request deletion", onClick: () => handleReqDelete("scene_log", l.notes, l.id) },
-                        auth.level >= 3 && { label: "Edit rewards", onClick: async () => { const v = await showPrompt("Edit rewards:", l.rewards); if (v !== null) { await editFactionSceneRewards(l.id, v); load(); } } },
-                        auth.level >= 3 && { label: "Delete", danger: true, onClick: () => handleDirectDelete("scene_log", l.id) },
+                        (canEdit(l.author_id) || auth.level >= 3) && !archived && { label: "Edit", onClick: () => handleEditNote("scene", l.id, l.notes) },
+                        canEdit(l.author_id) && auth.level < 3 && !archived && { label: "Request deletion", onClick: () => handleReqDelete("scene_log", l.notes, l.id) },
+                        auth.level >= 3 && !archived && { label: "Edit rewards", onClick: async () => { const v = await showPrompt("Edit rewards:", l.rewards); if (v !== null) { if (await act(() => editFactionSceneRewards(l.id, v))) load(); } } },
+                        auth.level >= 3 && !archived && { label: "Delete", danger: true, onClick: () => handleDirectDelete("scene_log", l.id) },
                       ]} />
                     </div>
                   </div>
@@ -466,8 +489,8 @@ export default function FactionDetailPage() {
                   <div className="p-4 flex justify-between items-center">
                     <div className="flex items-center gap-3"><span className="text-[10px] font-mono" style={{ color: "var(--accent)" }}>{n.date}</span><span className="text-xs font-bold">By: {n.author}</span></div>
                     <RowMenu actions={[
-                      (canEdit(n.author_id) || auth.level >= 2) && { label: "Edit", onClick: () => { setActivitySub("ooc"); setEditNoteId(n.id); setEditNoteText(n.text); } },
-                      auth.level >= 3 && { label: "Delete", danger: true, onClick: () => handleDirectDelete("ooc_note", n.id) },
+                      (canEdit(n.author_id) || (auth.level >= 2 && canWrite)) && !archived && { label: "Edit", onClick: () => { setActivitySub("ooc"); setEditNoteId(n.id); setEditNoteText(n.text); } },
+                      auth.level >= 3 && !archived && { label: "Delete", danger: true, onClick: () => handleDirectDelete("ooc_note", n.id) },
                     ]} />
                   </div>
                   <div className="px-4 pb-4 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
@@ -477,7 +500,7 @@ export default function FactionDetailPage() {
                         <div className="flex gap-2 mt-2"><button style={s.btn} onClick={() => handleSaveEditNote("ooc")}>Save</button><button style={s.btnGhost} onClick={() => setEditNoteId(null)}>Cancel</button></div>
                       </div>
                     ) : (
-                      <div className="text-sm prose prose-sm max-w-none leading-relaxed quill-content" style={{ color: "var(--fg-2)" }} dangerouslySetInnerHTML={{ __html: n.text }} />
+                      <div className="text-sm prose prose-sm max-w-none leading-relaxed quill-content" style={{ color: "var(--fg-2)" }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(n.text) }} />
                     )}
                   </div>
                 </div>
@@ -495,16 +518,16 @@ export default function FactionDetailPage() {
             <span style={{ fontSize: 11, color: "var(--fg-3)" }}>Public page:</span>
             <a href={portalUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "var(--accent)", fontWeight: 700 }}>meridiandatabase.net/faction/{detail.name} ↗</a>
           </div>
-          <div style={s.section}>
+          {canWrite && <div style={s.section}>
             <div className="font-bold text-xs uppercase tracking-widest mb-3">Post to Faction Page</div>
             <textarea rows={4} style={{ ...s.input, fontFamily: "inherit", resize: "vertical", marginBottom: 10 }} placeholder="Write a message for the faction to see on their public page..." value={portalMsgText} onChange={(e) => setPortalMsgText(e.target.value)} />
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer", color: "var(--fg-3)" }}>
                 <input type="checkbox" checked={portalMsgPin} onChange={(e) => setPortalMsgPin(e.target.checked)} /> Pin to top
               </label>
-              <button style={s.btn} disabled={portalPosting || !portalMsgText.trim()} onClick={async () => { setPortalPosting(true); await postPortalMessage(detail.id, detail.name, portalMsgText, portalMsgPin); setPortalMsgText(""); setPortalMsgPin(false); setPortalPosting(false); getFactionPortalMessages(detail.id).then(setPortalMessages); }}>{portalPosting ? "Posting…" : "Post Message"}</button>
+              <button style={s.btn} disabled={portalPosting || !portalMsgText.trim()} onClick={async () => { setPortalPosting(true); const ok = await act(() => postPortalMessage(detail.id, detail.name, portalMsgText, portalMsgPin)); if (ok) { setPortalMsgText(""); setPortalMsgPin(false); } setPortalPosting(false); getFactionPortalMessages(detail.id).then(setPortalMessages); }}>{portalPosting ? "Posting…" : "Post Message"}</button>
             </div>
-          </div>
+          </div>}
           {portalMessages.length > 0 && (
             <div style={s.section}>
               <div className="font-bold text-xs uppercase tracking-widest mb-3">Posted Messages</div>
@@ -519,8 +542,8 @@ export default function FactionDetailPage() {
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <span style={{ fontSize: 10, color: "var(--fg-4)", fontFamily: "var(--font-mono)" }}>{m.created_at?.substring(0, 16)}</span>
                         <RowMenu actions={[
-                          { label: m.is_pinned ? "Unpin" : "Pin", onClick: async () => { await togglePortalMessagePin(m.id); getFactionPortalMessages(detail.id).then(setPortalMessages); } },
-                          { label: "Delete", danger: true, onClick: async () => { await deletePortalMessage(m.id); getFactionPortalMessages(detail.id).then(setPortalMessages); } },
+                          canWrite && { label: m.is_pinned ? "Unpin" : "Pin", onClick: async () => { await act(() => togglePortalMessagePin(m.id)); getFactionPortalMessages(detail.id).then(setPortalMessages); } },
+                          (m.author_id === auth.id || auth.level >= 3) && !archived && { label: "Delete", danger: true, onClick: async () => { await act(() => deletePortalMessage(m.id)); getFactionPortalMessages(detail.id).then(setPortalMessages); } },
                         ]} />
                       </div>
                     </div>
@@ -547,7 +570,7 @@ export default function FactionDetailPage() {
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <span style={{ fontSize: 10, color: "var(--fg-4)", fontFamily: "var(--font-mono)" }}>{c.submitted_at?.substring(0, 16)}</span>
-                    {!c.is_read && <button onClick={async () => { await markContactRead(c.id); getFactionContacts(detail.id).then(setPortalContacts); }} style={{ fontSize: 10, color: "var(--fg-4)", background: "none", border: "none", cursor: "pointer" }}>Mark read</button>}
+                    {!c.is_read && canWrite && <button onClick={async () => { await markContactRead(c.id).catch(() => {}); getFactionContacts(detail.id).then(setPortalContacts); }} style={{ fontSize: 10, color: "var(--fg-4)", background: "none", border: "none", cursor: "pointer" }}>Mark read</button>}
                   </div>
                 </div>
                 <div style={{ fontSize: 12, color: "var(--fg-2)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{c.message}</div>
@@ -570,9 +593,9 @@ export default function FactionDetailPage() {
                   <span className="min-w-[120px] font-bold" style={{ color: h.action_type.includes("PROMO") ? "var(--green)" : "var(--accent)" }}>{h.action_type}</span>
                   <span className="flex-1" style={{ color: "var(--fg-2)" }}>{h.details}</span>
                   <span style={{ color: "var(--fg-4)" }}>Auth: {h.authorized_by}</span>
-                  {auth.level >= 3 && <RowMenu actions={[
-                    { label: "Edit", onClick: async () => { const v = await showPrompt("Edit details:", h.details); if (v !== null) { await editAuditEntry(h.id, v); load(); } } },
-                    { label: "Delete", danger: true, onClick: async () => { if (await showConfirm("Delete this audit entry?")) { await deleteAuditEntry(h.id); load(); } } },
+                  {auth.level >= 3 && !archived && <RowMenu actions={[
+                    { label: "Edit", onClick: async () => { const v = await showPrompt("Edit details:", h.details); if (v !== null) { if (await act(() => editAuditEntry(h.id, v))) load(); } } },
+                    { label: "Delete", danger: true, onClick: async () => { if (await showConfirm("Delete this audit entry?")) { if (await act(() => deleteAuditEntry(h.id))) load(); } } },
                   ]} />}
                 </div>
               ))}
@@ -581,7 +604,7 @@ export default function FactionDetailPage() {
           </div>
 
           {/* Imports (L3) */}
-          {auth.level >= 3 && (
+          {auth.level >= 3 && !archived && (
             <div style={s.section}>
               <div className="flex justify-between items-center">
                 <div><div className="font-bold text-xs uppercase tracking-widest">Authorized Imports</div><div className="text-[10px] mt-1" style={{ color: "var(--fg-4)" }}>Toggle current permissions. To promote and modify imports together, use Stage Promotion.</div></div>
@@ -611,7 +634,7 @@ export default function FactionDetailPage() {
                       .filter((i) => !importSearch || i.name.toLowerCase().includes(importSearch.toLowerCase()))
                       .map((item) => (
                         <div key={item.id} className="flex items-center gap-2 px-3 py-2 rounded cursor-pointer" style={{ background: item.permitted ? "var(--green-bg)" : "var(--bg-2)", border: item.permitted ? "1px solid var(--green)" : "1px solid var(--border)" }}
-                          onClick={async () => { await toggleFactionImport(detail.id, item.id, !item.permitted); setFactionImports((prev) => prev.map((p) => (p.id === item.id ? { ...p, permitted: !p.permitted } : p))); }}>
+                          onClick={async () => { if (await act(() => toggleFactionImport(detail.id, item.id, !item.permitted))) setFactionImports((prev) => prev.map((p) => (p.id === item.id ? { ...p, permitted: !p.permitted } : p))); }}>
                           <span style={{ fontSize: 14 }}>{item.permitted ? "✅" : "⬜"}</span>
                           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded shrink-0" style={{ background: "var(--bg-3)", color: "var(--fg-4)" }}>T{item.tier}</span>
                           <span className="text-sm flex-1 truncate" style={{ color: item.permitted ? "var(--green)" : "var(--fg-2)" }}>{item.name}</span>
@@ -626,7 +649,7 @@ export default function FactionDetailPage() {
           )}
 
           {/* Configuration (L3) — legacy fields kept out of the Overview */}
-          {auth.level >= 3 && (
+          {auth.level >= 3 && !archived && (
             <div style={s.section}>
               <div className="flex flex-wrap justify-between items-center gap-3">
                 <div>
@@ -646,8 +669,8 @@ export default function FactionDetailPage() {
           {auth.level >= 3 && (
             <div style={{ ...s.section, borderColor: "var(--red-bg)" }}>
               <div className="flex justify-between items-center">
-                <div><div className="font-bold text-xs uppercase tracking-widest" style={{ color: "var(--red)" }}>Danger Zone</div><div className="text-[10px] mt-1" style={{ color: "var(--fg-4)" }}>Archive removes the faction from active lists (restorable from Operations → Archive).</div></div>
-                <button style={s.btnDanger} onClick={handleDeleteFaction}>Delete Faction</button>
+                <div><div className="font-bold text-xs uppercase tracking-widest" style={{ color: "var(--red)" }}>Danger Zone</div><div className="text-[10px] mt-1" style={{ color: "var(--fg-4)" }}>{archived ? "Archived — restoring puts the faction back on every list." : "Archive removes the faction from active lists, clears any staged promotion and denies open RP requests (restorable here or from Operations → Archive)."}</div></div>
+                {archived ? <button style={s.btnGhost} onClick={handleRestoreFaction}>Restore Faction</button> : <button style={s.btnDanger} onClick={handleDeleteFaction}>Archive Faction</button>}
               </div>
             </div>
           )}
