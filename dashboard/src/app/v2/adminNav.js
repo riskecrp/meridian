@@ -6,7 +6,7 @@
 // 2026-08-04 owner ruling: FM Hours + Server Logs open to every L3 (were owner-
 // only), Recurring Reminders leaves the L2 tier.
 export const ADMIN_GROUPS = [
-  { id: "people", label: "People", items: [["staff", "Staff & Teams", "l3"], ["hours", "FM Hours", "l3"]] },
+  { id: "people", label: "People", items: [["staff", "Staff & Teams", "l3"], ["hours", "FM Hours", "l2strict"]] },
   // Vehicle Catalog moved to the Library (all-staff reference, 2026-08-05).
   // Properties / Import Catalog: L2, Event Team and Lead Storytellers read; L3 edits (policy 4).
   // Fleet (port of /fm/operations/fleet) and Analytics (port of /fm/operations/analytics) are L3.

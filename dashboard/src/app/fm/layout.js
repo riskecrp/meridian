@@ -15,15 +15,15 @@ const SECTIONS = [
       { name: "Factions", href: "/fm/factions", blurb: "Every faction, tier and current standing", eventTeam: true },
       { name: "Teams", href: "/fm/teams", blurb: "Team rosters and their assigned factions" },
       { name: "Scenes", href: "/fm/scenes", blurb: "Scene logs and rewards handed out", eventTeam: true },
-      { name: "Documents", href: "/fm/documents", blurb: "Written guidance and reference docs", eventTeam: true },
+      { name: "Documents", href: "/fm/documents", blurb: "Written guidance and reference docs", eventTeam: true, lst: true },
       { name: "Meridian Database ↗", href: "https://meridiandatabase.net", external: true, blurb: "MeridianDatabase.net — opens in a new tab", eventTeam: true },
     ],
   },
   {
     label: "Communications",
     items: [
-      { name: "Announcements",    href: "/fm/communications", blurb: "Announcements out to faction Discords" },
-      { name: "IC Communication", href: "/fm/communications/ic", blurb: "In-character memos to factions" },
+      { name: "Announcements",    href: "/fm/communications", blurb: "Announcements out to faction Discords", level: 2 },
+      { name: "IC Communication", href: "/fm/communications/ic", blurb: "In-character memos to factions",         level: 2 },
       { name: "Meeting Notes",    href: "/fm/leadership/notes", blurb: "Minutes from leadership meetings" },
       { name: "IC Contacts",      href: "/fm/leadership/contacts", blurb: "In-character contact details", level: 3 },
     ],
@@ -42,10 +42,10 @@ const SECTIONS = [
   {
     label: "Storytelling",
     items: [
-      { name: "Knowledge Base", href: "/fm/storytelling/kb", blurb: "Lore and setting reference", eventTeam: true },
-      { name: "Scene Library", href: "/fm/storytelling/library", blurb: "Reusable scene ideas and write-ups", eventTeam: true },
-      { name: "Arsenal", href: "/fm/storytelling/loadouts", blurb: "Weapon and gear sets for scenes", eventTeam: true },
-      { name: "Change Log", href: "/fm/storytelling/changelog", blurb: "What changed in the world, and when", eventTeam: true },
+      { name: "Knowledge Base", href: "/fm/storytelling/kb", blurb: "Lore and setting reference", eventTeam: true, lst: true },
+      { name: "Scene Library", href: "/fm/storytelling/library", blurb: "Reusable scene ideas and write-ups", eventTeam: true, lst: true },
+      { name: "Arsenal", href: "/fm/storytelling/loadouts", blurb: "Weapon and gear sets for scenes", eventTeam: true, lst: true },
+      { name: "Change Log", href: "/fm/storytelling/changelog", blurb: "What changed in the world, and when", eventTeam: true, lst: true },
       { name: "NPC Ecosystem", href: "/fm/storytelling/network", blurb: "NPCs, turf and who controls what", level: 2, eventTeam: true, lst: true },
     ],
   },
@@ -78,7 +78,7 @@ const SECTIONS = [
     label: "Handover",
     minLevel: 3,
     items: [
-      { name: "Server Handover", href: "/fm/handover", blurb: "Shift handover between staff" },
+      { name: "Server Handover", href: "/fm/handover", blurb: "Migration runbook and data exports" },
     ],
   },
 ];
@@ -202,11 +202,8 @@ function SidebarInner({ mobile, setMobile, theme, toggleTheme, auth }) {
 
       {/* Footer */}
       <div style={{ padding: "8px 10px 10px", borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 6 }}>
-        {(isOwner(auth.id) || isOwner(auth._realId)) && !auth._impersonating && (
+        {auth.isOwner && !auth._impersonating && (
           <ImpersonateControl />
-        )}
-        {(auth.level === 3 || auth._realLevel === 3) && !auth._impersonating && (
-          <ViewAsControl currentLevel={auth.level} realLevel={auth._realLevel || auth.level} isViewingAsET={auth._viewAsEventTeam} isViewingAsLST={auth._viewAsLeadStoryteller} />
         )}
         <div style={{ display: "flex", gap: 6 }}>
           <button
@@ -235,7 +232,7 @@ function SidebarInner({ mobile, setMobile, theme, toggleTheme, auth }) {
         </div>
         {auth.displayName && (
           <div style={{ fontSize: 9, color: "var(--fg-4)", fontFamily: "var(--font-mono)", textAlign: "center", letterSpacing: "0.06em" }}>
-            {auth.displayName || auth.name} · {auth.isEventTeam ? 'Event Team' : `L${auth.level}`}
+            {auth.displayName || auth.name} · {auth.isEventTeam ? 'Event Team' : auth.isLeadStoryteller ? 'Lead Storyteller' : `L${auth.level}`}
           </div>
         )}
       </div>
@@ -251,61 +248,12 @@ function ViewAsBanner({ auth }) {
     return (
       <div className="w-full flex items-center justify-center gap-3 py-2 px-4 text-[11px] font-bold uppercase tracking-widest sticky top-0 z-50"
         style={{ background: "#ef4444", color: "white" }}>
-        <span>⚠ Impersonating: {auth.displayName || auth.name} (L{auth.level})</span>
+        <span>⚠ Viewing as {auth.displayName || auth.name} (L{auth.level}) — you are {auth._realName || "the owner"}</span>
         <button
           onClick={async () => { await fetch('/api/staff/impersonate', { method: 'DELETE' }); window.location.reload(); }}
           style={{ background: "white", color: "#ef4444", border: "none", cursor: "pointer", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 700 }}
         >
           Exit
-        </button>
-      </div>
-    );
-  }
-
-  // Event Team view-as (localStorage-based)
-  if (auth._viewAsEventTeam) {
-    return (
-      <div className="w-full flex items-center justify-center gap-3 py-2 px-4 text-[11px] font-bold uppercase tracking-widest sticky top-0 z-50"
-        style={{ background: "var(--amber)", color: "black" }}>
-        <span>Viewing as Event Team — real level is L{auth._realLevel}</span>
-        <button
-          onClick={() => { localStorage.removeItem("meridian-view-as"); window.dispatchEvent(new Event("meridian-view-as-changed")); }}
-          style={{ background: "black", color: "var(--amber)", border: "none", cursor: "pointer", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 700 }}
-        >
-          Reset
-        </button>
-      </div>
-    );
-  }
-
-  // Lead Storyteller view-as (localStorage-based)
-  if (auth._viewAsLeadStoryteller) {
-    return (
-      <div className="w-full flex items-center justify-center gap-3 py-2 px-4 text-[11px] font-bold uppercase tracking-widest sticky top-0 z-50"
-        style={{ background: "var(--amber)", color: "black" }}>
-        <span>Viewing as Lead Storyteller — real level is L{auth._realLevel}</span>
-        <button
-          onClick={() => { localStorage.removeItem("meridian-view-as"); window.dispatchEvent(new Event("meridian-view-as-changed")); }}
-          style={{ background: "black", color: "var(--amber)", border: "none", cursor: "pointer", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 700 }}
-        >
-          Reset
-        </button>
-      </div>
-    );
-  }
-
-  // Level-only view-as (localStorage-based)
-  if (auth._realLevel && auth.level !== auth._realLevel) {
-    const labels = { 1: "L1 (Guide)", 2: "L2 (Lead)", 3: "L3 (Management)" };
-    return (
-      <div className="w-full flex items-center justify-center gap-3 py-2 px-4 text-[11px] font-bold uppercase tracking-widest sticky top-0 z-50"
-        style={{ background: "var(--amber)", color: "black" }}>
-        <span>Viewing as {labels[auth.level] || `L${auth.level}`} — real level is {labels[auth._realLevel] || `L${auth._realLevel}`}</span>
-        <button
-          onClick={() => { localStorage.removeItem("meridian-view-as"); window.dispatchEvent(new Event("meridian-view-as-changed")); }}
-          style={{ background: "black", color: "var(--amber)", border: "none", cursor: "pointer", fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 700 }}
-        >
-          Reset
         </button>
       </div>
     );
@@ -368,85 +316,20 @@ function ImpersonateControl() {
   );
 }
 
-function ViewAsControl({ currentLevel, realLevel, isViewingAsET, isViewingAsLST }) {
-  const [open, setOpen] = useState(false);
-  const setLevel = (lvl) => {
-    if (typeof window === "undefined") return;
-    if (lvl === null) localStorage.removeItem("meridian-view-as");
-    else localStorage.setItem("meridian-view-as", String(lvl));
-    window.dispatchEvent(new Event("meridian-view-as-changed"));
-    setOpen(false);
-  };
-  const isImpersonating = isViewingAsET || isViewingAsLST || currentLevel !== realLevel;
-  const activeLabel = isViewingAsET ? "ET" : isViewingAsLST ? "LST" : (isImpersonating ? `L${currentLevel}` : "Real");
-
-  return (
-    <div style={{ padding: "0 2px" }}>
-      {!open ? (
-        <button
-          onClick={() => setOpen(true)}
-          style={{
-            width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "6px 10px", borderRadius: 8, fontSize: 9, fontWeight: 600,
-            textTransform: "uppercase", letterSpacing: "0.12em",
-            color: isImpersonating ? "var(--amber)" : "var(--fg-3)",
-            background: isImpersonating ? "rgba(251,191,36,0.08)" : "transparent",
-            border: `1px solid ${isImpersonating ? "rgba(251,191,36,0.2)" : "var(--border)"}`,
-            cursor: "pointer", fontFamily: "var(--font-mono)",
-          }}
-        >
-          <span>View as · {activeLabel}</span>
-          <span style={{ opacity: 0.5 }}>▾</span>
-        </button>
-      ) : (
-        <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-            <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--fg-4)", fontFamily: "var(--font-mono)" }}>
-              View As{isImpersonating && <span style={{ color: "var(--amber)", marginLeft: 4 }}>· Active</span>}
-            </span>
-            <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: "var(--fg-4)", cursor: "pointer", fontSize: 10, lineHeight: 1 }}>✕</button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr", gap: 4 }}>
-            {[{ lvl: null, label: "Real" }, { lvl: 1, label: "L1" }, { lvl: 2, label: "L2" }, { lvl: 3, label: "L3" }, { lvl: "event_team", label: "ET" }, { lvl: "lead_storyteller", label: "LST" }].map((opt) => {
-              const active = opt.lvl === null
-                ? !isImpersonating
-                : opt.lvl === "event_team"
-                  ? isViewingAsET
-                  : opt.lvl === "lead_storyteller"
-                    ? isViewingAsLST
-                    : currentLevel === opt.lvl && !isViewingAsET && !isViewingAsLST && isImpersonating;
-              return (
-                <button key={opt.label} onClick={() => setLevel(opt.lvl)} style={{
-                  padding: "4px 0", borderRadius: 6, fontSize: 9, fontWeight: 700,
-                  cursor: "pointer", fontFamily: "var(--font-mono)",
-                  background: active ? "rgba(160,126,245,0.2)" : "transparent",
-                  color: active ? "var(--accent-h)" : "var(--fg-3)",
-                  border: `1px solid ${active ? "rgba(160,126,245,0.3)" : "var(--border)"}`,
-                }}>
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function FMLayout({ children }) {
   const auth = useAuth();
   const [mobile, setMobile] = useState(false);
   const [theme, setTheme] = useState("dark");
 
-  // One storage key for both shells ("meridian_theme"); the old hyphenated key
+  // One storage key for both shells ("meridian-theme", same as the root script and /v2); the old underscore key
   // is read once so nobody's choice is lost, and dark is the default.
   useEffect(() => {
     let saved = "dark";
     try {
-      saved = localStorage.getItem("meridian_theme") || localStorage.getItem("meridian-theme") || "dark";
+      saved = localStorage.getItem("meridian-theme") || localStorage.getItem("meridian_theme") || "dark";
       if (saved !== "light") saved = "dark";
-      localStorage.setItem("meridian_theme", saved);
+      localStorage.setItem("meridian-theme", saved);
     } catch {}
     setTheme(saved);
     document.documentElement.setAttribute("data-theme", saved);
@@ -455,7 +338,7 @@ export default function FMLayout({ children }) {
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
-    try { localStorage.setItem("meridian_theme", next); } catch {}
+    try { localStorage.setItem("meridian-theme", next); } catch {}
     document.documentElement.setAttribute("data-theme", next);
   };
 
