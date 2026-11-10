@@ -73,7 +73,7 @@ export default function Vehicles({ canEdit }) {
       )}
       <div className="card"><div style={{ overflowX: "auto" }}>
         <table className="dtable" style={{ minWidth: 560 }}>
-          <thead><tr><th>Name</th><th>Spawn</th><th style={{ textAlign: "right" }}>Used</th>{canEdit && <th></th>}</tr></thead>
+          <thead><tr><th>Name</th><th>Spawn</th><th style={{ textAlign: "right" }} title="Factions with it in a garage · vehicles in circulation">In use</th>{canEdit && <th></th>}</tr></thead>
           <tbody>
             {shown.length === 0 && <tr><td colSpan={canEdit ? 4 : 3} style={{ color: "var(--ink-3)", fontStyle: "italic", textAlign: "center" }}>No vehicles match.</td></tr>}
             {shown.map(r => (
@@ -88,7 +88,7 @@ export default function Vehicles({ canEdit }) {
                       </button>
                     ) : <span style={{ color: "var(--ink-3)" }}>—</span>}
                   </td>
-                  <td style={{ textAlign: "right", fontFamily: "var(--v2-mono)", color: r.use_count > 0 ? "var(--ink-1)" : "var(--ink-3)" }}>{r.use_count || 0}</td>
+                  <td style={{ textAlign: "right", fontFamily: "var(--v2-mono)", color: (r.in_circulation || 0) > 0 ? "var(--ink-1)" : "var(--ink-3)" }}>{r.factions_using || 0} · {r.in_circulation || 0}</td>
                   {canEdit && (
                     <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                       <button className="act" style={{ padding: "2px 7px", color: "var(--accent)" }} title="Add to faction garage" onClick={() => { setAddTo(r); setAddFaction(""); setAddQty(1); }}>+ Faction</button>{" "}
