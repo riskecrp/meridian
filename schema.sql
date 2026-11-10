@@ -931,3 +931,11 @@ CREATE INDEX idx_audit_target ON site_audit_log(target_type, target_id);
 CREATE INDEX idx_scene_logs_author ON scene_logs(author_id);
 CREATE INDEX idx_mentions_target ON mentions(target_user_id, is_read);
 CREATE INDEX idx_keyword_alerts_guild ON keyword_alerts(guild_id);
+CREATE TABLE verify_sessions (
+  jti TEXT PRIMARY KEY,
+  discord_id TEXT NOT NULL,
+  discord_name TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_verify_sessions_exp ON verify_sessions(expires_at);
