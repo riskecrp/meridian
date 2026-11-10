@@ -5,6 +5,7 @@ import LeadershipShell from "../_shared/Shell";
 import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../teams/actions";
 import RpChangeForm from "../../teams/RpChangeForm";
 import { ui } from "../../../../lib/ui.js";
+import { FM_GUILD_ID } from "../../../../lib/constants";
 
 const STATUS_META = {
   pending_discussion: { label: 'Pending Discussion', color: 'var(--amber)', bg: 'var(--amber-bg)' },
@@ -83,7 +84,8 @@ function ContactCard({ contact, staffList, onRefresh }) {
 
   const doStage = async (rpData) => {
     setBusy(true);
-    await stageRoleplay(contact.id, rpData);
+    const r = await stageRoleplay(contact.id, rpData).catch(e => ({ ok: false, error: e?.message }));
+    if (r?.ok === false) window.alert(r.error || 'Could not stage the RP change.');
     setStagingRP(false);
     setBusy(false); onRefresh();
   };
@@ -103,7 +105,7 @@ function ContactCard({ contact, staffList, onRefresh }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 10, color: 'var(--fg-4)', fontFamily: 'var(--font-mono)' }}>{new Date(contact.submitted_at).toLocaleDateString()}</span>
           {contact.thread_id && (
-            <a href={`https://discord.com/channels/@me/${contact.thread_id}`} target="_blank" rel="noreferrer"
+            <a href={`https://discord.com/channels/${FM_GUILD_ID}/${contact.thread_id}`} target="_blank" rel="noreferrer"
               style={{ fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 5, background: 'rgba(88,101,242,0.12)', color: '#818cf8', textDecoration: 'none' }}>Thread ↗</a>
           )}
           <select
@@ -166,17 +168,27 @@ export default function IcContactsPage() {
   const [staffList, setStaffList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('active');
+  const [loadError, setLoadError] = useState('');
+  // The roll-up action is L3-only; gate here so lower levels see the access
+  // message instead of a server-action error page (F26).
+  const canAccess = !auth.loading && auth.level >= 3;
 
   const load = async () => {
-    const [c, s] = await Promise.all([getAllIcContacts(), getStaffList()]);
-    setContacts(c); setStaffList(s); setLoading(false);
+    try {
+      const [c, s] = await Promise.all([getAllIcContacts(), getStaffList()]);
+      setContacts(c || []); setStaffList(s || []);
+    } catch (e) { setLoadError(e?.message || 'Could not load IC contacts.'); }
+    setLoading(false);
   };
 
-  useEffect(() => { if (!auth.loading) load(); }, [auth.loading]);
+  useEffect(() => { if (!auth.loading && canAccess) load(); }, [auth.loading, canAccess]);
 
   const filtered = contacts.filter(c => filter === 'all' ? true : c.status !== 'completed');
 
-  if (auth.loading || loading) return <LeadershipShell title="IC Contacts" section="Communications" accent="var(--accent)" headerBg="rgba(160,126,245,0.06)" level={auth.level}><div style={{ padding: 24, color: 'var(--accent)', fontSize: 13 }}>Loading...</div></LeadershipShell>;
+  if (auth.loading) return <div className="p-10 text-sm animate-pulse" style={{ color: 'var(--accent)' }}>Loading...</div>;
+  if (!canAccess) return <div className="p-10 text-sm" style={{ color: 'var(--red)' }}>Access denied. FM Leadership (L3) required — your team's contacts are on each faction's page under Portal / Comms.</div>;
+  if (loading) return <LeadershipShell title="IC Contacts" section="Communications" accent="var(--accent)" headerBg="rgba(160,126,245,0.06)" level={auth.level}><div style={{ padding: 24, color: 'var(--accent)', fontSize: 13 }}>Loading...</div></LeadershipShell>;
+  if (loadError) return <LeadershipShell title="IC Contacts" section="Communications" accent="var(--accent)" headerBg="rgba(160,126,245,0.06)" level={auth.level}><div style={{ padding: 24, color: 'var(--red)', fontSize: 13 }}>{loadError}</div></LeadershipShell>;
 
   return (
     <LeadershipShell title="IC Contacts" section="Communications" accent="var(--accent)" headerBg="rgba(160,126,245,0.06)" level={auth.level}>

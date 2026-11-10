@@ -10,7 +10,8 @@ import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatu
 import RpChangeForm from "../../fm/teams/RpChangeForm";
 import Modal from "../Modal.js";
 import { FM_GUILD_ID } from "../../../lib/constants";
-import { getReviewCycleMap, getRPExecuteTarget } from "../actions.js";
+import { getRPExecuteTarget } from "../actions.js";
+import { sanitizeHtml } from "../../fm/leadership/_shared/sanitize.js";
 
 export default function V2LeadershipPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Leadership /></Suspense>;
@@ -23,10 +24,13 @@ function V2Leadership() {
   const router = useRouter();
   // Old "+New → note" deep links (?new=1) now live on the full-page editor.
   useEffect(() => { if (sp.get("new") === "1") router.replace("/v2/notes"); }, [sp]);
-  const can = (auth?.level || 0) >= 2 || auth?.isLeadStoryteller;
+  const level = auth?.level || 0;
+  const can = level >= 2 || auth?.isLeadStoryteller;
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead or Leadership access required.</div>;
-  const TABS = [["approvals", "Approvals"], ["performance", "Performance"], ["notes", "Meeting Notes"], ["reviews", "Reviews"], ...((auth?.level || 0) >= 3 ? [["contacts", "IC Contacts"]] : [])];
+  // Lead Storytellers read the approvals queue and the review board; the
+  // performance and meeting-note actions are L2+ so those sections stay hidden.
+  const TABS = [["approvals", "Approvals"], ...(level >= 2 ? [["performance", "Performance"], ["notes", "Meeting Notes"]] : []), ["reviews", "Reviews"], ...(level >= 3 ? [["contacts", "IC Contacts"]] : [])];
   const tabParam = sp.get("tab");
   const tab = TABS.some(([v]) => v === tabParam) ? tabParam : "approvals";
   const sectionLabel = TABS.find(([v]) => v === tab)?.[1] || "";
@@ -48,11 +52,17 @@ function Approvals({ auth }) {
   const [q, setQ] = useState({ rpChanges: [], deletions: [], promos: [] });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const [npcExec, setNpcExec] = useState(null); // {id, npcName, npcPos}
   const [rpDone, setRpDone] = useState(null);   // {id, note} — requester confirming the RP happened
   const load = () => getPendingQueue().then(x => { setQ(x || { rpChanges: [], deletions: [], promos: [] }); setLoading(false); }).catch(() => setLoading(false));
   useEffect(() => { load(); }, []);
-  const run = async (fn) => { setBusy(true); try { await fn(); } finally { setBusy(false); load(); } };
+  const run = async (fn) => {
+    setBusy(true); setErr("");
+    try { const r = await fn(); if (r && r.ok === false) setErr(r.error || "Action failed."); }
+    catch (e) { setErr(e?.message || "Action failed."); }
+    finally { setBusy(false); load(); }
+  };
   const total = q.rpChanges.length + q.deletions.length + q.promos.length;
   if (loading) return <div className="empty">Loading…</div>;
   if (total === 0) return <div className="empty">Nothing awaiting approval.</div>;
@@ -61,6 +71,7 @@ function Approvals({ auth }) {
 
   return (
     <>
+      {err && <div className="err" style={{ marginBottom: 10 }}>{err}</div>}
       {q.rpChanges.length > 0 && <div className="card"><div className="hd"><div className="t">RP changes</div><div className="meta">{q.rpChanges.length}</div></div>
         {q.rpChanges.map(rc => {
           const m = statusMeta(rc.status);
@@ -131,14 +142,16 @@ function Approvals({ auth }) {
       </div>}
 
       {q.promos.length > 0 && <div className="card"><div className="hd"><div className="t">Staged promotions</div><div className="meta">{q.promos.length}</div></div>
-        {q.promos.map(p => { let tgt = p.target_tier; try { tgt = JSON.parse(p.target_tier).tier; } catch {} return (
+        {q.promos.map(p => { const tgt = p.tier ?? "?"; return (
           <div key={p.faction_id} className="clog">
             <span className="chip" style={{ background: "var(--good-bg)", color: "var(--good)" }}>PROMO · {p.faction_name}</span>
             <span style={{ fontFamily: "var(--v2-mono)", color: "var(--ink-1)" }}>T{p.current_tier} → T{tgt}</span>
+            {p.newImports?.length > 0 && <span style={{ fontSize: 11, color: "var(--ink-3)" }}>+{p.newImports.length} import{p.newImports.length === 1 ? "" : "s"}</span>}
             <span style={{ flex: 1 }} />
+            <Link className="act" href={`/v2/factions/${encodeURIComponent(p.faction_name)}?tab=review`}>Open →</Link>
             {isL3 && <>
-              <button className="act" style={{ color: "var(--rose)" }} disabled={busy} onClick={() => { if (window.confirm(`Cancel promo for ${p.faction_name}?`)) run(() => cancelPromotion(p.faction_id, p.faction_name)); }}>Cancel</button>
-              <button className="act good" disabled={busy} onClick={() => { if (window.confirm(`Complete promo for ${p.faction_name}?`)) run(() => completePromotion(p.faction_id, p.faction_name)); }}>Complete</button>
+              <button className="act" style={{ color: "var(--rose)" }} disabled={busy} onClick={() => { if (window.confirm(`Cancel promo for ${p.faction_name}?`)) run(() => cancelPromotion(p.faction_id)); }}>Cancel</button>
+              <button className="act good" disabled={busy} onClick={() => { if (window.confirm(`Complete promo for ${p.faction_name}? Do this after the RP has run.`)) run(() => completePromotion(p.faction_id)); }}>Complete</button>
             </>}
           </div>
         ); })}
@@ -237,7 +250,7 @@ function MeetingNotes({ auth }) {
                 {open && <span style={{ flex: 1 }} />}
                 {(n.author_id === auth.id || auth.level >= 3) && <span onClick={e => e.stopPropagation()} style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                   <Link className="act" style={{ padding: "2px 8px" }} href={`/v2/notes?id=${n.id}`}>Edit</Link>
-                  <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete note?")) { await deleteMeetingNote(n.id); load(); } }}>Del</button>
+                  <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete note?")) { const r = await deleteMeetingNote(n.id).catch(e => ({ ok: false, error: e?.message })); if (r?.ok === false) window.alert(r.error || "Delete failed."); load(); } }}>Del</button>
                 </span>}
                 <span className="caret" style={{ transform: open ? "rotate(180deg)" : "none" }}>▼</span>
               </div>
@@ -245,7 +258,7 @@ function MeetingNotes({ auth }) {
                 <div className="task-detail">
                   {/* Old notes are plain text; anything written with Quill is HTML — render each accordingly. */}
                   {/<[a-z][^>]*>/i.test(n.content || "")
-                    ? <div className="quill-content" style={{ color: "var(--ink-1)", overflowWrap: "anywhere", lineHeight: 1.6 }} dangerouslySetInnerHTML={{ __html: n.content }} />
+                    ? <div className="quill-content" style={{ color: "var(--ink-1)", overflowWrap: "anywhere", lineHeight: 1.6 }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(n.content) }} />
                     : <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--ink-1)" }}>{n.content}</div>}
                 </div>
               )}
@@ -269,21 +282,21 @@ function CycleDot({ on, label, hint }) {
 
 function Reviews() {
   const [rows, setRows] = useState([]);
-  const [cycle, setCycle] = useState({ feedback: {}, staged: [] });
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [flt, setFlt] = useState("all"); // all | todo | confirm | feedback
   useEffect(() => {
-    Promise.all([getReviewData().catch(() => []), getReviewCycleMap().catch(() => ({ feedback: {}, staged: [] }))])
-      .then(([r, c]) => { setRows(r || []); setCycle(c || { feedback: {}, staged: [] }); setLoading(false); });
+    getReviewData().catch(() => []).then(r => { setRows(r || []); setLoading(false); });
   }, []);
   if (loading) return <div className="empty">Loading…</div>;
 
+  // Every dot comes from getReviewData: the status is derived from the L3
+  // votes, feedback delivery lives on faction_reviews, staged = pending_promo.
   const state = (f) => ({
     reviewed: !!f.currentReview,
-    confirmed: !!f.currentReview?.status?.startsWith("Confirmed"),
-    feedback: !!cycle.feedback[f.name],
-    staged: cycle.staged.includes(f.name),
+    confirmed: !!(f.status || "").startsWith("Confirmed"),
+    feedback: !!f.feedbackSent?.sent,
+    staged: !!f.staged,
   });
   const shown = rows
     .filter(f => !q || [f.name, f.teamName, f.leadName].some(x => (x || "").toLowerCase().includes(q.toLowerCase())))
@@ -295,7 +308,7 @@ function Reviews() {
       return true;
     });
   const reviewed = rows.filter(f => f.currentReview).length;
-  const fbSent = rows.filter(f => cycle.feedback[f.name]).length;
+  const fbSent = rows.filter(f => f.feedbackSent?.sent).length;
   const recColor = (r) => r === "Promote" ? "var(--good)" : (r === "Demote" || r === "Remove") ? "var(--rose)" : "var(--amber)";
   return (
     <>
@@ -326,8 +339,8 @@ function Reviews() {
                   <td>
                     <span style={{ display: "inline-flex", gap: 9, alignItems: "center" }}>
                       <CycleDot on={s.reviewed} label="REC" hint={f.currentReview ? "review submitted" : "no review yet"} />
-                      <CycleDot on={s.confirmed} label="CONF" hint={f.currentReview?.status || ""} />
-                      <CycleDot on={s.feedback} label="SENT" hint={cycle.feedback[f.name] ? `by ${cycle.feedback[f.name].by}` : "feedback not delivered"} />
+                      <CycleDot on={s.confirmed} label="CONF" hint={`${f.status || "Pending Discussion"} · ${f.tally?.recorded || 0}/${f.tally?.voters || 0} votes`} />
+                      <CycleDot on={s.feedback} label="SENT" hint={f.feedbackSent?.sent ? `by ${f.feedbackSent.by}` : "feedback not delivered"} />
                       {s.staged && <span className="chip lock" style={{ fontSize: 9 }}>STAGED</span>}
                     </span>
                   </td>

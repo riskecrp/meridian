@@ -8,7 +8,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import QuillEditor from "../../../lib/QuillEditor";
-import { getMeetingNotes, saveMeetingNote, getNoteTargets, getAttendeesForTarget } from "../../fm/leadership/actions.js";
+import { getMeetingNote, saveMeetingNote, getNoteTargets, getAttendeesForTarget } from "../../fm/leadership/actions.js";
 import { useRun } from "../hooks.js";
 
 const stripHtml = (h) => (h || "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ");
@@ -33,8 +33,8 @@ function NoteEditor() {
     if (auth?.loading || !auth?.id) return;
     getNoteTargets().then(t => setTargets(t || { factions: [], teams: [], groups: [] })).catch(() => setTargets({ factions: [], teams: [], groups: [] }));
     if (editId) {
-      getMeetingNotes().then(notes => {
-        const n = (notes || []).find(x => x.id === editId);
+      // One scoped lookup by id, so notes older than the list's window still open.
+      getMeetingNote(editId).then(n => {
         if (!n) { setNotFound(true); return; }
         setForm({
           id: n.id,

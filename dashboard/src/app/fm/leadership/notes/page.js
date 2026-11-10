@@ -7,6 +7,7 @@ import { s } from "../_shared/styles";
 import LeadershipShell from "../_shared/Shell";
 import QuillEditor from "../../../../lib/QuillEditor";
 import { useDraft, loadDraft, clearDraft, isBlankDraft } from "../../../../lib/useDraft";
+import { sanitizeHtml } from "../_shared/sanitize.js";
 
 // A meeting-note draft is only worth keeping when the editor body has content.
 const noteDraftBlank = (d) => isBlankDraft(d?.content);
@@ -135,7 +136,8 @@ export default function NotesPage() {
     if (!editingNote.targetType || !editingNote.targetKey) { showAlert('Please select a faction, team, or group.'); return; }
     setSaving(true);
     const attendeeIds = teamMembers.filter(m => attendance[m.discord_id]).map(m => m.discord_id);
-    await saveMeetingNote({ id: editingNote.id, targetType: editingNote.targetType, targetKey: editingNote.targetKey, content, attendeeIds });
+    const res = await saveMeetingNote({ id: editingNote.id, targetType: editingNote.targetType, targetKey: editingNote.targetKey, content, attendeeIds }).catch(e => ({ ok: false, error: e?.message }));
+    if (res?.ok === false) { setSaving(false); showAlert(res.error || 'Could not save the note.'); return; }
     clearDraft(editingNote.id ? `notes:edit:${editingNote.id}` : 'notes:new');
     setNewDraft(null);
     setSaving(false);
@@ -218,13 +220,13 @@ export default function NotesPage() {
                   <div className="flex gap-2 items-center shrink-0">
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100" onClick={e => e.stopPropagation()}>
                       <button onClick={() => openEdit(n)} style={{fontSize:10,color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>Edit</button>
-                      <button onClick={async () => { if (await showConfirm('Delete note?')) { await deleteMeetingNote(n.id); setNotes(await getMeetingNotes()); }}} style={{fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>Del</button>
+                      <button onClick={async () => { if (await showConfirm('Delete note?')) { const r = await deleteMeetingNote(n.id).catch(e => ({ ok: false, error: e?.message })); if (r?.ok === false) await showAlert(r.error || 'Could not delete the note.'); setNotes(await getMeetingNotes()); }}} style={{fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>Del</button>
                     </div>
                     <span style={{color:'var(--fg-4)',transform:expandedNote===n.id?'rotate(180deg)':'none',transition:'transform 0.15s',fontSize:11}}>▼</span>
                   </div>
                 </div>
                 {expandedNote === n.id && (
-                  <div className="px-4 pb-4 pt-2 quill-content" style={{borderTop:'1px solid var(--border)'}} dangerouslySetInnerHTML={{__html: n.content || '<em style="color:var(--fg-4)">No content</em>'}} />
+                  <div className="px-4 pb-4 pt-2 quill-content" style={{borderTop:'1px solid var(--border)'}} dangerouslySetInnerHTML={{__html: sanitizeHtml(n.content) || '<em style="color:var(--fg-4)">No content</em>'}} />
                 )}
               </div>
               );
