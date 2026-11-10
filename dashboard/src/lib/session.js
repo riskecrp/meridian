@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { queryOne, run } from './db.js';
 import { isOwner } from '../../../shared/owners.js';
 import { markImpersonation, clearImpersonation } from './auditContext.js';
