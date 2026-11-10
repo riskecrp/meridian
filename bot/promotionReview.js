@@ -5,8 +5,10 @@
  * Policy 7: one leadership_personal_notes row per L3 per faction per month is
  * that leader's vote (UNIQUE(faction_id, author_id, review_month)). The tally
  * DERIVES faction_reviews.status — 'Confirmed Promote' / 'Confirmed Hold' /
- * 'Confirmed Demote' / 'Confirmed Remove' when two thirds of the votes agree,
- * otherwise 'Pending Discussion' — and writes it back. Confirmed Promote opens
+ * 'Confirmed Demote' / 'Confirmed Remove' when a strict majority of the
+ * confirmed votes agree (the same rule as the dashboard's deriveReviewStatus in
+ * fm/leadership/actions.js, so the two surfaces never disagree), otherwise
+ * 'Pending Discussion' — and writes it back. Confirmed Promote opens
  * the weapon polls; Confirmed Demote / Remove raise a leadership task straight
  * away, exactly as a closed promotion poll does.
  *
@@ -19,7 +21,7 @@
 
 import cron from 'node-cron';
 import { query, queryOne, run, transaction } from './lib/db.js';
-import { pingChannel, getRole } from './lib/pings.js';
+import { pingChannel, getRole, urls } from './lib/pings.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import { BOT_ACTOR } from './lib/auth.js';
 import { createTask } from '../shared/tasks.js';
@@ -34,8 +36,9 @@ export const GUN_CATEGORIES = (process.env.PROMO_GUN_CATEGORIES || [
   'MG',
 ].join(',')).split(',').map(s => s.trim()).filter(Boolean);
 
-// A confirmed outcome needs this share of the votes cast.
-const THRESHOLD = 2 / 3;
+// A confirmed outcome needs a strict majority of the confirmed votes
+// (top * 2 > confirmed), exactly as the dashboard tallies it.
+const majority = (top, confirmed) => top > 0 && top * 2 > confirmed;
 // A poll whose message cannot be fetched for this long after it should have
 // closed is given up on (the thread was deleted) rather than retried forever.
 const POLL_GIVE_UP_DAYS = 7;
@@ -101,9 +104,9 @@ export function tallyMonth(month) {
   }
   for (const v of Object.values(byFaction)) {
     v.status = 'Pending Discussion';
-    for (const [status, count] of Object.entries(v.counts)) {
-      if (v.votes > 0 && count / v.votes >= THRESHOLD) v.status = status;
-    }
+    let top = null;
+    for (const [status, count] of Object.entries(v.counts)) if (!top || count > top.count) top = { status, count };
+    if (top && majority(top.count, v.votes)) v.status = top.status;
   }
   return byFaction;
 }
@@ -125,16 +128,25 @@ export function writeDerivedStatus(factionId, factionName, month, status) {
 
 // ── Leadership tasks ───────────────────────────────────────────────────────────
 
-// Tasks raised by the review carry a marker so a re-run never raises them twice.
-const marker = (factionId, month, kind) => `[review ${month} · faction ${factionId} · ${kind}]`;
-
-async function raiseReviewTask(factionId, month, kind, description) {
-  const tag = marker(factionId, month, kind);
-  const dup = queryOne("SELECT task_uid FROM tasks WHERE description LIKE ?", [`%${tag}%`]);
+// Tasks raised by the review are keyed by their first line (faction + month +
+// outcome), so a re-run never raises them twice — and for Demote / Remove the
+// first line is the one the dashboard's deriveReviewStatus writes, so whichever
+// surface tallies first raises the task and the other finds it.
+async function raiseReviewTask(prefix, body) {
+  const dup = queryOne("SELECT task_uid FROM tasks WHERE description LIKE ?", [`${prefix}%`]);
   if (dup) return { ok: true, uid: dup.task_uid, existing: true };
   const leadership = getRole('fm_leadership');
   if (!leadership) return { ok: false, error: 'discord_roles has no fm_leadership role' };
-  return createTask(BOT_ACTOR, { desc: `${description}\n\n${tag}`, targetType: 'Role', targetId: leadership }, { via: 'promotion review' });
+  return createTask(BOT_ACTOR, { desc: `${prefix}\n\n${body}`, targetType: 'Role', targetId: leadership }, { via: 'promotion review' });
+}
+
+/** The dashboard's wording for a confirmed Demote / Remove task (fm/leadership/actions.js). */
+function outcomeTask(f, month, outcome) {
+  const faction = queryOne("SELECT tier FROM factions WHERE id = ?", [f.factionId]);
+  return {
+    prefix: `${f.name} — apply the confirmed ${outcome.toLowerCase()} (review ${month})`,
+    body: `Leadership confirmed "Confirmed ${outcome}" for ${month}. ${outcome === 'Demote' ? `Demote the faction from Tier ${faction?.tier ?? '?'} on the hub's Review tab.` : "Archive the faction from the hub's Admin tab once the RP has concluded."}\n${urls.faction(f.name, 'review')}`,
+  };
 }
 
 // ── Main review job (14th at 12:00 UTC) ───────────────────────────────────────
@@ -170,9 +182,8 @@ export async function runPromotionReview(client, { now = new Date() } = {}) {
   // Demote / Remove raise a leadership task like a closed promotion poll does.
   for (const kind of ['demote', 'remove']) {
     for (const f of outcome[kind]) {
-      const verb = kind === 'demote' ? 'Demote' : 'Remove';
-      const r = await raiseReviewTask(f.factionId, month, kind,
-        `${f.name} — Confirmed ${verb} (${month} review)\n\nLeadership voted ${f.counts[`Confirmed ${verb}`]}/${f.votes} to ${kind} ${f.name}. ${kind === 'demote' ? 'Stage the demotion in the Factions dashboard and tell the team lead.' : 'Remove the faction (archive it) in the Factions dashboard and tell the team lead.'}`);
+      const { prefix, body } = outcomeTask(f, month, kind === 'demote' ? 'Demote' : 'Remove');
+      const r = await raiseReviewTask(prefix, body);
       if (r.ok) outcome.tasks.push({ faction: f.name, kind, uid: r.uid, existing: !!r.existing });
       else console.error(`[PROMO] task for ${f.name} (${kind}) failed:`, r.error);
     }
@@ -260,8 +271,8 @@ export async function runPromotionReview(client, { now = new Date() } = {}) {
         content: `**${faction.name} Promotion** — No new Tier ${nextTier} weapons available (all already authorized).`,
       }).catch(() => {});
       // Nothing to poll: stage straight away so the promotion is not lost.
-      const r = await raiseReviewTask(faction.factionId, month, 'promote',
-        `${faction.name} — Stage Promotion to Tier ${nextTier}\n\nLeadership confirmed the promotion; no new Tier ${nextTier} weapons were available to poll. Stage the promotion in the Factions dashboard.`);
+      const r = await raiseReviewTask(`${faction.name} — Stage Promotion to Tier ${nextTier} (review ${month})`,
+        `Leadership confirmed the promotion; no new Tier ${nextTier} weapons were available to poll. Stage the promotion in the Factions dashboard.\n${urls.faction(faction.name, 'review')}`);
       if (r.ok) outcome.tasks.push({ faction: faction.name, kind: 'promote', uid: r.uid, existing: !!r.existing });
       continue;
     }
@@ -372,18 +383,17 @@ export async function processClosedPolls({ now = new Date() } = {}) {
     if (!allClosed) continue;
 
     const approvedWeapons = [...new Set(results.flatMap(r => r.approved))];
-    const desc = approvedWeapons.length
+    const month = monthKey(String(data.polls[0].created_at).replace(' ', 'T') + 'Z');
+    const body = approvedWeapons.length
       ? [
-          `${data.name} — Stage Promotion to Tier ${data.nextTier}`,
-          ``,
           `Weapon polls have closed. Approved imports:`,
           ...approvedWeapons.map(w => `• ${w}`),
           ``,
           `Stage the promotion in the Factions dashboard with these imports. This will notify Team Leads to schedule the RP.`,
+          urls.faction(data.name, 'review'),
         ].join('\n')
-      : `${data.name} — Promote to Tier ${data.nextTier}\n\nNo weapon votes were recorded. Please review poll results and stage the promotion manually in the Factions dashboard.`;
-    const month = monthKey(String(data.polls[0].created_at).replace(' ', 'T') + 'Z');
-    const task = await raiseReviewTask(Number(data.polls[0].faction_id), month, 'promote', desc);
+      : `No weapon votes were recorded. Please review poll results and stage the promotion manually in the Factions dashboard.\n${urls.faction(data.name, 'review')}`;
+    const task = await raiseReviewTask(`${data.name} — Stage Promotion to Tier ${data.nextTier} (review ${month})`, body);
     if (!task.ok) { errors.push(`${data.name}: task failed (${task.error})`); continue; }
     transaction(() => { for (const r of results) run("UPDATE promotion_polls SET processed = 1 WHERE id = ?", [r.poll.id]); });
     factionsDone++;

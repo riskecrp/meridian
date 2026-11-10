@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getDb, query, queryOne, run } from './db.js';
+import { getDb, queryOne, run } from './db.js';
 
 // ── Time ───────────────────────────────────────────────────────────────────────
 // SQLite-friendly 'YYYY-MM-DD HH:MM:SS' in UTC, matching the rest of the schema.

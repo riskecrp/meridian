@@ -20,6 +20,7 @@ import { logAudit } from './lib/audit.js';
 import { query, queryOne, run } from './lib/db.js';
 import { requireStaff, resolveActor, replyEphemeral } from './lib/auth.js';
 import { assertFactionWrite } from './lib/factions.js';
+import { ensureRequesterNotifier } from './lib/notify.js';
 import { answerTaskQuestion } from '../shared/tasks.js';
 import { GUILD_ID } from '../shared/config.js';
 import { syncStaffFromRoles, retireStaffOnLeave } from './lib/staffSync.js';
@@ -109,6 +110,7 @@ client.once(Events.ClientReady, async c => {
   console.log(`[SYSTEM] Ready as ${c.user.tag}`);
   client.user.setPresence({ activities: [{ name: "Meridian Operations", type: 3 }], status: "online" });
   await registerCommands(c);
+  ensureRequesterNotifier(client);   // RP-change requester notices go by DM through this client
   startScheduler(client);
   startTaskReminder(client);
   startPromotionReview(client);
