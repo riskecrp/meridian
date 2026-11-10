@@ -204,6 +204,8 @@ export default function FleetPage() {
                   const res = await call(() => e.id ? editFleetVehicle(e.id, qty, e.notes) : addFleetVehicle(e.factionId, e.vehicle_name.trim(), qty, e.notes));
                   if (!res.ok) { showAlert(res.error || 'Error'); return; }
                   setFleetEditingVehicle(null); refreshFleet();
+                  // The server merges a vehicle that is already in the fleet instead of adding a duplicate row.
+                  if (res.merged) showAlert(`"${e.vehicle_name.trim()}" was already in this fleet — the ${qty} added to the existing entry.`, 'Added to the existing entry');
                 }}>Save</button>
               </div>
             </div>

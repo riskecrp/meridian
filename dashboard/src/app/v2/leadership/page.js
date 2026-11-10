@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { getTeamPerformance, getGuideActivity, getMeetingNotes, deleteMeetingNote, getReviewData, getPendingQueue } from "../../fm/leadership/actions.js";
-import { approveRPChange, denyRPChange, markRPDone, executeRPChange, deleteRPChange, resolveDeletion } from "../../fm/operations/actions.js";
+import { approveRPChange, denyRPChange, markRPDone, executeRPChange, deleteRPChange, resolveDeletion, getRPExecutionPreview } from "../../fm/operations/actions.js";
 import { completePromotion, cancelPromotion } from "../../fm/factions/actions.js";
 import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../fm/teams/actions.js";
 import RpChangeForm from "../../fm/teams/RpChangeForm";
@@ -53,7 +53,8 @@ function Approvals({ auth }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [npcExec, setNpcExec] = useState(null); // {id, npcName, npcPos}
+  const [npcExec, setNpcExec] = useState(null); // {id, factionName, npcName, npcPos, npcId, preview, picked}
+  const [execConfirm, setExecConfirm] = useState(null); // {id, factionName, type, preview, shipmentPower} — HQ / TURF / PROPERTY / Other
   const [rpDone, setRpDone] = useState(null);   // {id, note} — requester confirming the RP happened
   const load = () => getPendingQueue().then(x => { setQ(x || { rpChanges: [], deletions: [], promos: [] }); setLoading(false); }).catch(() => setLoading(false));
   useEffect(() => { load(); }, []);
@@ -97,16 +98,15 @@ function Approvals({ auth }) {
                 {rc.status === "APPROVED" && !canConfirmRP && <span style={{ fontSize: 11, color: "var(--sky)", fontStyle: "italic" }}>Waiting for {rc.requested_by} to confirm the RP.</span>}
                 {isL3 && rc.status === "RP_DONE" && <button className="act good" disabled={busy} onClick={async () => {
                   // Hardening: show exactly what the execute will rewrite before committing.
-                  const t = await getRPExecuteTarget(rc.id).catch(() => null);
-                  if (rc.execution_type === "NPC") {
-                    setNpcExec({ id: rc.id, npcName: "", npcPos: "", target: t?.target || null, turf: t?.turf || rc.turf });
-                  } else if (rc.execution_type === "HQ") {
-                    const lines = t?.oldFound ? `Unset HQ on "${t.oldValue}"` : `⚠ Old address "${t?.oldValue}" not found — nothing to unset`;
-                    const nw = t?.newExists ? `set HQ on existing "${t?.newValue}"` : `create "${t?.newValue}" as the new HQ`;
-                    if (window.confirm(`Execute HQ change for ${rc.faction_name}?\n\n${lines}, then ${nw}.`)) run(() => executeRPChange(rc.id, {}));
-                  } else {
-                    if (window.confirm(`Execute this change for ${rc.faction_name}?\n\nType "Other" — no world records are rewritten; the request is marked executed and logged.`)) run(() => executeRPChange(rc.id, {}));
-                  }
+                  // getRPExecuteTarget is shared/rpChanges.js executionPreview — the same
+                  // lookup executeRPChange runs — so the label and the commit agree.
+                  setErr("");
+                  let t;
+                  try { t = await getRPExecuteTarget(rc.id); } catch (e) { setErr(e?.message || "Could not load the execution preview."); return; }
+                  const type = String(t?.type || rc.execution_type || "Other").toUpperCase();
+                  if (type === "NPC") { setNpcExec({ id: rc.id, factionName: rc.faction_name, npcName: "", npcPos: "", npcId: "", preview: t, picked: null, turf: t?.turf || rc.turf }); return; }
+                  if (!t?.ok) { setErr(t?.error || "This request cannot be executed."); return; }
+                  setExecConfirm({ id: rc.id, factionName: rc.faction_name, type, preview: t, shipmentPower: "" });
                 }}>Execute</button>}
                 {isL3 && <button className="act" disabled={busy} onClick={() => { if (window.confirm(`Delete this RP change for ${rc.faction_name}?`)) run(() => deleteRPChange(rc.id)); }}>Delete</button>}
               </div>
@@ -157,17 +157,69 @@ function Approvals({ auth }) {
         ); })}
       </div>}
 
-      {npcExec && <Modal title="Execute NPC swap" onClose={() => setNpcExec(null)} onSave={() => run(() => executeRPChange(npcExec.id, { npcName: npcExec.npcName, npcPos: npcExec.npcPos }))} saveDisabled={!npcExec.npcName.trim() || !npcExec.npcPos.trim()}>
-        {npcExec.target
-          ? <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>
-              This rewrites the live NPC: <b>{npcExec.target.name}</b> ({npcExec.target.npc_type}) on <b>{npcExec.target.turf}</b> — currently at {npcExec.target.position}.
-            </div>
-          : <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--rose-bg)", fontSize: 12.5, color: "var(--rose)" }}>
-              ⚠ No NPC in the registry matches turf “{npcExec.turf}” with the old type — executing will change <b>nothing</b> in the world. Check the request or fix the registry first.
-            </div>}
-        <input className="filter-inp" placeholder="Final NPC name" value={npcExec.npcName} onChange={e => setNpcExec({ ...npcExec, npcName: e.target.value })} />
-        <input className="filter-inp" placeholder="TP position" value={npcExec.npcPos} onChange={e => setNpcExec({ ...npcExec, npcPos: e.target.value })} />
-      </Modal>}
+      {npcExec && (() => {
+        // `preview` is the server's answer for the request as filed; `picked` is the
+        // re-check for the NPC chosen when several match (ambiguous turf + type).
+        const shown = npcExec.picked || npcExec.preview;
+        const cands = npcExec.preview?.candidates || [];
+        const needsPick = cands.length > 1 && !npcExec.npcId;
+        const target = shown?.ok ? shown.target : null;
+        return (
+          <Modal title={`Execute NPC swap — ${npcExec.factionName}`} saveLabel="Execute" onClose={() => setNpcExec(null)}
+            onSave={async () => {
+              const data = { npcName: npcExec.npcName.trim(), npcPos: npcExec.npcPos.trim() };
+              if (npcExec.npcId) data.npcId = Number(npcExec.npcId);
+              const exec = npcExec;
+              await run(() => executeRPChange(exec.id, data));
+              setNpcExec(null);
+            }}
+            saveDisabled={busy || !shown?.ok || needsPick || !npcExec.npcName.trim() || !npcExec.npcPos.trim()}>
+            {cands.length > 1 && (
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 }}>Which NPC? — {cands.length} match “{npcExec.preview?.oldValue}” on {npcExec.turf}</div>
+                <select className="filter-inp" style={{ width: "100%" }} value={npcExec.npcId} onChange={async e => {
+                  const npcId = e.target.value;
+                  let picked = null;
+                  if (npcId) { try { picked = await getRPExecutionPreview(npcExec.id, { npcId: Number(npcId) }); } catch (err) { picked = { ok: false, error: err?.message || "Could not check that NPC." }; } }
+                  setNpcExec(x => x ? { ...x, npcId, picked } : x);
+                }}>
+                  <option value="">Select the NPC to rewrite…</option>
+                  {cands.map(c => <option key={c.id} value={String(c.id)}>{c.name} ({c.npc_type}) — {c.turf}{c.position ? ` · ${c.position}` : ""}</option>)}
+                </select>
+              </div>
+            )}
+            {target
+              ? <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>
+                  This rewrites the live NPC: <b>{target.name}</b> ({target.npc_type}) on <b>{target.turf}</b>{target.position ? <> — currently at {target.position}</> : null} → type <b>{npcExec.preview?.newValue}</b>.
+                </div>
+              : needsPick
+                ? <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>Pick the NPC above — the request matches more than one, and nothing is rewritten until you choose.</div>
+                : <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--rose-bg)", fontSize: 12.5, color: "var(--rose)" }}>
+                    ⚠ {shown?.error || `No NPC in the registry matches turf “${npcExec.turf}” with the old type — executing would change nothing.`}
+                  </div>}
+            <input className="filter-inp" placeholder="Final NPC name" value={npcExec.npcName} onChange={e => setNpcExec({ ...npcExec, npcName: e.target.value })} />
+            <input className="filter-inp" placeholder="TP position" value={npcExec.npcPos} onChange={e => setNpcExec({ ...npcExec, npcPos: e.target.value })} />
+          </Modal>
+        );
+      })()}
+      {execConfirm && (
+        <Modal title={`Execute ${execConfirm.type === "OTHER" ? "" : execConfirm.type + " "}change — ${execConfirm.factionName}`} saveLabel="Execute" onClose={() => setExecConfirm(null)}
+          onSave={async () => {
+            const data = {};
+            if (execConfirm.type === "TURF" && execConfirm.shipmentPower.trim()) data.shipmentPower = execConfirm.shipmentPower.trim();
+            const exec = execConfirm;
+            await run(() => executeRPChange(exec.id, data));
+            setExecConfirm(null);
+          }}
+          saveDisabled={busy}>
+          <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{execConfirm.preview.oldValue} → <b>{execConfirm.preview.newValue}</b></div>
+          <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>{execConfirm.preview.summary}</div>
+          {execConfirm.type === "TURF" && execConfirm.preview.mode === "turf" && (
+            <input className="filter-inp" placeholder="Shipment power (optional — blank keeps the current value)" value={execConfirm.shipmentPower} onChange={e => setExecConfirm({ ...execConfirm, shipmentPower: e.target.value })} />
+          )}
+          {execConfirm.type === "OTHER" && <div style={{ fontSize: 11, color: "var(--ink-3)" }}>Type “Other” — no world records are rewritten; the request is marked executed and logged.</div>}
+        </Modal>
+      )}
     </>
   );
 }

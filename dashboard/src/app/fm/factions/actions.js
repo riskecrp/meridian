@@ -19,7 +19,7 @@ import { sanitizeHtml, htmlToText } from "../leadership/_shared/sanitize.js";
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
-const RP_LABEL = { NPC: 'NPC change', HQ: 'HQ relocation', TURF: 'Turf change', Other: 'Other' };
+const RP_LABEL = { NPC: 'NPC change', HQ: 'HQ relocation', TURF: 'Turf change', PROPERTY: 'Property change', Other: 'Other' };
 
 function history(factionId, factionName, actionType, details, by) {
   run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -926,6 +926,7 @@ export async function requestRPChange(data) {
     if (newValue === oldValue) return fail('The new NPC type is the same as the current one.');
   }
   if (type === 'TURF' && turf === 'N/A') turf = oldValue !== 'N/A' ? oldValue : newValue;
+  if (type === 'PROPERTY' && oldValue === 'N/A' && /^(REMOVED|REMOVE|N\/A)$/i.test(newValue)) return fail('Name the property to add, or the property to remove.');
 
   let contact = null;
   if (d.contactId != null && d.contactId !== '') {
@@ -951,6 +952,7 @@ export async function requestRPChange(data) {
   if (type === 'NPC') msg += `\n**Turf:** ${turf}\n**Current:** ${oldValue}\n**New:** ${newValue}`;
   else if (type === 'HQ') msg += `\n**Old Address:** ${oldValue}\n**New Address:** ${newValue}`;
   else if (type === 'TURF') msg += `\n**Turf:** ${turf}\n**Change:** ${oldValue} → ${newValue}`;
+  else if (type === 'PROPERTY') msg += `\n**Current:** ${oldValue}\n**New:** ${newValue}`;
   else msg += `\n**Details:** ${newValue}`;
   if (contact) msg += `\n**From IC contact:** ${contact.sender_name}`;
   msg += `\n${urls.approvals()}`;

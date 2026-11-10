@@ -2,7 +2,8 @@
 // Admin › People: Staff & Teams board (+COI/retire/promote), FM Hours (owner).
 // Split out of admin/page.js — content unchanged; FormModal now comes from the shared Modal.
 import { useEffect, useMemo, useState } from "react";
-import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, addStaff, updateStaff, createTeam, renameTeam, deleteTeam, commitAllChanges, getAllStaffCOI, getMeridianFactions, addStaffCOI, removeStaffCOI, getStaffFactions, retireStaff, promoteToLead, takeoverTeam, getDashboardAccessList, grantDashboardAccess, revokeDashboardAccess } from "../../../fm/operations/staff/actions.js";
+import { useAuth } from "../../../../lib/useAuth";
+import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, addStaff, updateStaff, createTeam, renameTeam, deleteTeam, commitAllChanges, getAllStaffCOI, getMeridianFactions, addStaffCOI, removeStaffCOI, getStaffFactions, retireStaff, restoreStaff, getRetiredStaff, promoteToLead, takeoverTeam, getDashboardAccessList, grantDashboardAccess, revokeDashboardAccess } from "../../../fm/operations/staff/actions.js";
 import { getFMStaffWithLinks, setCharacterLink, getFMHoursForPeriod, saveFMHours, getFMScenesForPeriod, getFMMeetingsForPeriod, postFMReport } from "../../../fm/operations/fmhours/actions.js";
 import { FormModal } from "../../Modal.js";
 
@@ -15,9 +16,15 @@ async function act(fn) {
   } catch (e) { window.alert(e?.message || "Action failed."); return false; }
 }
 
+// Clearance is explicit (policy 15): the rank is a label, the level is what the
+// server gates on. "Match the rank" leaves it to clearanceForRank server-side.
+const CLEARANCE_OPTIONS = [{ label: "L1 — Guide", value: "1" }, { label: "L2 — Team Lead", value: "2" }, { label: "L3 — Leadership", value: "3" }];
+
 /* ── Staff & Teams (L3): kanban board, drag to reassign, COI, promote/retire, dashboard access ── */
 function StaffTeams() {
+  const auth = useAuth();
   const [staff, setStaff] = useState([]);
+  const [retired, setRetired] = useState([]);
   const [activity, setActivity] = useState([]);
   const [teams, setTeams] = useState([]);
   const [factions, setFactions] = useState([]);
@@ -33,7 +40,7 @@ function StaffTeams() {
   const [retireMember, setRetireMember] = useState(null);
   const [promoteMember, setPromoteMember] = useState(null);
   const [accessList, setAccessList] = useState([]);
-  const [accessForm, setAccessForm] = useState({ discordId: "", displayName: "" });
+  const [accessForm, setAccessForm] = useState({ discordId: "", displayName: "", level: "3" });
   const [accessBusy, setAccessBusy] = useState(false);
   const [accessError, setAccessError] = useState("");
   const [addingStaff, setAddingStaff] = useState(false);
@@ -43,12 +50,12 @@ function StaffTeams() {
 
   const refresh = async () => {
     try {
-      const [st, ac, te, fa, coi, mf, al] = await Promise.all([
+      const [st, ac, te, fa, coi, mf, al, rt] = await Promise.all([
         getStaffList(), getStaffActivity(), getTeamList(), getFactionAssignments(),
-        getAllStaffCOI(), getMeridianFactions(), getDashboardAccessList(),
+        getAllStaffCOI(), getMeridianFactions(), getDashboardAccessList(), getRetiredStaff().catch(() => []),
       ]);
       setStaff(st || []); setActivity(ac || []); setTeams(te || []); setFactions(fa || []);
-      setCoiEntries(coi || []); setMeridianFactions(mf || []); setAccessList(al || []);
+      setCoiEntries(coi || []); setMeridianFactions(mf || []); setAccessList(al || []); setRetired(rt || []);
       setStaffMoves([]); setFactionMoves([]); setLoadErr("");
     } catch (e) { setLoadErr(e?.message || "Could not load the staff board."); }
     setLoading(false);
@@ -145,13 +152,17 @@ function StaffTeams() {
     catch (e) { setCommitting(false); window.alert(e?.message || "Commit failed."); return; }
     setCommitting(false);
     if (result?.ok === false) { window.alert(result.error || "Commit failed."); return; }
-    window.alert(`Done!\nStaff moved: ${result.staffMoves}\nFactions reassigned: ${result.factionMoves}\nRoles synced: ${result.rolesSynced} | Failed: ${result.rolesFailed}`);
+    // A faction moved to a team with no lead is refused, not unassigned — say which.
+    const errs = Array.isArray(result?.errors) ? result.errors : [];
+    window.alert(`Done!\nStaff moved: ${result.staffMoves}\nFactions reassigned: ${result.factionMoves}\nRoles synced: ${result.rolesSynced} | Failed: ${result.rolesFailed}${errs.length ? `\n\nNot applied (${errs.length}):\n• ${errs.join("\n• ")}` : ""}`);
     refresh();
   };
 
   if (loading) return <div className="empty">Loading…</div>;
   if (loadErr) return <div className="empty" style={{ color: "var(--rose)" }}>{loadErr}</div>;
   const micro = { padding: "1px 5px", fontSize: 9 };
+  // The server refuses self-retirement; do not offer the button for the signed-in person (or the real owner behind a view-as).
+  const isMe = (m) => !!m?.discord_id && (m.discord_id === auth?.id || (auth?._realId && m.discord_id === auth._realId));
   return (
     <>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
@@ -222,7 +233,7 @@ function StaffTeams() {
                       <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
                         {m.rank?.toLowerCase() === "guide" && <button className="act" style={{ ...micro, color: "var(--good)" }} title="Promote to Lead" onClick={() => setPromoteMember(m)}>↑</button>}
                         <button className="act" style={micro} title="Edit" onClick={() => setEditMember(m)}>✎</button>
-                        <button className="act" style={{ ...micro, color: "var(--rose)" }} title="Retire staff member" onClick={() => setRetireMember(m)}>✕</button>
+                        {!isMe(m) && <button className="act" style={{ ...micro, color: "var(--rose)" }} title="Retire staff member" onClick={() => setRetireMember(m)}>✕</button>}
                       </div>
                     </div>
                   );
@@ -253,6 +264,26 @@ function StaffTeams() {
         })}
       </div>
 
+      {/* Retired staff (soft-retired: the row survives, Restore brings them back Unassigned) */}
+      {retired.length > 0 && (
+        <div className="card" style={{ marginTop: 18 }}>
+          <div className="hd"><div className="t">Retired staff</div><div className="meta">{retired.length} · restore to bring someone back (Unassigned, same clearance)</div></div>
+          {retired.map(r => (
+            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+              <span className="chip" style={{ background: "var(--panel-2)", color: "var(--ink-3)" }}>L{r.clearance}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-1)" }}>{r.display_name}</div>
+                <div style={{ fontSize: 10, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>{r.rank}{r.updated_at ? <span style={{ marginLeft: 8 }}>· retired {String(r.updated_at).substring(0, 10)}</span> : null}</div>
+              </div>
+              <button className="act" style={{ color: "var(--good)" }} onClick={async () => {
+                if (!window.confirm(`Restore ${r.display_name} to the roster as ${r.rank} (L${r.clearance})?`)) return;
+                if (await act(() => restoreStaff(r.id))) refresh();
+              }}>Restore</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Individual dashboard access */}
       <div className="card" style={{ marginTop: 18 }}>
         <div className="hd"><div className="t">Individual dashboard access</div><div className="meta">{accessList.length} grant{accessList.length !== 1 ? "s" : ""} active</div></div>
@@ -278,14 +309,21 @@ function StaffTeams() {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", paddingTop: 12 }}>
           <input className="filter-inp" style={{ width: 220 }} placeholder="Discord ID, e.g. 2254293604…" value={accessForm.discordId} onChange={e => setAccessForm(f => ({ ...f, discordId: e.target.value }))} />
           <input className="filter-inp" style={{ width: 180 }} placeholder="Display name for reference" value={accessForm.displayName} onChange={e => setAccessForm(f => ({ ...f, displayName: e.target.value }))} />
+          <select className="filter-inp" style={{ width: 150 }} value={accessForm.level} onChange={e => setAccessForm(f => ({ ...f, level: e.target.value }))} title="Level granted">
+            <option value="2">L2 — Team Lead</option>
+            <option value="3">L3 — Leadership</option>
+          </select>
           <button className="btn" disabled={accessBusy || !accessForm.discordId.trim()} onClick={async () => {
             setAccessError(""); setAccessBusy(true);
-            const res = await grantDashboardAccess(accessForm.discordId.trim(), accessForm.displayName.trim());
+            let res;
+            try { res = await grantDashboardAccess(accessForm.discordId.trim(), accessForm.displayName.trim(), Number(accessForm.level) || 3); }
+            catch (e) { res = { ok: false, error: e?.message || "Failed." }; }
             setAccessBusy(false);
-            if (!res.ok) { setAccessError(res.error || "Failed."); return; }
-            setAccessForm({ discordId: "", displayName: "" });
+            if (!res?.ok) { setAccessError(res?.error || "Failed."); return; }
+            if (res.onRoster === false) window.alert("Access granted, but this id is not on the staff roster — they cannot log in until they are added as staff.");
+            setAccessForm({ discordId: "", displayName: "", level: accessForm.level });
             setAccessList(await getDashboardAccessList());
-          }}>{accessBusy ? "Granting…" : "Grant L3 access"}</button>
+          }}>{accessBusy ? "Granting…" : `Grant L${accessForm.level} access`}</button>
           {accessError && <span style={{ fontSize: 11, color: "var(--rose)" }}>{accessError}</span>}
         </div>
       </div>
@@ -295,12 +333,15 @@ function StaffTeams() {
         { name: "discordId", label: "Discord ID", type: "text", placeholder: "Right-click user → Copy User ID" },
         { name: "name", label: "Display Name", type: "text" },
         { name: "teamId", label: "Team", type: "select", options: teams.map(t => ({ label: t.name, value: t.id })), placeholder: "Select…" },
-        { name: "rank", label: "Rank", type: "select", options: [{ label: "Guide", value: "Guide" }, { label: "Team Lead", value: "Team Lead" }], default: "Guide" },
+        { name: "rank", label: "Rank", type: "select", options: [{ label: "Guide", value: "Guide" }, { label: "Team Lead", value: "Team Lead" }, { label: "Management", value: "Management" }], default: "Guide" },
+        { name: "clearance", label: "Clearance", type: "select", options: CLEARANCE_OPTIONS, placeholder: "Match the rank" },
       ]} onCancel={() => setAddingStaff(false)} onSubmit={async (v) => {
         if (!v.name?.trim()) { window.alert("Display name is required."); return; }
         if (!v.discordId?.trim()) { window.alert("Discord ID is required. Right-click the user in Discord → Copy User ID."); return; }
         const tname = teams.find(t => t.id === v.teamId)?.name || "";
-        if (await act(() => addStaff({ discordId: v.discordId.trim(), name: v.name.trim(), teamId: v.teamId || "", teamName: tname, rank: v.rank || "Guide" }))) { setAddingStaff(false); refresh(); }
+        const payload = { discordId: v.discordId.trim(), name: v.name.trim(), teamId: v.teamId || "", teamName: tname, rank: v.rank || "Guide" };
+        if (v.clearance) payload.clearance = Number(v.clearance);
+        if (await act(() => addStaff(payload))) { setAddingStaff(false); refresh(); }
       }} />}
       {creatingTeam && <FormModal title="Create team" fields={[
         { name: "teamId", label: "Discord Role ID", type: "text" },
@@ -313,16 +354,27 @@ function StaffTeams() {
       {editMember && <FormModal title={`Edit: ${editMember.display_name}`} fields={[
         { name: "name", label: "Name", type: "text", default: editMember.display_name },
         { name: "rank", label: "Rank", type: "select", options: [{ label: "Guide", value: "Guide" }, { label: "Team Lead", value: "Team Lead" }, { label: "Management", value: "Management" }], default: editMember.rank },
+        { name: "clearance", label: "Clearance (changing the rank alone does not change it)", type: "select", options: CLEARANCE_OPTIONS, default: String(editMember.clearance || 1) },
         { name: "lst", label: "Lead Storyteller (full access to all factions)", type: "checkbox", default: !!editMember.lead_storyteller },
       ]} onCancel={() => setEditMember(null)} onSubmit={async (v) => {
         if (v.name !== editMember.display_name && !(await act(() => updateStaff(editMember.id, "display_name", v.name)))) return;
         if (v.rank !== editMember.rank && !(await act(() => updateStaff(editMember.id, "rank", v.rank)))) return;
+        if (Number(v.clearance) !== Number(editMember.clearance) && !(await act(() => updateStaff(editMember.id, "clearance", Number(v.clearance))))) return;
         if (!!v.lst !== !!editMember.lead_storyteller && !(await act(() => updateStaff(editMember.id, "lead_storyteller", v.lst ? 1 : 0)))) return;
         setEditMember(null); refresh();
       }} />}
       {retireMember && <RetireModal member={retireMember} allStaff={staff}
         onConfirm={async (reassignments) => {
-          if (!(await act(() => retireStaff(retireMember.id, retireMember.display_name, retireMember.discord_id, reassignments)))) return;
+          // Retiring Leadership (L3) needs an explicit second confirmation: the
+          // server answers { ok:false, needsConfirm:true } until we resend with it.
+          const call = (opts) => retireStaff(retireMember.id, retireMember.display_name, retireMember.discord_id, reassignments, opts);
+          let r;
+          try { r = await call({}); } catch (e) { window.alert(e?.message || "Action failed."); return; }
+          if (r && r.ok === false && r.needsConfirm) {
+            if (!window.confirm(`${retireMember.display_name} is FM Leadership (L3).\n\nRetire them anyway? They lose their leadership access immediately.`)) return;
+            try { r = await call({ confirm: true }); } catch (e) { window.alert(e?.message || "Action failed."); return; }
+          }
+          if (r && r.ok === false) { window.alert(r.error || "Action failed."); return; }
           const nm = retireMember.display_name;
           setRetireMember(null);
           window.alert(`${nm} has been retired. All historical data is preserved.`);

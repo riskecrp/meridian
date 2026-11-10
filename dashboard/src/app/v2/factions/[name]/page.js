@@ -114,11 +114,16 @@ function FactionHub() {
 
   // Every server action goes through run(): { ok:false, error } and thrown
   // errors both surface as `err` instead of silently closing a form.
-  const run = async (fn) => {
+  // `onOk(result)` runs after a successful reload, for follow-up notices (e.g. a
+  // fleet vehicle merged into an existing entry).
+  const run = async (fn, onOk) => {
     setBusy(true); setErr("");
-    try { const r = await fn(); if (r && r.ok === false) { setErr(r.error || "Failed."); setBusy(false); return false; } }
+    let r;
+    try { r = await fn(); if (r && r.ok === false) { setErr(r.error || "Failed."); setBusy(false); return false; } }
     catch (e) { setErr(e?.message || "Failed."); setBusy(false); return false; }
-    setBusy(false); setForm(null); await load(); return true;
+    setBusy(false); setForm(null); await load();
+    if (onOk) onOk(r);
+    return true;
   };
 
   if (auth?.loading || loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
@@ -153,7 +158,7 @@ function FactionHub() {
   const openStageRP = async (contactId = null) => {
     const [npcs, props] = await Promise.all([getNPCsForRP().catch(() => []), getFactionProperties(detail.id).catch(() => [])]);
     setErr("");
-    setForm({ kind: "rp", step: "type", type: "", npcs, props, oldVal: "", newVal: "", turf: "", contactId: typeof contactId === "number" ? contactId : null });
+    setForm({ kind: "rp", step: "type", type: "", npcs, props, oldVal: "", newVal: "", turf: "", remove: false, contactId: typeof contactId === "number" ? contactId : null });
   };
   const submitRP = async () => {
     const f = form; let payload;
@@ -161,7 +166,10 @@ function FactionHub() {
       const npc = f.npcs.find(n => String(n.id) === String(f.oldVal));
       payload = { factionId: detail.id, type: "NPC", npcId: npc?.id, oldValue: npc?.npc_type || "N/A", newValue: f.newVal, turf: npc?.turf || "N/A" };
     } else if (f.type === "HQ") payload = { factionId: detail.id, type: "HQ", oldValue: f.oldVal, newValue: f.newVal, turf: "N/A" };
-    else if (f.type === "TURF") payload = { factionId: detail.id, type: "TURF", oldValue: f.oldVal || "N/A", newValue: f.newVal, turf: f.turf || f.oldVal || "N/A" };
+    // TURF contract (shared/rpChanges.js): turf = the turf being changed, oldValue = its current name, newValue = the new name.
+    else if (f.type === "TURF") payload = { factionId: detail.id, type: "TURF", oldValue: f.turf || "N/A", newValue: f.newVal, turf: f.turf || "N/A" };
+    // PROPERTY contract: oldValue = current address or N/A (adds), newValue = new address or REMOVED (takes it off the faction).
+    else if (f.type === "PROPERTY") payload = { factionId: detail.id, type: "PROPERTY", oldValue: f.oldVal || "N/A", newValue: f.remove && f.oldVal && f.oldVal !== "N/A" ? "REMOVED" : f.newVal, turf: "N/A" };
     else payload = { factionId: detail.id, type: "Other", oldValue: f.oldVal || "N/A", newValue: f.newVal, turf: "N/A" };
     if (!payload.newValue?.trim()) return;
     if (f.contactId) payload.contactId = f.contactId;
@@ -525,9 +533,11 @@ function FactionHub() {
           <div><div className="lbl" style={{ fontSize: 9, fontFamily: "var(--v2-mono)", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 6 }}>Meeting notes</div><QuillEditor value={form.text} onChange={t => setForm({ ...form, text: t })} placeholder="Meeting notes…" /></div>
         </div>
       </Modal>}
-      {form?.kind === "rp" && <Modal title={form.contactId ? "Stage RP change for this contact" : "Stage RP change"} onClose={() => setForm(null)} onSave={form.type ? submitRP : null} saveDisabled={busy || !form.type || !form.newVal.trim() || (form.type === "NPC" && !form.oldVal)} error={err}>
-        <select className="filter-inp" value={form.type} onChange={e => setForm({ ...form, type: e.target.value, oldVal: "", newVal: "", turf: "" })}>
-          <option value="">Select change type…</option><option value="NPC">NPC change</option><option value="HQ">HQ relocation</option><option value="TURF">Turf change</option><option value="Other">Other</option>
+      {form?.kind === "rp" && <Modal title={form.contactId ? "Stage RP change for this contact" : "Stage RP change"} onClose={() => setForm(null)} onSave={form.type ? submitRP : null}
+        saveDisabled={busy || !form.type || (form.type === "NPC" && !form.oldVal) || (form.type === "TURF" && !form.turf) || (form.type === "PROPERTY" && !form.oldVal)
+          || (form.type === "PROPERTY" && form.remove && form.oldVal !== "N/A" ? false : !form.newVal.trim())} error={err}>
+        <select className="filter-inp" value={form.type} onChange={e => setForm({ ...form, type: e.target.value, oldVal: "", newVal: "", turf: "", remove: false })}>
+          <option value="">Select change type…</option><option value="NPC">NPC change</option><option value="HQ">HQ relocation</option><option value="TURF">Turf change</option><option value="PROPERTY">Property change</option><option value="Other">Other</option>
         </select>
         {form.type === "NPC" && <>
           <select className="filter-inp" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })}><option value="">Current NPC…</option>{form.npcs.map(n => <option key={n.id} value={String(n.id)}>{n.name} ({n.npc_type}) — {n.turf}</option>)}</select>
@@ -538,9 +548,24 @@ function FactionHub() {
           <input className="filter-inp" placeholder="New HQ address" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} />
         </>}
         {form.type === "TURF" && <>
-          <select className="filter-inp" value={form.turf} onChange={e => setForm({ ...form, turf: e.target.value })}><option value="">Turf…</option>{[...new Set(form.npcs.map(n => n.turf))].sort().map(t => <option key={t} value={t}>{t}</option>)}</select>
-          <input className="filter-inp" placeholder="Current state (e.g. unclaimed / held by X)" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })} />
-          <input className="filter-inp" placeholder="Requested change" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} />
+          <select className="filter-inp" value={form.turf} onChange={e => setForm({ ...form, turf: e.target.value, oldVal: e.target.value })}><option value="">Turf being changed…</option>{[...new Set(form.npcs.map(n => n.turf).filter(t => t && t !== "Neutral"))].sort().map(t => <option key={t} value={t}>{t}</option>)}</select>
+          <input className="filter-inp" placeholder="New turf name" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} />
+          <div style={{ fontSize: 11, color: "var(--ink-3)" }}>Executing renames the turf and moves every NPC on it; renaming onto an existing turf merges them. Same name = shipment-power change only (set at execution).</div>
+        </>}
+        {form.type === "PROPERTY" && <>
+          <select className="filter-inp" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value, remove: false })}>
+            <option value="">Current property…</option>
+            <option value="N/A">— New property (not on the list yet) —</option>
+            {form.props.map(p => <option key={p.id} value={p.address}>{p.is_hq ? "HQ: " : ""}{p.address}</option>)}
+          </select>
+          {form.oldVal && form.oldVal !== "N/A" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-1)", cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.remove} onChange={e => setForm({ ...form, remove: e.target.checked, newVal: e.target.checked ? "" : form.newVal })} /> Remove this property from the faction
+            </label>
+          )}
+          {!(form.remove && form.oldVal && form.oldVal !== "N/A") && (
+            <input className="filter-inp" placeholder={form.oldVal === "N/A" ? "Address to add" : "New address"} value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} />
+          )}
         </>}
         {form.type === "Other" && <><input className="filter-inp" placeholder="Current state" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })} /><input className="filter-inp" placeholder="New state" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} /></>}
       </Modal>}
@@ -567,7 +592,7 @@ function FleetCard({ fleet, fleetSum, td, tier, isL3, busy, run, setForm, form, 
           <button className="act" onClick={() => setForm({ kind: "gar", gname: "", x: "", y: "", z: "" })}>+ Garage</button>
           {fleet.limits.isOverridden ? <button className="act warn" disabled={busy} onClick={() => run(() => clearFleetOverride(factionId))}>Clear override</button> : <button className="act" onClick={() => setForm({ kind: "ovr", mt: fleet.limits.maxTypes, mtot: fleet.limits.maxTotal, mg: fleet.limits.maxGarages, reason: "" })}>Override caps</button>}
         </div>}
-        {form?.kind === "veh" && <Modal title="Add vehicle" onClose={() => setForm(null)} onSave={() => run(() => addFleetVehicle(factionId, form.vname.trim(), parseInt(form.qty) || 1, ""))} saveDisabled={busy || !form.vname.trim()} error={err}><input className="filter-inp" placeholder="Vehicle name" value={form.vname} onChange={e => setForm({ ...form, vname: e.target.value })} /><input className="filter-inp" placeholder="Quantity" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} /></Modal>}
+        {form?.kind === "veh" && <Modal title="Add vehicle" onClose={() => setForm(null)} onSave={() => { const vname = form.vname.trim(), qty = parseInt(form.qty) || 1; run(() => addFleetVehicle(factionId, vname, qty, ""), r => { if (r?.merged) window.alert(`"${vname}" was already in this fleet — the ${qty} added to the existing entry.`); }); }} saveDisabled={busy || !form.vname.trim()} error={err}><input className="filter-inp" placeholder="Vehicle name" value={form.vname} onChange={e => setForm({ ...form, vname: e.target.value })} /><input className="filter-inp" placeholder="Quantity" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} /></Modal>}
         {form?.kind === "gar" && <Modal title="Add garage" onClose={() => setForm(null)} onSave={() => run(() => addFleetGarage(factionId, form.gname.trim(), form.x, form.y, form.z, ""))} saveDisabled={busy || !form.gname.trim()} error={err}><input className="filter-inp" placeholder="Garage name" value={form.gname} onChange={e => setForm({ ...form, gname: e.target.value })} /><div style={{ display: "flex", gap: 6 }}>{["x", "y", "z"].map(a => <input key={a} className="filter-inp" placeholder={a.toUpperCase()} value={form[a]} onChange={e => setForm({ ...form, [a]: e.target.value })} />)}</div></Modal>}
         {form?.kind === "ovr" && <Modal title="Override caps" onClose={() => setForm(null)} onSave={() => run(() => setFleetOverride(factionId, parseInt(form.mt), parseInt(form.mtot), parseInt(form.mg), form.reason))} saveDisabled={busy} error={err}><div style={{ display: "flex", gap: 6 }}><input className="filter-inp" placeholder="Types" value={form.mt} onChange={e => setForm({ ...form, mt: e.target.value })} /><input className="filter-inp" placeholder="Total" value={form.mtot} onChange={e => setForm({ ...form, mtot: e.target.value })} /><input className="filter-inp" placeholder="Garages" value={form.mg} onChange={e => setForm({ ...form, mg: e.target.value })} /></div><input className="filter-inp" placeholder="Reason" value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></Modal>}
       </> : <div style={{ paddingTop: 6 }}>

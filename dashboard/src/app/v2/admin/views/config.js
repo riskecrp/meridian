@@ -208,7 +208,8 @@ function RecurringReminders({ auth }) {
                       let res;
                       try { res = await forceSendRecurringReminder(r.id); } catch (e) { window.alert(e?.message || "Failed"); return; }
                       if (!res?.ok) { window.alert(res?.error || "Failed"); return; }
-                      window.alert(`Sent. ${res.recipientsCount || 0} recipient(s) notified.`);
+                      const made = Number(res.instancesCreated) || 0;
+                      window.alert(`Sent to ${res.recipientsCount || 0} recipient(s).\n${res.resent ? "This month's reminder had already gone out — this was a re-send; " : ""}${made ? `${made} new instance(s) created for this month.` : "no new instances were needed (they already existed)."}`);
                       refresh();
                     }
                   }}>Force send</button>}

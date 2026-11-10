@@ -12,6 +12,7 @@ import {
 import { getPendingQueue } from "../fm/leadership/actions.js";
 import { getTeamIcContacts } from "../fm/teams/actions.js";
 import { fail } from "../../../../shared/validate.js";
+import { executionPreview, getExec } from "../../../../shared/rpChanges.js";
 
 const unreadCount = (arr) => (arr || []).filter(x => !x.is_read).length;
 
@@ -105,29 +106,20 @@ export async function getFactionFleetSummary(factionId) {
   };
 }
 
-// What will an RP-change Execute actually rewrite? NPC executes match on
-// turf + old type and overwrite that live registry row; HQ executes re-flag
-// properties. Surfacing the target BEFORE the commit is the guard rail that
-// would have saved Martin Jane (renamed to "Test NPC" in a walkthrough,
-// 2026-08-04, restored from backup).
+// What will an RP-change Execute actually rewrite? Surfacing the target BEFORE
+// the commit is the guard rail that would have saved Martin Jane (renamed to
+// "Test NPC" in a walkthrough, 2026-08-04, restored from backup). The lookup is
+// shared/rpChanges.js executionPreview — the same function executeRPChange
+// itself runs — so the preview and the commit can never disagree. Returns that
+// preview ({ ok, type, summary, target?, candidates?, mode?… } or { ok:false,
+// error, candidates? }) plus the request's own values for the modal label.
 export async function getRPExecuteTarget(execId) {
   await requireActor(3);
   const id = Number(execId);
-  const exec = Number.isInteger(id) ? queryOne("SELECT pe.*, f.name AS faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id = f.id WHERE pe.id = ?", [id]) : null;
+  const exec = Number.isInteger(id) && id > 0 ? getExec(id) : null;
   if (!exec) return fail("Request not found");
-  if (exec.execution_type === "NPC") {
-    // The request may name the NPC itself or its type; match either, on the turf.
-    const npc = exec.npc_id
-      ? queryOne("SELECT id, name, npc_type, turf, position FROM npcs WHERE id = ?", [exec.npc_id])
-      : queryOne("SELECT id, name, npc_type, turf, position FROM npcs WHERE turf = ? AND (name = ? OR npc_type = ?)", [exec.turf, exec.old_value, exec.old_value]);
-    return { ok: true, type: "NPC", turf: exec.turf, oldValue: exec.old_value, newValue: exec.new_value, target: npc || null };
-  }
-  if (exec.execution_type === "HQ") {
-    const oldP = queryOne("SELECT id, address FROM properties WHERE faction_id = ? AND address = ?", [exec.faction_id, exec.old_value]);
-    const newP = queryOne("SELECT id, address FROM properties WHERE faction_id = ? AND address = ?", [exec.faction_id, exec.new_value]);
-    return { ok: true, type: "HQ", oldValue: exec.old_value, newValue: exec.new_value, oldFound: !!oldP, newExists: !!newP };
-  }
-  return { ok: true, type: exec.execution_type || "Other", oldValue: exec.old_value, newValue: exec.new_value };
+  const preview = executionPreview(exec);
+  return { ...preview, type: preview.type || exec.execution_type || "Other", turf: exec.turf, oldValue: exec.old_value, newValue: exec.new_value, status: exec.status, factionName: exec.faction_name };
 }
 
 // Documents for the Library and the ⌘K palette. level_required is a GATE

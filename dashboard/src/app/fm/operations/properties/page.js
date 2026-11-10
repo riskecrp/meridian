@@ -41,11 +41,17 @@ export default function PropertiesPage() {
   };
 
   const isUnassigned = (f) => !f || f.trim() === '' || f.toLowerCase() === 'none';
+  // getGlobalProperties computes `status` (ACTIVE | ARCHIVED | CONFISCATED | UNASSIGNED);
+  // the fallback only covers rows from an older server build.
+  const statusOf = (p) => p.status || (p.confiscated ? 'CONFISCATED' : isUnassigned(p.faction) ? 'UNASSIGNED' : p.faction_archived ? 'ARCHIVED' : 'ACTIVE');
+  const STATUS_COLOR = { CONFISCATED: 'var(--red)', UNASSIGNED: 'var(--fg-4)', ARCHIVED: 'var(--amber)', ACTIVE: 'var(--green)' };
   const filteredProps = props.filter(p => {
     if (propSearch && !p.address?.toLowerCase().includes(propSearch.toLowerCase()) && !p.faction?.toLowerCase().includes(propSearch.toLowerCase()) && !p.current_owner?.toLowerCase().includes(propSearch.toLowerCase())) return false;
-    if (propFilter === 'active') return !p.confiscated && !isUnassigned(p.faction);
-    if (propFilter === 'confiscated') return p.confiscated;
-    if (propFilter === 'unassigned') return !p.confiscated && isUnassigned(p.faction);
+    const s = statusOf(p);
+    if (propFilter === 'active') return s === 'ACTIVE';
+    if (propFilter === 'archived') return s === 'ARCHIVED';
+    if (propFilter === 'confiscated') return s === 'CONFISCATED';
+    if (propFilter === 'unassigned') return s === 'UNASSIGNED';
     return true;
   });
 
@@ -58,7 +64,7 @@ export default function PropertiesPage() {
       <div className="space-y-4">
         <div className="flex flex-col md:flex-row gap-3 justify-between">
           <div className="flex gap-1 p-1 rounded-lg" style={{ background: 'var(--bg-2)' }}>
-            {['all', 'active', 'confiscated', 'unassigned'].map(f => (
+            {['all', 'active', 'archived', 'confiscated', 'unassigned'].map(f => (
               <button key={f} style={st.tab(propFilter === f)} onClick={() => setPropFilter(f)}>{f}</button>
             ))}
           </div>
@@ -93,17 +99,17 @@ export default function PropertiesPage() {
             </thead>
             <tbody>
               {filteredProps.map(p => {
-                const none   = isUnassigned(p.faction);
-                const archived = !!p.faction_archived;
-                const status = p.confiscated ? 'CONF' : none ? 'NONE' : archived ? 'ARCHIVED' : 'ACTIVE';
-                const col    = p.confiscated ? 'var(--red)' : none ? 'var(--fg-4)' : archived ? 'var(--amber)' : 'var(--green)';
+                const none   = isUnassigned(p.faction) || !p.faction_id;
+                const status = statusOf(p);
+                const archived = status === 'ARCHIVED';
+                const col    = STATUS_COLOR[status] || 'var(--fg-3)';
                 const isExp  = expanded === p.id;
                 const isEdit = editingDetail?.id === p.id;
                 return (
                   <>
                     <tr key={p.id} style={{ borderTop: '1px solid var(--border)', background: isExp ? 'rgba(255,255,255,0.02)' : 'transparent' }}>
                       <td className="py-3 px-4">
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ color: col }}>{status}</span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ color: col }} title={archived ? 'The faction holding this property is archived' : ''}>{status}</span>
                       </td>
                       <td className="py-3 px-4 font-medium">{none ? <span style={{ color: 'var(--fg-4)' }}>—</span> : p.faction}</td>
                       <td className="py-3 px-4">
@@ -124,7 +130,7 @@ export default function PropertiesPage() {
                             {isExp && isEdit ? 'Close' : 'Edit'}
                           </button>
                           <button style={{ ...st.btnGhost, padding: '4px 10px' }} onClick={async () => { const f = await showPrompt("Assign to faction (exact name of an active faction):", p.faction); if (f !== null) { if (await act(() => assignProperty(p.id, String(f).trim()))) refresh(); } }}>Assign</button>
-                          {!p.confiscated && !none && <button style={{ fontSize: 11, color: 'var(--amber)', background: 'none', border: 'none', cursor: 'pointer' }} onClick={async () => { if (await showConfirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { if (await act(() => confiscateProperty(p.id))) refresh(); } }}>Conf.</button>}
+                          {status !== 'CONFISCATED' && !none && <button style={{ fontSize: 11, color: 'var(--amber)', background: 'none', border: 'none', cursor: 'pointer' }} onClick={async () => { if (await showConfirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { if (await act(() => confiscateProperty(p.id))) refresh(); } }}>Conf.</button>}
                           <button style={{ fontSize: 11, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer' }} onClick={async () => { if (await showConfirm(`Delete ${p.address}? This cannot be undone.`)) { if (await act(() => deleteProperty(p.id))) refresh(); } }}>Del</button>
                         </div>
                         ) : <span style={{ fontSize: 11, color: 'var(--fg-4)' }}>—</span>}

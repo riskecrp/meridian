@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../../../lib/useAuth";
 import { useDialog } from "../../../../lib/useDialog";
-import { getAnalytics, getPendingDeletions, resolveDeletion, getPendingExecutions, executeRPChange, approveRPChange, denyRPChange } from "../actions";
+import { getAnalytics, getPendingDeletions, resolveDeletion, getPendingExecutions, executeRPChange, approveRPChange, denyRPChange, getRPExecutionPreview } from "../actions";
 import { st } from "../_shared/styles";
 import OperationsShell from "../_shared/Shell";
 
@@ -36,6 +36,41 @@ export default function AnalyticsPage() {
     if (r && r.ok === false) { await showAlert(r.error || 'Failed'); return false; }
     return true;
   };
+  // Execute with the server's preview of what will be rewritten (shared/rpChanges.js
+  // executionPreview — the same lookup executeRPChange runs). NPC asks for the final
+  // name/position (and which NPC when the turf+type match is ambiguous); TURF may
+  // take a shipment power; HQ / PROPERTY / Other confirm the summary.
+  const executeWithPreview = async (ex) => {
+    let pv;
+    try { pv = await getRPExecutionPreview(ex.id); } catch (e) { await showAlert(e?.message || 'Could not load the execution preview.'); return false; }
+    const type = String(pv?.type || ex.type || 'Other').toUpperCase();
+    if (type === 'NPC') {
+      const cands = pv?.candidates || [];
+      const fields = [];
+      if (!pv?.ok && cands.length > 1) {
+        fields.push({ name: 'npcId', label: 'Which NPC? (several match the turf + type)', type: 'select', placeholder: 'Select NPC…', options: cands.map(c => ({ value: String(c.id), label: `${c.name} (${c.npc_type}) — ${c.turf}` })) });
+      } else if (!pv?.ok) { await showAlert(pv?.error || 'Nothing to rewrite.'); return false; }
+      fields.push({ name: 'npcName', label: 'Final NPC Name', type: 'text' }, { name: 'npcPos', label: 'TP Position', type: 'text' });
+      const res = await showForm(pv?.ok ? `Execute NPC Swap — ${pv.summary}` : 'Execute NPC Swap', fields);
+      if (!res) return false;
+      if (fields[0].name === 'npcId' && !res.npcId) { await showAlert('Pick which NPC to rewrite.'); return false; }
+      if (!res.npcName?.trim() || !res.npcPos?.trim()) { await showAlert('Final NPC name and TP position are both required.'); return false; }
+      const data = { npcName: res.npcName.trim(), npcPos: res.npcPos.trim() };
+      if (res.npcId) data.npcId = Number(res.npcId);
+      return act(() => executeRPChange(ex.id, data));
+    }
+    if (!pv?.ok) { await showAlert(pv?.error || 'This request cannot be executed.'); return false; }
+    if (type === 'TURF' && pv.mode === 'turf') {
+      const res = await showForm(`Execute turf change — ${pv.summary}`, [{ name: 'shipmentPower', label: 'Shipment power (optional — blank keeps the current value)', type: 'text' }]);
+      if (!res) return false;
+      const data = {};
+      if (res.shipmentPower?.trim()) data.shipmentPower = res.shipmentPower.trim();
+      return act(() => executeRPChange(ex.id, data));
+    }
+    const what = type === 'OTHER' ? 'this change' : `this ${type} change`;
+    if (!(await showConfirm(`Execute ${what} for ${ex.faction}?\n\n${pv.summary}`))) return false;
+    return act(() => executeRPChange(ex.id, {}));
+  };
 
   if (auth.loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
   if (auth.level < 3) return <div className="p-10" style={{color:'var(--red)'}}>Access denied.</div>;
@@ -64,6 +99,10 @@ export default function AnalyticsPage() {
                       <>{ex.turf}: {ex.old_value} → <b style={{ color: 'var(--fg-0)' }}>{ex.new_value}</b>
                         {ex.npcDetails && <div className="mt-1 text-[11px]" style={{ color: 'var(--amber)' }}>NPCs: {ex.npcDetails}</div>}
                       </>
+                    ) : ex.type === 'TURF' ? (
+                      <>Turf {ex.turf}: {ex.old_value} → <b style={{ color: 'var(--fg-0)' }}>{ex.new_value}</b></>
+                    ) : ex.type === 'PROPERTY' ? (
+                      <>Property: {ex.old_value} → <b style={{ color: 'var(--fg-0)' }}>{ex.new_value}</b></>
                     ) : (
                       <>{ex.old_value} → <b style={{ color: 'var(--fg-0)' }}>{ex.new_value}</b></>
                     )}
@@ -77,16 +116,7 @@ export default function AnalyticsPage() {
                     </>}
                     {ex.status === 'APPROVED' && <span style={{fontSize:11,color:'var(--fg-4)',fontStyle:'italic'}}>Awaiting RP confirmation from team lead.</span>}
                     {ex.status === 'RP_DONE' && (
-                      <button style={{ ...st.btn, flex: 1 }} onClick={async () => {
-                        if (ex.type === 'NPC') {
-                          const res = await showForm("Execute NPC Swap", [{ name: 'npcName', label: 'Final NPC Name', type: 'text' }, { name: 'npcPos', label: 'TP Position', type: 'text' }]);
-                          if (!res) return;
-                          if (!res.npcName?.trim() || !res.npcPos?.trim()) { await showAlert('Final NPC name and TP position are both required.'); return; }
-                          if (await act(() => executeRPChange(ex.id, { npcName: res.npcName.trim(), npcPos: res.npcPos.trim() }))) refresh();
-                        } else {
-                          if (await showConfirm('Execute this change?')) { if (await act(() => executeRPChange(ex.id, {}))) refresh(); }
-                        }
-                      }}>Execute</button>
+                      <button style={{ ...st.btn, flex: 1 }} onClick={async () => { if (await executeWithPreview(ex)) refresh(); }}>Execute</button>
                     )}
                   </div>
                 </div>

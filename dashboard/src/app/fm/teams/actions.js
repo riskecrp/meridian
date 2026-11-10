@@ -437,12 +437,15 @@ export async function stageRoleplay(contactId, rpData) {
     if (newValue === oldValue) return fail('The new address is the same as the current one.');
   } else if (type === 'TURF') {
     if (turf === 'N/A') return fail('Name the turf.');
+  } else if (type === 'PROPERTY') {
+    if (oldValue === 'N/A' && /^(REMOVED|REMOVE|N\/A)$/i.test(newValue)) return fail('Name the property to add, or the property to remove.');
   }
 
   // One open request per faction + type + target (the NPC, the HQ being moved, the turf, or the same details).
   const [dupWhere, dupArgs] = type === 'NPC' ? ['(pe.npc_id = ? OR (pe.turf = ? AND pe.old_value = ?))', [npcId, turf, oldValue]]
     : type === 'HQ' ? ['pe.old_value = ?', [oldValue]]
     : type === 'TURF' ? ['pe.turf = ?', [turf]]
+    : type === 'PROPERTY' ? ['pe.old_value = ? AND pe.new_value = ?', [oldValue, newValue]]
     : ['pe.new_value = ?', [newValue]];
   const dup = queryOne(`SELECT pe.id FROM pending_executions pe WHERE pe.faction_id = ? AND pe.execution_type = ? AND pe.status = 'PENDING' AND ${dupWhere}`, [contact.faction_id, type, ...dupArgs]);
   if (dup) return fail(`An RP change request for this is already pending approval (#${dup.id}).`);
@@ -462,6 +465,7 @@ export async function stageRoleplay(contactId, rpData) {
   if (type === 'NPC') msg += `\n**Turf:** ${turf}\n**Current:** ${oldValue}\n**New:** ${newValue}`;
   else if (type === 'HQ') msg += `\n**Old Address:** ${oldValue}\n**New Address:** ${newValue}`;
   else if (type === 'TURF') msg += `\n**Turf:** ${turf}\n**Change:** ${newValue}`;
+  else if (type === 'PROPERTY') msg += `\n**Current:** ${oldValue}\n**New:** ${newValue}`;
   else msg += `\n**Details:** ${newValue}`;
   msg += `\n📋 ${urls.approvals()}`;
   await sendPing('rp.requested', msg, { components: rpComponents(execId, 'pending') });

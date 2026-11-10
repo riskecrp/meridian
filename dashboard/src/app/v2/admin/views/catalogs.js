@@ -205,13 +205,19 @@ function Properties({ canEdit }) {
   if (loading) return <div className="empty">Loading…</div>;
   if (loadErr) return <div className="empty" style={{ color: "var(--rose)" }}>{loadErr}</div>;
   const isUnassigned = f => !f || !f.trim() || f.toLowerCase() === "none";
+  // getGlobalProperties computes `status` (ACTIVE | ARCHIVED | CONFISCATED | UNASSIGNED);
+  // the fallback only covers rows from an older server build.
+  const statusOf = (p) => p.status || (p.confiscated ? "CONFISCATED" : isUnassigned(p.faction) ? "UNASSIGNED" : p.faction_archived ? "ARCHIVED" : "ACTIVE");
+  const STATUS_COLOR = { CONFISCATED: "var(--rose)", UNASSIGNED: "var(--ink-3)", ARCHIVED: "var(--amber)", ACTIVE: "var(--good)" };
   const factionNames = [...new Set(props.map(p => p.faction).filter(f => f && !isUnassigned(f)))].sort();
   const filtered = props.filter(p => {
     const s = q.toLowerCase();
     if (q && !p.address?.toLowerCase().includes(s) && !p.faction?.toLowerCase().includes(s) && !p.current_owner?.toLowerCase().includes(s)) return false;
-    if (filter === "active") return !p.confiscated && !isUnassigned(p.faction);
-    if (filter === "confiscated") return p.confiscated;
-    if (filter === "unassigned") return !p.confiscated && isUnassigned(p.faction);
+    const st = statusOf(p);
+    if (filter === "active") return st === "ACTIVE";
+    if (filter === "archived") return st === "ARCHIVED";
+    if (filter === "confiscated") return st === "CONFISCATED";
+    if (filter === "unassigned") return st === "UNASSIGNED";
     return true;
   });
   const submit = async () => {
@@ -226,7 +232,7 @@ function Properties({ canEdit }) {
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
         <div className="sub-tabs" style={{ padding: 0 }}>
-          {["all", "active", "confiscated", "unassigned"].map(f => (
+          {["all", "active", "archived", "confiscated", "unassigned"].map(f => (
             <button key={f} className={`tab${filter === f ? " on" : ""}`} onClick={() => setFilter(f)}>{f}</button>
           ))}
         </div>
@@ -240,10 +246,10 @@ function Properties({ canEdit }) {
             <thead><tr><th>Status</th><th>Faction</th><th>Address</th><th>Type</th><th>Owner</th>{canEdit && <th></th>}</tr></thead>
             <tbody>
               {filtered.map(p => {
-                const none = isUnassigned(p.faction);
-                const archived = !!p.faction_archived;
-                const status = p.confiscated ? "CONF" : none ? "NONE" : archived ? "ARCHIVED" : "ACTIVE";
-                const col = p.confiscated ? "var(--rose)" : none ? "var(--ink-3)" : archived ? "var(--amber)" : "var(--good)";
+                const none = isUnassigned(p.faction) || !p.faction_id;
+                const status = statusOf(p);
+                const archived = status === "ARCHIVED";
+                const col = STATUS_COLOR[status] || "var(--ink-2)";
                 return (
                   <tr key={p.id}>
                     <td><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, fontWeight: 700, color: col }} title={archived ? "The faction holding this property is archived" : ""}>{status}</span></td>
@@ -258,7 +264,7 @@ function Properties({ canEdit }) {
                       <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                         <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ id: p.id, address: p.address, type: p.type || "Property", isHQ: !!p.is_hq, owner: p.current_owner || "", notes: p.notes || "" })}>Edit</button>{" "}
                         <button className="act" style={{ padding: "2px 7px" }} onClick={() => setAssign({ id: p.id, address: p.address, faction: p.faction || "" })}>Assign</button>{" "}
-                        {!p.confiscated && !none && <><button className="act" style={{ padding: "2px 7px", color: "var(--amber)" }} onClick={async () => { if (window.confirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { if (await act(() => confiscateProperty(p.id))) load(); } }}>Conf.</button>{" "}</>}
+                        {status !== "CONFISCATED" && !none && <><button className="act" style={{ padding: "2px 7px", color: "var(--amber)" }} onClick={async () => { if (window.confirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { if (await act(() => confiscateProperty(p.id))) load(); } }}>Conf.</button>{" "}</>}
                         <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Delete ${p.address}? This cannot be undone.`)) { if (await act(() => deleteProperty(p.id))) load(); } }}>Del</button>
                       </td>
                     )}

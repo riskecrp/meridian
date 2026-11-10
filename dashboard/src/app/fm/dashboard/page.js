@@ -8,7 +8,7 @@ import { getTeamIcContacts, getTeamIcContactsAll, getAllIcContacts, assignIcCont
 import RpChangeForm from "../teams/RpChangeForm.js";
 import SopLink from "../../../lib/SopLink";
 import { getPendingQueue, getTeamPerformance, getGuideActivity } from "../leadership/actions.js";
-import { executeRPChange, approveRPChange, denyRPChange, resubmitRPChange, markRPDone, getMyRPRequests, resolveDeletion, getAnalytics, deleteRPChange } from "../operations/actions.js";
+import { executeRPChange, approveRPChange, denyRPChange, resubmitRPChange, markRPDone, getMyRPRequests, resolveDeletion, getAnalytics, deleteRPChange, getRPExecutionPreview } from "../operations/actions.js";
 import { completePromotion, cancelPromotion } from "../factions/actions.js";
 
 // ── Widget registry ────────────────────────────────────────────────────────────
@@ -614,6 +614,51 @@ export default function DashboardPage() {
     }),
   };
 
+  // RP-change actions answer { ok:false, error } for an out-of-order click (a
+  // stale tab, a request someone else already moved on) or when there is
+  // nothing to rewrite — show that instead of refreshing as if it worked.
+  const rpResult = async (p) => {
+    let r;
+    try { r = await p; } catch (e) { showAlert(e?.message || 'Action failed.', 'Not applied'); return false; }
+    if (r && r.ok === false) { showAlert(r.error || 'Action failed.', 'Not applied'); return false; }
+    return true;
+  };
+  // Execute with the server's preview of what will be rewritten (shared/rpChanges.js
+  // executionPreview): NPC asks for the final name/position (and which NPC when the
+  // turf+type match is ambiguous), TURF may take a shipment power, HQ / PROPERTY /
+  // Other confirm the summary.
+  const executeWithPreview = async (rc) => {
+    let pv;
+    try { pv = await getRPExecutionPreview(rc.id); } catch (e) { showAlert(e?.message || 'Could not load the execution preview.', 'Not executed'); return false; }
+    const type = String(pv?.type || rc.execution_type || 'Other').toUpperCase();
+    if (type === 'NPC') {
+      const cands = pv?.candidates || [];
+      const fields = [];
+      if (!pv?.ok && cands.length > 1) {
+        fields.push({ name: 'npcId', label: 'Which NPC? (several match the turf + type)', type: 'select', placeholder: 'Select NPC…', options: cands.map(c => ({ value: String(c.id), label: `${c.name} (${c.npc_type}) — ${c.turf}` })) });
+      } else if (!pv?.ok) { showAlert(pv?.error || 'Nothing to rewrite.', 'Not executed'); return false; }
+      fields.push({ name: 'npcName', label: 'Final NPC Name', type: 'text' }, { name: 'npcPos', label: 'TP Position', type: 'text' });
+      const res = await showForm(pv?.ok ? `Execute NPC Swap — ${pv.summary}` : 'Execute NPC Swap', fields);
+      if (!res) return false;
+      if (fields[0].name === 'npcId' && !res.npcId) { showAlert('Pick which NPC to rewrite.', 'Not executed'); return false; }
+      if (!res.npcName?.trim() || !res.npcPos?.trim()) { showAlert('Final NPC name and TP position are both required.', 'Not executed'); return false; }
+      const data = { npcName: res.npcName.trim(), npcPos: res.npcPos.trim() };
+      if (res.npcId) data.npcId = Number(res.npcId);
+      return rpResult(executeRPChange(rc.id, data));
+    }
+    if (!pv?.ok) { showAlert(pv?.error || 'This request cannot be executed.', 'Not executed'); return false; }
+    if (type === 'TURF' && pv.mode === 'turf') {
+      const res = await showForm(`Execute turf change — ${pv.summary}`, [{ name: 'shipmentPower', label: 'Shipment power (optional — blank keeps the current value)', type: 'text' }]);
+      if (!res) return false;
+      const data = {};
+      if (res.shipmentPower?.trim()) data.shipmentPower = res.shipmentPower.trim();
+      return rpResult(executeRPChange(rc.id, data));
+    }
+    const what = type === 'OTHER' ? 'this change' : `this ${type} change`;
+    if (!(await showConfirm(`Execute ${what} for ${rc.faction_name || rc.faction}?\n\n${pv.summary}`))) return false;
+    return rpResult(executeRPChange(rc.id, {}));
+  };
+
   // ── Widget render functions ────────────────────────────────────────────────
 
   const renderPending = () => {
@@ -649,26 +694,21 @@ export default function DashboardPage() {
                       {rc.status === 'PENDING' && <>
                         <button style={qBtn('var(--red)','transparent','rgba(248,113,113,0.3)')} onClick={async()=>{
                           const reason = await showPrompt('Reason for denial (required):','');
-                          if (reason?.trim()) { await denyRPChange(rc.id, reason.trim()); refreshQueue(); getMyRPRequests().then(setMyRPRequests); }
+                          if (reason?.trim()) { await rpResult(denyRPChange(rc.id, reason.trim())); refreshQueue(); getMyRPRequests().then(setMyRPRequests); }
                         }}>Deny</button>
-                        <button style={qBtn('white','var(--green)','transparent')} onClick={async()=>{ await approveRPChange(rc.id); refreshQueue(); getMyRPRequests().then(setMyRPRequests); }}>Approve</button>
+                        <button style={qBtn('white','var(--green)','transparent')} onClick={async()=>{ await rpResult(approveRPChange(rc.id)); refreshQueue(); getMyRPRequests().then(setMyRPRequests); }}>Approve</button>
                       </>}
                       {rc.status === 'APPROVED' && (
                         <span style={{fontSize:10, color:'var(--accent)', fontStyle:'italic'}}>Waiting for Team Lead to confirm RP is done.</span>
                       )}
                       {rc.status === 'RP_DONE' && (
                         <button style={qBtn('white','var(--green)','transparent')} onClick={async()=>{
-                          if (rc.execution_type==='NPC') {
-                            const res = await showForm("Execute NPC Swap",[{name:'npcName',label:'Final NPC Name',type:'text'},{name:'npcPos',label:'TP Position',type:'text'}]);
-                            if (res?.npcName) { await executeRPChange(rc.id, res); refreshQueue(); getMyRPRequests().then(setMyRPRequests); }
-                          } else {
-                            if (await showConfirm('Execute this change?')) { await executeRPChange(rc.id, {}); refreshQueue(); getMyRPRequests().then(setMyRPRequests); }
-                          }
+                          if (await executeWithPreview(rc)) { refreshQueue(); getMyRPRequests().then(setMyRPRequests); }
                         }}>Execute</button>
                       )}
                       <button style={qBtn('var(--fg-4)','transparent','rgba(255,255,255,0.08)')} onClick={async()=>{
-                        if (await showConfirm(`Delete this RP change request for ${rc.faction}? This cannot be undone.`)) {
-                          await deleteRPChange(rc.id);
+                        if (await showConfirm(`Delete this RP change request for ${rc.faction_name || rc.faction}? This cannot be undone.`)) {
+                          await rpResult(deleteRPChange(rc.id));
                           refreshQueue();
                           getMyRPRequests().then(setMyRPRequests);
                         }
@@ -1981,7 +2021,7 @@ export default function DashboardPage() {
                         />
                         <div style={{display:'flex', gap:6, marginTop:6}}>
                           <button onClick={async () => {
-                            await markRPDone(r.id, rpDoneNote);
+                            if (!(await rpResult(markRPDone(r.id, rpDoneNote)))) return;
                             setRpMarkingDone(null); setRpDoneNote('');
                             getMyRPRequests().then(setMyRPRequests); refreshQueue();
                           }} style={{fontSize:11, fontWeight:700, padding:'5px 14px', borderRadius:5, cursor:'pointer',
@@ -2011,7 +2051,7 @@ export default function DashboardPage() {
                         <div style={{display:'flex', gap:6, marginTop:6}}>
                           <button onClick={async () => {
                             if (!rpResubmitNote.trim()) return;
-                            await resubmitRPChange(r.id, rpResubmitNote);
+                            if (!(await rpResult(resubmitRPChange(r.id, rpResubmitNote)))) return;
                             setRpResubmitting(null); setRpResubmitNote('');
                             getMyRPRequests().then(setMyRPRequests);
                           }} disabled={!rpResubmitNote.trim()}
