@@ -3,15 +3,13 @@ CREATE TABLE staff (
     display_name TEXT NOT NULL DEFAULT '', team_id TEXT NOT NULL DEFAULT '', team_name TEXT NOT NULL DEFAULT '',
     rank TEXT NOT NULL DEFAULT 'Guide', clearance INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-, dm_tracking_enabled INTEGER NOT NULL DEFAULT 0, lead_storyteller INTEGER NOT NULL DEFAULT 0);
+, dm_tracking_enabled INTEGER NOT NULL DEFAULT 0, lead_storyteller INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE sessions (
     id INTEGER PRIMARY KEY, staff_id INTEGER NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
     token TEXT NOT NULL UNIQUE, discord_id TEXT NOT NULL, discord_name TEXT NOT NULL DEFAULT '',
     clearance INTEGER NOT NULL DEFAULT 1, expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 , event_team INTEGER NOT NULL DEFAULT 0, lead_storyteller INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX idx_sessions_token ON sessions(token);
-CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 CREATE TABLE factions (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, lead_discord_id TEXT NOT NULL DEFAULT '',
     tier INTEGER NOT NULL DEFAULT 0, last_promoted TEXT DEFAULT NULL,
@@ -25,7 +23,6 @@ CREATE TABLE faction_members (
     is_leader INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_faction_members_faction ON faction_members(faction_id);
 CREATE TABLE properties (
     id INTEGER PRIMARY KEY, address TEXT NOT NULL, faction_id INTEGER REFERENCES factions(id) ON DELETE SET NULL,
     property_type TEXT NOT NULL DEFAULT 'Property', is_hq INTEGER NOT NULL DEFAULT 0,
@@ -33,34 +30,29 @@ CREATE TABLE properties (
     date_confiscated TEXT DEFAULT NULL, confiscated_by TEXT DEFAULT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 , current_owner TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '');
-CREATE INDEX idx_properties_faction ON properties(faction_id);
 CREATE TABLE scene_logs (
     id INTEGER PRIMARY KEY, date TEXT NOT NULL, faction_id INTEGER NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
     rewards TEXT NOT NULL DEFAULT 'None', logged_by TEXT NOT NULL DEFAULT 'Unknown',
     notes TEXT NOT NULL DEFAULT '', author_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_scene_logs_faction ON scene_logs(faction_id);
-CREATE INDEX idx_scene_logs_date ON scene_logs(date);
 CREATE TABLE intel_notes (
     id INTEGER PRIMARY KEY, faction_id INTEGER NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
     text TEXT NOT NULL, author TEXT NOT NULL DEFAULT 'Unknown', author_id TEXT NOT NULL DEFAULT '',
     date TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_intel_notes_faction ON intel_notes(faction_id);
 CREATE TABLE faction_history (
     id INTEGER PRIMARY KEY, faction_id INTEGER REFERENCES factions(id) ON DELETE SET NULL,
     faction_name TEXT NOT NULL DEFAULT '', action_type TEXT NOT NULL,
     details TEXT NOT NULL DEFAULT '', authorized_by TEXT NOT NULL DEFAULT 'System',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_faction_history_faction ON faction_history(faction_id);
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY, task_uid TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
     target_id TEXT NOT NULL DEFAULT '', target_type TEXT NOT NULL DEFAULT 'Role',
     claimed_by TEXT NOT NULL DEFAULT 'None', next_reminder TEXT DEFAULT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-, created_by_id TEXT NOT NULL DEFAULT '', created_by_name TEXT NOT NULL DEFAULT '', notify_creator INTEGER DEFAULT 0);
+, created_by_id TEXT NOT NULL DEFAULT '', created_by_name TEXT NOT NULL DEFAULT '', notify_creator INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'open', completed_at TEXT, completed_by_id TEXT NOT NULL DEFAULT '', completed_by_name TEXT NOT NULL DEFAULT '', completion_note TEXT NOT NULL DEFAULT '', updated_at TEXT);
 CREATE TABLE task_log (
     id INTEGER PRIMARY KEY, action TEXT NOT NULL, actor TEXT NOT NULL DEFAULT '',
     task_uid TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
@@ -90,16 +82,12 @@ CREATE TABLE faction_imports (
     item_id INTEGER NOT NULL REFERENCES import_items(id) ON DELETE CASCADE,
     permitted INTEGER NOT NULL DEFAULT 0, UNIQUE(faction_id, item_id)
 );
-CREATE INDEX idx_faction_imports_faction ON faction_imports(faction_id);
-CREATE INDEX idx_faction_imports_item ON faction_imports(item_id);
 CREATE TABLE npcs (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, position TEXT NOT NULL DEFAULT '',
     npc_type TEXT NOT NULL DEFAULT 'General', turf TEXT NOT NULL DEFAULT 'Unaffiliated',
     shipment_power TEXT NOT NULL DEFAULT '', claimable INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_npcs_turf ON npcs(turf);
-CREATE INDEX idx_npcs_type ON npcs(npc_type);
 CREATE TABLE pending_executions (
     id INTEGER PRIMARY KEY, date TEXT NOT NULL,
     faction_id INTEGER NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
@@ -107,7 +95,7 @@ CREATE TABLE pending_executions (
     old_value TEXT NOT NULL DEFAULT 'N/A', new_value TEXT NOT NULL DEFAULT '',
     requested_by TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDING',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-, requester_id TEXT NOT NULL DEFAULT '', deny_reason TEXT NOT NULL DEFAULT '', rp_note TEXT NOT NULL DEFAULT '', approver_id TEXT NOT NULL DEFAULT '');
+, requester_id TEXT NOT NULL DEFAULT '', deny_reason TEXT NOT NULL DEFAULT '', rp_note TEXT NOT NULL DEFAULT '', approver_id TEXT NOT NULL DEFAULT '', npc_id INTEGER, contact_id INTEGER, resolved_at TEXT);
 CREATE TABLE inventory_stock (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, category TEXT NOT NULL DEFAULT '',
     starting_stock INTEGER NOT NULL DEFAULT 0, current_stock INTEGER NOT NULL DEFAULT 0,
@@ -123,7 +111,7 @@ CREATE TABLE treasury_logs (
     id INTEGER PRIMARY KEY, date TEXT NOT NULL, faction_name TEXT NOT NULL DEFAULT '',
     amount INTEGER NOT NULL DEFAULT 0, distributed_by TEXT NOT NULL DEFAULT 'Unknown',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, faction_id INTEGER REFERENCES factions(id) ON DELETE SET NULL);
 CREATE TABLE knowledge_base (
     id INTEGER PRIMARY KEY, category TEXT NOT NULL DEFAULT 'General', title TEXT NOT NULL,
     content TEXT NOT NULL DEFAULT '', added_by TEXT NOT NULL DEFAULT 'System',
@@ -135,7 +123,6 @@ CREATE TABLE spawn_items (
     game_id TEXT NOT NULL DEFAULT '', item_type TEXT NOT NULL DEFAULT 'item',
     extra TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_spawn_items_category ON spawn_items(category);
 CREATE TABLE discord_config (
     id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, channel_id TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT ''
@@ -144,17 +131,6 @@ CREATE TABLE discord_roles (
     id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, role_id TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT ''
 );
-CREATE VIEW v_faction_scene_stats AS
-SELECT f.id AS faction_id, f.name AS faction_name, COUNT(sl.id) AS all_time,
-    SUM(CASE WHEN sl.created_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS scenes_30d
-FROM factions f LEFT JOIN scene_logs sl ON sl.faction_id = f.id GROUP BY f.id, f.name
-/* v_faction_scene_stats(faction_id,faction_name,all_time,scenes_30d) */;
-CREATE VIEW v_server_analytics AS
-SELECT (SELECT COUNT(*) FROM factions) AS total_factions,
-    (SELECT COUNT(*) FROM properties) AS total_properties,
-    (SELECT COUNT(*) FROM properties WHERE confiscated = 1) AS confiscated_assets,
-    (SELECT COUNT(*) FROM tasks WHERE claimed_by = 'None') AS open_tasks
-/* v_server_analytics(total_factions,total_properties,confiscated_assets,open_tasks) */;
 CREATE TABLE documents (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
@@ -176,7 +152,6 @@ CREATE TABLE site_audit_log (
     target_label TEXT NOT NULL DEFAULT '',
     details TEXT NOT NULL DEFAULT ''
 , source TEXT NOT NULL DEFAULT 'site');
-CREATE INDEX idx_audit_timestamp ON site_audit_log(timestamp);
 CREATE TABLE weapon_ammo (
     id INTEGER PRIMARY KEY,
     weapon_name TEXT NOT NULL,
@@ -184,7 +159,6 @@ CREATE TABLE weapon_ammo (
     caliber TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_weapon_ammo_cat ON weapon_ammo(weapon_category);
 CREATE TABLE weapon_ammo_compat (
     id INTEGER PRIMARY KEY,
     weapon_id INTEGER NOT NULL REFERENCES weapon_ammo(id) ON DELETE CASCADE,
@@ -192,14 +166,12 @@ CREATE TABLE weapon_ammo_compat (
     ammo_type TEXT NOT NULL DEFAULT 'Standard',
     UNIQUE(weapon_id, ammo_name)
 );
-CREATE INDEX idx_compat_weapon ON weapon_ammo_compat(weapon_id);
 CREATE TABLE weapon_attachments (
     id INTEGER PRIMARY KEY,
     weapon_id INTEGER NOT NULL REFERENCES weapon_ammo(id) ON DELETE CASCADE,
     attachment_name TEXT NOT NULL,
     UNIQUE(weapon_id, attachment_name)
 );
-CREATE INDEX idx_attach_weapon ON weapon_attachments(weapon_id);
 CREATE TABLE change_log (
     id INTEGER PRIMARY KEY,
     change_type TEXT NOT NULL DEFAULT 'drop_location',
@@ -223,11 +195,9 @@ CREATE TABLE faction_reviews (
     team_id TEXT NOT NULL DEFAULT '',
     team_name TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')), faction_name TEXT NOT NULL DEFAULT '', reviewer_id TEXT NOT NULL DEFAULT '', reviewer_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Pending Discussion',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')), faction_name TEXT NOT NULL DEFAULT '', reviewer_id TEXT NOT NULL DEFAULT '', reviewer_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Pending Discussion', feedback_sent_at TEXT, feedback_sent_by TEXT NOT NULL DEFAULT '',
     UNIQUE(faction_id, review_month)
 );
-CREATE INDEX idx_reviews_month ON faction_reviews(review_month);
-CREATE INDEX idx_reviews_faction ON faction_reviews(faction_id);
 CREATE TABLE leadership_meeting_notes (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
@@ -242,8 +212,6 @@ CREATE TABLE leadership_meeting_notes (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_meeting_team ON leadership_meeting_notes(team_id);
-CREATE INDEX idx_meeting_date ON leadership_meeting_notes(meeting_date);
 CREATE TABLE sent_recurring_reminders (
     id INTEGER PRIMARY KEY,
     reminder_key TEXT NOT NULL UNIQUE,
@@ -259,9 +227,6 @@ CREATE TABLE discord_messages (
     created_at TEXT NOT NULL,
     synced_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_dm_channel ON discord_messages(channel_id);
-CREATE INDEX idx_dm_author ON discord_messages(author_id);
-CREATE INDEX idx_dm_created ON discord_messages(created_at);
 CREATE TABLE conversation_summaries (
     id INTEGER PRIMARY KEY,
     cache_key TEXT NOT NULL UNIQUE,
@@ -272,7 +237,6 @@ CREATE TABLE conversation_summaries (
     to_date TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_summary_key ON conversation_summaries(cache_key);
 CREATE TABLE channel_sync_state (
     channel_id TEXT PRIMARY KEY,
     channel_name TEXT NOT NULL,
@@ -299,7 +263,6 @@ CREATE TABLE faction_fleet_vehicles (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_by TEXT NOT NULL DEFAULT ''
 , spawn_name TEXT NOT NULL DEFAULT '');
-CREATE INDEX idx_ffv_faction ON faction_fleet_vehicles(faction_id);
 CREATE TABLE faction_fleet_garages (
     id INTEGER PRIMARY KEY,
     faction_id INTEGER NOT NULL,
@@ -311,7 +274,6 @@ CREATE TABLE faction_fleet_garages (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_by TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_ffg_faction ON faction_fleet_garages(faction_id);
 CREATE TABLE fleet_vehicle_catalog (
     id INTEGER PRIMARY KEY,
     vehicle_name TEXT NOT NULL UNIQUE,
@@ -329,8 +291,6 @@ CREATE TABLE task_questions (
             asked_at TEXT NOT NULL,
             answered_at TEXT
         );
-CREATE TABLE sqlite_sequence(name,seq);
-CREATE INDEX idx_task_questions_uid ON task_questions(task_uid);
 CREATE TABLE recurring_reminders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -360,8 +320,6 @@ CREATE TABLE recurring_reminder_instances (
             created_at TEXT DEFAULT (datetime('now')),
             UNIQUE(reminder_id, year, month, recipient_id)
         );
-CREATE INDEX idx_rri_recipient ON recurring_reminder_instances(recipient_id, completed_at);
-CREATE INDEX idx_rri_reminder ON recurring_reminder_instances(reminder_id);
 CREATE TABLE role_mentions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL UNIQUE,
@@ -374,7 +332,7 @@ CREATE TABLE role_mentions (
   created_at TEXT NOT NULL,
   is_read INTEGER NOT NULL DEFAULT 0
 , guild_name TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS "mentions" (
+CREATE TABLE "mentions" (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL,
   target_user_id TEXT NOT NULL DEFAULT '738214924760907907',
@@ -398,8 +356,6 @@ CREATE TABLE leadership_personal_notes (
   note TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 , status TEXT NOT NULL DEFAULT '');
-CREATE INDEX idx_lpn_faction ON leadership_personal_notes(faction_id);
-CREATE INDEX idx_lpn_author ON leadership_personal_notes(author_id);
 CREATE TABLE bot_server_configs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   guild_id TEXT NOT NULL,
@@ -428,9 +384,7 @@ CREATE TABLE faction_ic_contacts (
   message TEXT NOT NULL,
   is_read INTEGER NOT NULL DEFAULT 0,
   submitted_at TEXT NOT NULL DEFAULT (datetime('now'))
-, status TEXT NOT NULL DEFAULT 'pending_discussion', assigned_to TEXT NOT NULL DEFAULT '', assigned_name TEXT NOT NULL DEFAULT '', thread_id TEXT NOT NULL DEFAULT '');
-CREATE INDEX idx_fpm_faction ON faction_public_messages(faction_id);
-CREATE INDEX idx_fic_faction ON faction_ic_contacts(faction_id);
+, status TEXT NOT NULL DEFAULT 'pending_discussion', assigned_to TEXT NOT NULL DEFAULT '', assigned_name TEXT NOT NULL DEFAULT '', thread_id TEXT NOT NULL DEFAULT '', rp_change_id INTEGER);
 CREATE TABLE mdb_access_roles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   role_id TEXT NOT NULL UNIQUE,
@@ -466,8 +420,6 @@ CREATE TABLE watch_role_mentions (
   created_at TEXT NOT NULL,
   is_read INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_watch_role_mentions_config ON watch_role_mentions(config_id);
-CREATE INDEX idx_watch_role_mentions_role ON watch_role_mentions(watch_role_id);
 CREATE TABLE scene_assistants (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scene_id INTEGER NOT NULL REFERENCES scene_logs(id) ON DELETE CASCADE,
@@ -477,28 +429,6 @@ CREATE TABLE scene_assistants (
   added_by_id TEXT NOT NULL,
   added_by_name TEXT NOT NULL
 );
-CREATE INDEX idx_scene_assistants_scene ON scene_assistants(scene_id);
-CREATE INDEX idx_scene_assistants_staff ON scene_assistants(staff_id);
-CREATE VIEW v_staff_activity_30d AS
-SELECT
-  COALESCE(s.display_name, c.discord_id) AS name,
-  c.discord_id,
-  COUNT(*) AS scene_count
-FROM (
-  SELECT sl.author_id AS discord_id
-  FROM scene_logs sl
-  WHERE sl.created_at >= datetime('now','-30 days')
-    AND sl.author_id != ''
-  UNION ALL
-  SELECT sa.staff_id AS discord_id
-  FROM scene_assistants sa
-  JOIN scene_logs sl ON sa.scene_id = sl.id
-  WHERE sl.created_at >= datetime('now','-30 days')
-) c
-LEFT JOIN staff s ON s.discord_id = c.discord_id
-GROUP BY c.discord_id
-ORDER BY scene_count DESC
-/* v_staff_activity_30d(name,discord_id,scene_count) */;
 CREATE TABLE teams (
   team_id TEXT PRIMARY KEY,
   team_name TEXT NOT NULL,
@@ -536,7 +466,6 @@ CREATE TABLE faction_ic_messages (
   message      TEXT             DEFAULT '',
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_faction_ic_messages_faction ON faction_ic_messages(faction_id);
 CREATE TABLE member_join_leave_logs (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   guild_id   TEXT NOT NULL,
@@ -547,8 +476,6 @@ CREATE TABLE member_join_leave_logs (
   event      TEXT NOT NULL CHECK(event IN ('join','leave')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_mjll_guild   ON member_join_leave_logs(guild_id);
-CREATE INDEX idx_mjll_created ON member_join_leave_logs(created_at DESC);
 CREATE TABLE deleted_message_logs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id  TEXT NOT NULL,
@@ -562,8 +489,6 @@ CREATE TABLE deleted_message_logs (
   had_content INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 , author_display_name TEXT NOT NULL DEFAULT '', deleter_id   TEXT NOT NULL DEFAULT '', deleter_name TEXT NOT NULL DEFAULT '');
-CREATE INDEX idx_dml_guild   ON deleted_message_logs(guild_id);
-CREATE INDEX idx_dml_created ON deleted_message_logs(created_at DESC);
 CREATE TABLE edited_message_logs (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id       TEXT NOT NULL,
@@ -578,8 +503,6 @@ CREATE TABLE edited_message_logs (
   content_after    TEXT NOT NULL DEFAULT '',
   created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_eml_guild   ON edited_message_logs(guild_id);
-CREATE INDEX idx_eml_created ON edited_message_logs(created_at DESC);
 CREATE TABLE server_log_keywords (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   phrase     TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -599,16 +522,14 @@ CREATE TABLE keyword_alerts (
   event_type   TEXT NOT NULL DEFAULT 'message',
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_ka_created ON keyword_alerts(created_at DESC);
 CREATE TABLE staff_coi (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   discord_id   TEXT NOT NULL,
   faction_name TEXT NOT NULL,
   source       TEXT NOT NULL DEFAULT 'manual',
-  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')), faction_id INTEGER REFERENCES factions(id) ON DELETE SET NULL,
   UNIQUE(discord_id, faction_name COLLATE NOCASE)
 );
-CREATE INDEX idx_staff_coi_discord ON staff_coi(discord_id);
 CREATE TABLE fm_character_links (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   discord_id     TEXT NOT NULL UNIQUE,
@@ -666,8 +587,6 @@ CREATE TABLE scene_library (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 , spawning_details TEXT NOT NULL DEFAULT '');
-CREATE INDEX idx_scene_library_status ON scene_library(status);
-CREATE INDEX idx_scene_library_category ON scene_library(category);
 CREATE TABLE scene_library_feedback (
     id INTEGER PRIMARY KEY,
     scene_id INTEGER NOT NULL,
@@ -676,8 +595,7 @@ CREATE TABLE scene_library_feedback (
     created_by_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_scene_library_feedback_scene ON scene_library_feedback(scene_id);
-CREATE TABLE IF NOT EXISTS "ooc_notes" (
+CREATE TABLE "ooc_notes" (
       id INTEGER PRIMARY KEY,
       faction_id INTEGER REFERENCES factions(id) ON DELETE CASCADE,
       date TEXT NOT NULL,
@@ -692,8 +610,6 @@ CREATE TABLE IF NOT EXISTS "ooc_notes" (
       target_key TEXT NOT NULL DEFAULT '',
       target_label TEXT NOT NULL DEFAULT ''
     );
-CREATE INDEX idx_ooc_notes_faction ON ooc_notes(faction_id);
-CREATE INDEX idx_ooc_notes_target  ON ooc_notes(target_type, target_key);
 CREATE TABLE pipedown_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -756,7 +672,6 @@ CREATE TABLE announcement_log (
   total_count  INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_announcement_log_created ON announcement_log(created_at);
 CREATE TABLE announcement_deliveries (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   log_id       INTEGER NOT NULL REFERENCES announcement_log(id) ON DELETE CASCADE,
@@ -766,11 +681,6 @@ CREATE TABLE announcement_deliveries (
   ok           INTEGER NOT NULL DEFAULT 0,
   error        TEXT             DEFAULT '',
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX idx_announcement_deliveries_log ON announcement_deliveries(log_id);
-CREATE TABLE _migrations (
-  name       TEXT PRIMARY KEY,
-  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE ping_routes (
   key              TEXT PRIMARY KEY,
@@ -789,7 +699,6 @@ CREATE TABLE ping_routes (
   updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
   updated_by       TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_ping_routes_group ON ping_routes(group_key, sort);
 CREATE TABLE conversation_sync_channels (
   channel_id TEXT PRIMARY KEY,
   name       TEXT NOT NULL DEFAULT '',
@@ -821,7 +730,6 @@ CREATE TABLE faction_feedback (
   concluded_at      TEXT,
   created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
 , reopen_card_id TEXT);
-CREATE INDEX idx_faction_feedback_status ON faction_feedback(status);
 CREATE TABLE faction_feedback_state (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   last_row    INTEGER NOT NULL DEFAULT 0,
@@ -874,7 +782,6 @@ CREATE TABLE form_submissions (
   created_at        TEXT    NOT NULL DEFAULT (datetime('now')), decided_by_id       TEXT, decided_by_name     TEXT, decided_at          TEXT, decision_reason     TEXT, checklist_message_id TEXT,
   UNIQUE (form_key, sheet_row)
 );
-CREATE INDEX idx_form_submissions_status ON form_submissions(form_key, status);
 CREATE TABLE form_submission_state (
   form_key    TEXT    PRIMARY KEY,
   last_row    INTEGER NOT NULL DEFAULT 0,
@@ -902,7 +809,6 @@ CREATE TABLE form_submission_checklist (
   done_at       TEXT, detail TEXT NOT NULL DEFAULT '', prereq INTEGER NOT NULL DEFAULT 0,
   UNIQUE (submission_id, item_key)
 );
-CREATE INDEX idx_form_checklist_submission ON form_submission_checklist(submission_id);
 CREATE TABLE peds (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   model_name TEXT NOT NULL UNIQUE,
@@ -923,4 +829,105 @@ CREATE TABLE peds (
   updated_at TEXT,
   updated_by TEXT
 , image_source TEXT);
+CREATE INDEX idx_sessions_token ON sessions(token);
+CREATE INDEX idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX idx_faction_members_faction ON faction_members(faction_id);
+CREATE INDEX idx_properties_faction ON properties(faction_id);
+CREATE INDEX idx_scene_logs_faction ON scene_logs(faction_id);
+CREATE INDEX idx_scene_logs_date ON scene_logs(date);
+CREATE INDEX idx_intel_notes_faction ON intel_notes(faction_id);
+CREATE INDEX idx_faction_history_faction ON faction_history(faction_id);
+CREATE INDEX idx_faction_imports_faction ON faction_imports(faction_id);
+CREATE INDEX idx_faction_imports_item ON faction_imports(item_id);
+CREATE INDEX idx_npcs_turf ON npcs(turf);
+CREATE INDEX idx_npcs_type ON npcs(npc_type);
+CREATE INDEX idx_spawn_items_category ON spawn_items(category);
+CREATE INDEX idx_audit_timestamp ON site_audit_log(timestamp);
+CREATE INDEX idx_weapon_ammo_cat ON weapon_ammo(weapon_category);
+CREATE INDEX idx_compat_weapon ON weapon_ammo_compat(weapon_id);
+CREATE INDEX idx_attach_weapon ON weapon_attachments(weapon_id);
+CREATE INDEX idx_reviews_month ON faction_reviews(review_month);
+CREATE INDEX idx_reviews_faction ON faction_reviews(faction_id);
+CREATE INDEX idx_meeting_team ON leadership_meeting_notes(team_id);
+CREATE INDEX idx_meeting_date ON leadership_meeting_notes(meeting_date);
+CREATE INDEX idx_dm_channel ON discord_messages(channel_id);
+CREATE INDEX idx_dm_author ON discord_messages(author_id);
+CREATE INDEX idx_dm_created ON discord_messages(created_at);
+CREATE INDEX idx_summary_key ON conversation_summaries(cache_key);
+CREATE INDEX idx_ffv_faction ON faction_fleet_vehicles(faction_id);
+CREATE INDEX idx_ffg_faction ON faction_fleet_garages(faction_id);
+CREATE INDEX idx_task_questions_uid ON task_questions(task_uid);
+CREATE INDEX idx_rri_recipient ON recurring_reminder_instances(recipient_id, completed_at);
+CREATE INDEX idx_rri_reminder ON recurring_reminder_instances(reminder_id);
+CREATE INDEX idx_lpn_faction ON leadership_personal_notes(faction_id);
+CREATE INDEX idx_lpn_author ON leadership_personal_notes(author_id);
+CREATE INDEX idx_fpm_faction ON faction_public_messages(faction_id);
+CREATE INDEX idx_fic_faction ON faction_ic_contacts(faction_id);
+CREATE INDEX idx_watch_role_mentions_config ON watch_role_mentions(config_id);
+CREATE INDEX idx_watch_role_mentions_role ON watch_role_mentions(watch_role_id);
+CREATE INDEX idx_scene_assistants_scene ON scene_assistants(scene_id);
+CREATE INDEX idx_scene_assistants_staff ON scene_assistants(staff_id);
+CREATE INDEX idx_faction_ic_messages_faction ON faction_ic_messages(faction_id);
+CREATE INDEX idx_mjll_guild   ON member_join_leave_logs(guild_id);
+CREATE INDEX idx_mjll_created ON member_join_leave_logs(created_at DESC);
+CREATE INDEX idx_dml_guild   ON deleted_message_logs(guild_id);
+CREATE INDEX idx_dml_created ON deleted_message_logs(created_at DESC);
+CREATE INDEX idx_eml_guild   ON edited_message_logs(guild_id);
+CREATE INDEX idx_eml_created ON edited_message_logs(created_at DESC);
+CREATE INDEX idx_ka_created ON keyword_alerts(created_at DESC);
+CREATE INDEX idx_staff_coi_discord ON staff_coi(discord_id);
+CREATE INDEX idx_scene_library_status ON scene_library(status);
+CREATE INDEX idx_scene_library_category ON scene_library(category);
+CREATE INDEX idx_scene_library_feedback_scene ON scene_library_feedback(scene_id);
+CREATE INDEX idx_ooc_notes_faction ON ooc_notes(faction_id);
+CREATE INDEX idx_ooc_notes_target  ON ooc_notes(target_type, target_key);
+CREATE INDEX idx_announcement_log_created ON announcement_log(created_at);
+CREATE INDEX idx_announcement_deliveries_log ON announcement_deliveries(log_id);
+CREATE INDEX idx_ping_routes_group ON ping_routes(group_key, sort);
+CREATE INDEX idx_faction_feedback_status ON faction_feedback(status);
+CREATE INDEX idx_form_submissions_status ON form_submissions(form_key, status);
+CREATE INDEX idx_form_checklist_submission ON form_submission_checklist(submission_id);
 CREATE INDEX idx_peds_model ON peds(model_name);
+CREATE VIEW v_faction_scene_stats AS
+SELECT f.id AS faction_id, f.name AS faction_name, COUNT(sl.id) AS all_time,
+    SUM(CASE WHEN sl.created_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS scenes_30d
+FROM factions f LEFT JOIN scene_logs sl ON sl.faction_id = f.id GROUP BY f.id, f.name
+/* v_faction_scene_stats(faction_id,faction_name,all_time,scenes_30d) */;
+CREATE VIEW v_server_analytics AS
+SELECT (SELECT COUNT(*) FROM factions) AS total_factions,
+    (SELECT COUNT(*) FROM properties) AS total_properties,
+    (SELECT COUNT(*) FROM properties WHERE confiscated = 1) AS confiscated_assets,
+    (SELECT COUNT(*) FROM tasks WHERE claimed_by = 'None') AS open_tasks
+/* v_server_analytics(total_factions,total_properties,confiscated_assets,open_tasks) */;
+CREATE VIEW v_staff_activity_30d AS
+SELECT
+  COALESCE(s.display_name, c.discord_id) AS name,
+  c.discord_id,
+  COUNT(*) AS scene_count
+FROM (
+  SELECT sl.author_id AS discord_id
+  FROM scene_logs sl
+  WHERE sl.created_at >= datetime('now','-30 days')
+    AND sl.author_id != ''
+  UNION ALL
+  SELECT sa.staff_id AS discord_id
+  FROM scene_assistants sa
+  JOIN scene_logs sl ON sa.scene_id = sl.id
+  WHERE sl.created_at >= datetime('now','-30 days')
+) c
+LEFT JOIN staff s ON s.discord_id = c.discord_id
+GROUP BY c.discord_id
+ORDER BY scene_count DESC
+/* v_staff_activity_30d(name,discord_id,scene_count) */;
+CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_tasks_target ON tasks(target_type, target_id);
+CREATE INDEX idx_tasks_claimed ON tasks(claimed_by);
+CREATE INDEX idx_task_log_uid ON task_log(task_uid);
+CREATE INDEX idx_treasury_faction ON treasury_logs(faction_id);
+CREATE INDEX idx_staff_coi_faction ON staff_coi(faction_id);
+CREATE UNIQUE INDEX uq_lpn_vote ON leadership_personal_notes(faction_id, author_id, review_month);
+CREATE INDEX idx_audit_actor ON site_audit_log(actor_id);
+CREATE INDEX idx_audit_target ON site_audit_log(target_type, target_id);
+CREATE INDEX idx_scene_logs_author ON scene_logs(author_id);
+CREATE INDEX idx_mentions_target ON mentions(target_user_id, is_read);
+CREATE INDEX idx_keyword_alerts_guild ON keyword_alerts(guild_id);
