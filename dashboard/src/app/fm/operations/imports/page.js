@@ -8,11 +8,12 @@ import OperationsShell from "../_shared/Shell";
 
 export default function ImportsPage() {
   const auth = useAuth();
-  const { showConfirm, showForm } = useDialog();
+  const { showConfirm, showForm, showAlert } = useDialog();
 
-  // L2 + Lead Storytellers get read-only access; L3 / Event Team can edit.
+  // L2, Event Team and Lead Storytellers get read-only access; L3 can edit
+  // (policy 4: Event Team is read-only outside scene material).
   const canView = auth.level >= 2 || auth.isEventTeam || auth.isLeadStoryteller;
-  const canEdit = auth.level >= 3 || auth.isEventTeam;
+  const canEdit = auth.level >= 3;
 
   const [imports, setImports] = useState({ factions: [], items: [] });
   const [loading, setLoading] = useState(true);
@@ -24,7 +25,34 @@ export default function ImportsPage() {
     refresh();
   }, [auth.loading, auth.level]);
 
-  const refresh = async () => { setLoading(true); setImports(await getGlobalImports()); setLoading(false); };
+  const refresh = async () => {
+    setLoading(true);
+    try { setImports((await getGlobalImports()) || { factions: [], items: [] }); }
+    catch (e) { await showAlert(e?.message || 'Could not load the import catalog.'); }
+    setLoading(false);
+  };
+  // `{ok:false}` and thrown auth errors both end in an alert, never a silent refresh.
+  const act = async (fn) => {
+    let r; try { r = await fn(); } catch (e) { await showAlert(e?.message || 'Failed'); return false; }
+    if (r && r.ok === false) { await showAlert(r.error || 'Failed'); return false; }
+    return true;
+  };
+  const validItem = async (res) => {
+    if (!res?.name?.trim()) { await showAlert('Name is required.'); return null; }
+    const tier = parseInt(res.tier, 10);
+    if (!Number.isInteger(tier) || tier < 1 || tier > 9) { await showAlert('Tier must be a number from 1 to 9.'); return null; }
+    return { ...res, name: res.name.trim(), category: (res.category || 'General').trim() || 'General', tier: String(tier) };
+  };
+  // Deleting an item revokes every faction's permission for it (faction_imports
+  // cascades). Say so, name them, and send the confirmation flag the action expects.
+  const removeItem = async (item) => {
+    const who = item.authorizedFactions || [];
+    const msg = who.length
+      ? `Delete "${item.name}"? This also REVOKES it from ${who.length} faction${who.length === 1 ? '' : 's'}: ${who.join(', ')}. The revocations are recorded in each faction's history.`
+      : `Delete "${item.name}"? No faction currently has it.`;
+    if (!(await showConfirm(msg))) return;
+    if (await act(() => deleteImportItem(item.id, { confirmRevoke: true }))) refresh();
+  };
 
   const filteredImports = imports.items.filter(i => !importSearch || i.name.toLowerCase().includes(importSearch.toLowerCase()) || i.category.toLowerCase().includes(importSearch.toLowerCase()));
   const importsByTier = filteredImports.reduce((a, i) => { const t = i.tier || '1'; if (!a[t]) a[t] = []; a[t].push(i); return a; }, {});
@@ -47,7 +75,9 @@ export default function ImportsPage() {
               { name: 'importTime', label: 'Import Time', type: 'text', placeholder: 'e.g. 48 hours' },
               { name: 'shipmentPower', label: 'Shipment Power', type: 'text', placeholder: 'e.g. 500' }
             ]);
-            if (res && res.name) { await addImportItem(res); refresh(); }
+            if (!res) return;
+            const item = await validItem(res);
+            if (item && await act(() => addImportItem(item))) refresh();
           }}>Add Item +</button>}
         </div>
         {Object.keys(importsByTier).sort((a, b) => parseInt(a) - parseInt(b)).map(tier => (
@@ -89,9 +119,11 @@ export default function ImportsPage() {
                               { name: 'importTime', label: 'Import Time', type: 'text', default: item.importTime || '' },
                               { name: 'shipmentPower', label: 'Shipment Power', type: 'text', default: item.shipmentPower || '' }
                             ]);
-                            if (res && res.name) { await editImportItem(item.id, res); refresh(); }
+                            if (!res) return;
+                            const payload = await validItem(res);
+                            if (payload && await act(() => editImportItem(item.id, payload))) refresh();
                           }} style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }}>Edit</button>
-                          <button onClick={async () => { if (await showConfirm(`Delete "${item.name}"?`)) { await deleteImportItem(item.id); refresh(); } }} style={{ fontSize: 11, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }}>Del</button>
+                          <button onClick={() => removeItem(item)} style={{ fontSize: 11, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }}>Del</button>
                         </div>
                         ) : <span style={{ fontSize: 11, color: 'var(--fg-4)' }}>—</span>}
                       </td>

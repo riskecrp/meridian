@@ -8,11 +8,12 @@ import OperationsShell from "../_shared/Shell";
 
 export default function PropertiesPage() {
   const auth = useAuth();
-  const { showConfirm, showPrompt, showForm } = useDialog();
+  const { showConfirm, showPrompt, showForm, showAlert } = useDialog();
 
-  // L2 + Lead Storytellers get read-only access; L3 / Event Team can edit.
+  // L2, Event Team and Lead Storytellers get read-only access; L3 can edit
+  // (policy 4: Event Team is read-only outside scene material).
   const canView = auth.level >= 2 || auth.isEventTeam || auth.isLeadStoryteller;
-  const canEdit = auth.level >= 3 || auth.isEventTeam;
+  const canEdit = auth.level >= 3;
 
   const [props, setProps] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,7 +27,18 @@ export default function PropertiesPage() {
     refresh();
   }, [auth.loading, auth.level]);
 
-  const refresh = async () => { setLoading(true); setProps(await getGlobalProperties()); setLoading(false); };
+  const refresh = async () => {
+    setLoading(true);
+    try { setProps((await getGlobalProperties()) || []); }
+    catch (e) { await showAlert(e?.message || 'Could not load properties.'); }
+    setLoading(false);
+  };
+  // `{ok:false}` and thrown auth errors both end in an alert, never a silent refresh.
+  const act = async (fn) => {
+    let r; try { r = await fn(); } catch (e) { await showAlert(e?.message || 'Failed'); return false; }
+    if (r && r.ok === false) { await showAlert(r.error || 'Failed'); return false; }
+    return true;
+  };
 
   const isUnassigned = (f) => !f || f.trim() === '' || f.toLowerCase() === 'none';
   const filteredProps = props.filter(p => {
@@ -61,7 +73,9 @@ export default function PropertiesPage() {
                 { name: 'owner',    label: 'Current Owner',              type: 'text', placeholder: 'Character name' },
                 { name: 'notes',    label: 'Notes',                      type: 'textarea', placeholder: 'Any relevant details...' },
               ]);
-              if (res?.address) { await addGlobalProperty({ address: res.address, faction: res.faction || '', type: res.type || 'Property', isHQ: !!res.isHQ, owner: res.owner || '', notes: res.notes || '' }); refresh(); }
+              if (!res) return;
+              if (!res.address?.trim()) { await showAlert('Address is required.'); return; }
+              if (await act(() => addGlobalProperty({ address: res.address.trim(), faction: (res.faction || '').trim(), type: res.type || 'Property', isHQ: !!res.isHQ, owner: res.owner || '', notes: res.notes || '' }))) refresh();
             }}>Add +</button>}
           </div>
         </div>
@@ -80,8 +94,9 @@ export default function PropertiesPage() {
             <tbody>
               {filteredProps.map(p => {
                 const none   = isUnassigned(p.faction);
-                const status = p.confiscated ? 'CONF' : none ? 'NONE' : 'ACTIVE';
-                const col    = p.confiscated ? 'var(--red)' : none ? 'var(--fg-4)' : 'var(--green)';
+                const archived = !!p.faction_archived;
+                const status = p.confiscated ? 'CONF' : none ? 'NONE' : archived ? 'ARCHIVED' : 'ACTIVE';
+                const col    = p.confiscated ? 'var(--red)' : none ? 'var(--fg-4)' : archived ? 'var(--amber)' : 'var(--green)';
                 const isExp  = expanded === p.id;
                 const isEdit = editingDetail?.id === p.id;
                 return (
@@ -108,9 +123,9 @@ export default function PropertiesPage() {
                             }}>
                             {isExp && isEdit ? 'Close' : 'Edit'}
                           </button>
-                          <button style={{ ...st.btnGhost, padding: '4px 10px' }} onClick={async () => { const f = await showPrompt("Assign to faction:", p.faction); if (f !== null) { await assignProperty(p.id, f); refresh(); } }}>Assign</button>
-                          {!p.confiscated && !none && <button style={{ fontSize: 11, color: 'var(--amber)', background: 'none', border: 'none', cursor: 'pointer' }} onClick={async () => { await confiscateProperty(p.id); refresh(); }}>Conf.</button>}
-                          <button style={{ fontSize: 11, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer' }} onClick={async () => { if (await showConfirm('Delete this property?')) { await deleteProperty(p.id); refresh(); } }}>Del</button>
+                          <button style={{ ...st.btnGhost, padding: '4px 10px' }} onClick={async () => { const f = await showPrompt("Assign to faction (exact name of an active faction):", p.faction); if (f !== null) { if (await act(() => assignProperty(p.id, String(f).trim()))) refresh(); } }}>Assign</button>
+                          {!p.confiscated && !none && <button style={{ fontSize: 11, color: 'var(--amber)', background: 'none', border: 'none', cursor: 'pointer' }} onClick={async () => { if (await showConfirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { if (await act(() => confiscateProperty(p.id))) refresh(); } }}>Conf.</button>}
+                          <button style={{ fontSize: 11, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer' }} onClick={async () => { if (await showConfirm(`Delete ${p.address}? This cannot be undone.`)) { if (await act(() => deleteProperty(p.id))) refresh(); } }}>Del</button>
                         </div>
                         ) : <span style={{ fontSize: 11, color: 'var(--fg-4)' }}>—</span>}
                       </td>
@@ -145,7 +160,8 @@ export default function PropertiesPage() {
                           </div>
                           <div className="flex gap-2 mt-3">
                             <button style={st.btn} onClick={async () => {
-                              await editPropertyDetail(p.id, { address: editingDetail.address, type: editingDetail.type, isHQ: editingDetail.isHQ, owner: editingDetail.owner, notes: editingDetail.notes });
+                              if (!editingDetail.address?.trim()) { await showAlert('Address is required.'); return; }
+                              if (!(await act(() => editPropertyDetail(p.id, { address: editingDetail.address.trim(), type: editingDetail.type, isHQ: editingDetail.isHQ, owner: editingDetail.owner, notes: editingDetail.notes })))) return;
                               setExpanded(null); setEditingDetail(null); refresh();
                             }}>Save</button>
                             <button style={st.btnGhost} onClick={() => { setExpanded(null); setEditingDetail(null); }}>Cancel</button>

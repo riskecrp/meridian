@@ -2,7 +2,9 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { useAuth } from "../../../../lib/useAuth";
 
-const RISK_ID = "738214924760907907";
+// Leadership (L3) page — owner ruling 2026-08-04 opened Server Logs to every
+// L3; the /api/* routes behind it enforce the same gate. Also at
+// /v2/admin?tab=memberlog.
 
 const s = {
   card:  { background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 12 },
@@ -209,28 +211,38 @@ function KeywordAlerts() {
   const [saving, setSaving]         = useState(false);
   const [search, setSearch]         = useState('');
   const [guild, setGuild]           = useState('All');
+  const [kwError, setKwError]       = useState('');
 
   const loadKeywords = useCallback(() => {
-    fetch('/api/keywords').then(r => r.ok ? r.json() : []).then(d => { setKeywords(d); setLoadingKw(false); }).catch(() => setLoadingKw(false));
+    fetch('/api/keywords').then(r => r.ok ? r.json() : []).then(d => { setKeywords(Array.isArray(d) ? d : []); setLoadingKw(false); }).catch(() => setLoadingKw(false));
   }, []);
   const loadAlerts = useCallback(() => {
-    fetch('/api/keywordalerts').then(r => r.ok ? r.json() : []).then(d => { setAlerts(d); setLoadingAl(false); }).catch(() => setLoadingAl(false));
+    fetch('/api/keywordalerts').then(r => r.ok ? r.json() : []).then(d => { setAlerts(Array.isArray(d) ? d : []); setLoadingAl(false); }).catch(() => setLoadingAl(false));
   }, []);
 
   useEffect(() => { loadKeywords(); loadAlerts(); }, [loadKeywords, loadAlerts]);
+
+  // The route answers 400 (empty/too short), 403 (not L3), 409 (already
+  // monitored); show that instead of pretending the add worked.
+  const kwCall = async (method, body) => {
+    setKwError('');
+    try {
+      const r = await fetch('/api/keywords', { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setKwError(d.error || `Request failed (${r.status}).`); return false; }
+      return true;
+    } catch (e) { setKwError(e?.message || 'Request failed.'); return false; }
+  };
 
   const addKeyword = async () => {
     const phrase = newPhrase.trim();
     if (!phrase) return;
     setSaving(true);
-    await fetch('/api/keywords', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phrase }) });
-    setNewPhrase(''); setSaving(false); loadKeywords();
+    if (await kwCall('POST', { phrase })) setNewPhrase('');
+    setSaving(false); loadKeywords();
   };
 
-  const removeKeyword = async (id) => {
-    await fetch('/api/keywords', { method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
-    loadKeywords();
-  };
+  const removeKeyword = async (id) => { await kwCall('DELETE', { id }); loadKeywords(); };
 
   const guilds   = useMemo(() => ['All', ...new Set(alerts.map(a => a.guild_name))].sort(), [alerts]);
   const filtered = useMemo(() => alerts.filter(a => {
@@ -265,6 +277,7 @@ function KeywordAlerts() {
               {saving ? '…' : 'Add'}
             </button>
           </div>
+          {kwError && <div style={{ fontSize:12, color:'var(--red)' }}>{kwError}</div>}
           {/* List */}
           {loadingKw ? <div style={{ color:'var(--fg-4)', fontSize:12 }}>Loading…</div> : keywords.length === 0 ? (
             <div style={{ color:'var(--fg-4)', fontSize:12, fontStyle:'italic' }}>No keywords set. Add one above.</div>
@@ -316,7 +329,7 @@ export default function ServerLogsPage() {
   const [tab, setTab] = useState('members');
 
   if (auth.loading) return null;
-  if (auth.id !== RISK_ID) return <div style={{ padding:48, textAlign:'center', color:'var(--fg-4)', fontStyle:'italic' }}>Access denied.</div>;
+  if (auth.level < 3) return <div style={{ padding:48, textAlign:'center', color:'var(--fg-4)', fontStyle:'italic' }}>Leadership (L3) access required.</div>;
 
   const tabs = [
     { id:'members', label:'Member Events' },
@@ -329,7 +342,7 @@ export default function ServerLogsPage() {
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <div>
         <h1 style={{ fontSize:22, fontWeight:800, color:'var(--fg-0)', letterSpacing:'-0.02em', marginBottom:4 }}>Server Logs</h1>
-        <p style={{ fontSize:12, color:'var(--fg-4)' }}>All servers the bot is in · visible only to you</p>
+        <p style={{ fontSize:12, color:'var(--fg-4)' }}>All servers the bot is in · Leadership only</p>
       </div>
       <div style={{ display:'flex', borderBottom:'1px solid var(--border)', gap:0 }}>
         {tabs.map(t => <button key={t.id} style={s.tab(tab===t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}

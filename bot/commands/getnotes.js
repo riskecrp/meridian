@@ -1,23 +1,27 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import { query, queryOne } from '../lib/db.js';
+import { query } from '../lib/db.js';
+import { requireStaff, replyEphemeral } from '../lib/auth.js';
+import { findFaction, respondFactions } from '../lib/factions.js';
+import { toInt } from '../../shared/validate.js';
+import { legacyDate } from '../../shared/dates.js';
+
 export default {
   data: new SlashCommandBuilder().setName('getnotes').setDescription('View recent intel notes for a faction')
     .addStringOption(o => o.setName('faction').setDescription('Faction name').setRequired(true).setAutocomplete(true))
-    .addIntegerOption(o => o.setName('count').setDescription('Number of notes (default 5)').setRequired(false)),
-  async autocomplete(interaction) {
-    const focused = interaction.options.getFocused().toLowerCase();
-    const factions = query("SELECT name FROM factions ORDER BY name").map(r => r.name);
-    await interaction.respond(factions.filter(f => f.toLowerCase().includes(focused)).slice(0, 25).map(f => ({ name: f, value: f })));
-  },
+    .addIntegerOption(o => o.setName('count').setDescription('Number of notes (1-25, default 5)').setRequired(false).setMinValue(1).setMaxValue(25)),
+  async autocomplete(interaction) { await respondFactions(interaction, { includeArchived: true }); },
   async execute(interaction) {
-    const factionName = interaction.options.getString('faction');
-    const count = interaction.options.getInteger('count') || 5;
-    const f = queryOne("SELECT id FROM factions WHERE name = ?", [factionName]);
-    if (!f) return interaction.reply({ content: `Faction "${factionName}" not found.`, ephemeral: true });
+    // Intel is readable by staff and by the Lead Storyteller (read-only role).
+    const actor = await requireStaff(interaction, 1, { allowLeadStoryteller: true });
+    if (!actor) return;
+    const r = findFaction(interaction.options.getString('faction'), { allowArchived: true });
+    if (r.error) return replyEphemeral(interaction, `❌ ${r.error}`);
+    const f = r.faction;
+    const count = toInt(interaction.options.getInteger('count'), { min: 1, max: 25, def: 5 });
     const notes = query("SELECT text, author, date FROM intel_notes WHERE faction_id = ? ORDER BY created_at DESC LIMIT ?", [f.id, count]);
-    if (notes.length === 0) return interaction.reply({ content: `No notes for **${factionName}**.`, ephemeral: true });
-    const embed = new EmbedBuilder().setTitle(`Intel: ${factionName}`).setColor(0x6366F1)
-      .setDescription(notes.map(n => `**${n.author}** (${n.date})\n${n.text}`).join('\n\n').substring(0, 4096));
+    if (notes.length === 0) return replyEphemeral(interaction, `No notes for **${f.name}**.`);
+    const embed = new EmbedBuilder().setTitle(`Intel: ${f.name}${f.archived ? ' (archived)' : ''}`).setColor(0x6366F1)
+      .setDescription(notes.map(n => `**${n.author}** (${legacyDate(n.date)})\n${n.text}`).join('\n\n').substring(0, 4096));
     await interaction.reply({ embeds: [embed], ephemeral: true });
   }
 };

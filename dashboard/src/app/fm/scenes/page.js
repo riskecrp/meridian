@@ -48,7 +48,6 @@ export default function ScenesPage() {
   useDraft('scenes:new', form, { enabled: showForm, blank: sceneIsBlank });
 
   const { showConfirm, showAlert } = useDialog();
-  const actor = { id: auth.id, name: auth.name };
 
   useEffect(() => {
     if (!auth.loading) {
@@ -85,19 +84,34 @@ export default function ScenesPage() {
     else await showAlert(res.error || "Could not add yourself to this scene.");
   };
 
-  const handleSaveEdit = async () => { await editSceneNotes(editId, editText); setEditId(null); refresh(); };
+  const handleSaveEdit = async () => {
+    const res = await editSceneNotes(editId, editText);
+    if (!res?.ok) { await showAlert(res?.error || 'Could not save the notes.'); return; }
+    setEditId(null); refresh();
+  };
+  const handleRequestDelete = async (log) => {
+    if (!(await showConfirm("Request deletion?"))) return;
+    const res = await requestSceneDeletion(log.id, log.notes);
+    await showAlert(res?.ok ? "Deletion requested." : (res?.error || "Could not request deletion."));
+  };
+  const handleDelete = async (log) => {
+    if (!(await showConfirm("L3 DELETE: Permanently remove this scene log?"))) return;
+    const res = await deleteScene(log.id);
+    if (!res?.ok) await showAlert(res?.error || 'Could not delete the scene.');
+    refresh();
+  };
 
   if (auth.loading || loading) return <TableSkeleton cols={['0.7fr','1.2fr','1fr','1.6fr','0.6fr']} rows={7} />;
 
   const filtered = logs
     .filter(l => {
       const matchSearch = !search || l.faction?.toLowerCase().includes(search.toLowerCase()) || l.logged_by?.toLowerCase().includes(search.toLowerCase());
-      const logDate = new Date(l.date);
-      const matchFrom = !dateFrom || logDate >= new Date(dateFrom);
-      const matchTo = !dateTo || logDate <= new Date(dateTo + 'T23:59:59');
+      const logMs = l.dateMs || new Date(l.date).getTime();
+      const matchFrom = !dateFrom || logMs >= new Date(dateFrom).getTime();
+      const matchTo = !dateTo || logMs <= new Date(dateTo + 'T23:59:59Z').getTime();
       return matchSearch && matchFrom && matchTo;
     })
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
+    .sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
 
   const hasFilters = search || dateFrom || dateTo;
 
@@ -140,14 +154,14 @@ export default function ScenesPage() {
       {attention.length > 0 && (
       <div className="sec-card" style={{ borderColor:'var(--red-bg)', background:'var(--red-bg)' }}>
         <div className="sec-card-hdr" style={{ background:'rgba(239,68,68,0.12)', borderColor:'var(--red-bg)', color:'var(--red)' }}>
-          <span style={{ display:'flex', alignItems:'center', gap:6 }}><span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background:'var(--red)', display:'inline-block' }} /> Attention Required</span>
+          <span style={{ display:'flex', alignItems:'center', gap:6 }}><span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background:'var(--red)', display:'inline-block' }} /> Attention Required — under 2 scenes in 30 days</span>
           <span style={{ fontFamily:'var(--font-mono)' }}>{attention.length} faction{attention.length!==1?'s':''}</span>
         </div>
         <div style={{ padding:'10px 14px', display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))', gap:8 }}>
           {attention.map(([fac, count], i) => (
             <div key={i} style={{ background:'var(--bg-1)', border:'1px solid var(--border)', borderRadius:8, padding:'8px 12px' }}>
               <div style={{ fontSize:12, fontWeight:700, marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{fac}</div>
-              <div style={{ fontSize:10, fontFamily:'var(--font-mono)', color:'var(--red)' }}>{count} scenes 30d</div>
+              <div style={{ fontSize:10, fontFamily:'var(--font-mono)', color:'var(--red)' }}>{count} scene{count === 1 ? '' : 's'} in 30d</div>
             </div>
           ))}
         </div>
@@ -201,7 +215,7 @@ export default function ScenesPage() {
             <div key={log.id} className="sec-card">
               <div className="sec-card-hdr">
                 <span style={{ fontFamily:'var(--font-display)', fontSize:13, color:'var(--fg-0)', letterSpacing:0 }}>{log.faction}</span>
-                <span style={{ fontFamily:'var(--font-mono)', fontSize:10 }}>{log.date}</span>
+                <span style={{ fontFamily:'var(--font-mono)', fontSize:10 }} title={log.date}>{log.dateLabel || log.date}</span>
               </div>
               <div style={{ padding:'12px 14px' }}>
               {editId === log.id ? (
@@ -226,7 +240,8 @@ export default function ScenesPage() {
                             <button
                               onClick={async () => {
                                 if (await showConfirm(`Remove ${a.staff_name} from this scene?`)) {
-                                  await removeAssistantFromScene(a.id);
+                                  const res = await removeAssistantFromScene(a.id);
+                                  if (!res?.ok) await showAlert(res?.error || 'Could not remove the assistant.');
                                   refresh();
                                 }
                               }}
@@ -249,7 +264,7 @@ export default function ScenesPage() {
               <div className="flex justify-between items-center pt-2" style={{ borderTop:'1px solid var(--border)' }}>
                 <div className="flex gap-3">
                   {isAuthor && editId !== log.id && <button style={{ fontSize:10, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', fontWeight:700, textTransform:'uppercase' }} onClick={() => { setEditId(log.id); setEditText(log.notes); }}>Edit</button>}
-                  {isAuthor && <button style={{ fontSize:10, color:'var(--amber)', background:'none', border:'none', cursor:'pointer', fontWeight:700, textTransform:'uppercase' }} onClick={async () => { if (await showConfirm("Request deletion?")) { await requestSceneDeletion(log.id, log.notes); await showAlert("Deletion requested."); } }}>Req. Delete</button>}
+                  {(isAuthor || auth.level >= 2) && auth.level < 3 && <button style={{ fontSize:10, color:'var(--amber)', background:'none', border:'none', cursor:'pointer', fontWeight:700, textTransform:'uppercase' }} onClick={() => handleRequestDelete(log)}>Req. Delete</button>}
                   {!isAuthor && !log.assistants?.some(a => a.staff_id === auth.id) && (
                     <button
                       disabled={addingToScene === log.id}
@@ -259,7 +274,7 @@ export default function ScenesPage() {
                     </button>
                   )}
                 </div>
-                {auth.level >= 3 && <button style={{ fontSize:10, color:'var(--red)', background:'none', border:'none', cursor:'pointer', fontWeight:700, textTransform:'uppercase' }} onClick={async () => { if (await showConfirm("L3 DELETE: Permanently remove this scene log?")) { await deleteScene(log.id); refresh(); } }}>L3 Delete</button>}
+                {auth.level >= 3 && <button style={{ fontSize:10, color:'var(--red)', background:'none', border:'none', cursor:'pointer', fontWeight:700, textTransform:'uppercase' }} onClick={() => handleDelete(log)}>L3 Delete</button>}
               </div>
               </div>
             </div>

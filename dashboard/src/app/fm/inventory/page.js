@@ -23,7 +23,7 @@ export default function InventoryPage() {
   const [tab, setTab] = useState('items');
   const [showAdd, setShowAdd] = useState(false);
   const [addForm, setAddForm] = useState({ name: '', category: '' });
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
 
   useEffect(() => {
     if (auth.loading) return;
@@ -84,7 +84,9 @@ export default function InventoryPage() {
                       title={`Remove ${i.name} from the list`}
                       onClick={async () => {
                         if (await showConfirm(`Remove "${i.name}" from the item list? Scenes that already gave it out keep their record.`)) {
-                          await deleteInventoryItem(i.id); refresh();
+                          const res = await deleteInventoryItem(i.id);
+                          if (!res?.ok) await showAlert(res?.error || 'Could not remove the item.');
+                          refresh();
                         }
                       }}>✕</button>
                   )}
@@ -138,7 +140,8 @@ export default function InventoryPage() {
             <form
               onSubmit={async e => {
                 e.preventDefault();
-                await addInventoryItem(addForm);
+                const res = await addInventoryItem(addForm);
+                if (!res?.ok) { await showAlert(res?.error || 'Could not add the item.'); return; }
                 setShowAdd(false); setAddForm({ name: '', category: '' }); refresh();
               }}
               style={{ position: 'relative', width: '100%', maxWidth: 430, background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 16, overflow: 'hidden' }}>

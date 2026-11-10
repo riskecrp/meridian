@@ -3,7 +3,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useAuth } from "../../../../lib/useAuth";
 import { useDialog } from "../../../../lib/useDialog";
 import StorytellingShell from "../_shared/Shell";
-import { getSceneLibrary, addSceneLibraryEntry, editSceneLibraryEntry, deleteSceneLibraryEntry, getSceneLibraryFeedback, addSceneLibraryFeedback } from "../actions";
+import { getSceneLibrary, addSceneLibraryEntry, editSceneLibraryEntry, setSceneLibraryStatus, deleteSceneLibraryEntry, getSceneLibraryFeedback, addSceneLibraryFeedback } from "../actions";
 import { getFactionNames, getInventoryForScene, getStaffForScene, submitScene } from "../../scenes/actions";
 import { ui } from "../../../../lib/ui.js";
 
@@ -86,9 +86,11 @@ export default function SceneLibraryPage() {
   const auth = useAuth();
   const { showConfirm, showAlert } = useDialog();
 
-  // access tiers
-  const canSuggest = auth.level >= 1 || auth.isLeadStoryteller; // L1+ and LST can add/suggest/add-to-faction
-  const canEdit    = auth.level >= 2 || auth.isLeadStoryteller; // L2+/LST can approve/edit/delete
+  // access tiers (policy 3/4): L1+ and Event Team suggest + log to faction;
+  // L2+, Event Team and Lead Storytellers approve; L2+ and Event Team edit/delete/review.
+  const canSuggest = auth.level >= 1 || auth.isEventTeam;
+  const canApprove = auth.level >= 2 || auth.isEventTeam || auth.isLeadStoryteller;
+  const canEdit    = auth.level >= 2 || auth.isEventTeam;
   const readOnly   = !canSuggest;
 
   const [scenes, setScenes]       = useState([]);
@@ -181,14 +183,16 @@ export default function SceneLibraryPage() {
   };
 
   const handleDelete = async (scene) => {
-    if (!await showConfirm(`Permanently delete "${scene.title}"?`)) return;
-    await deleteSceneLibraryEntry(scene.id);
+    if (!await showConfirm(`Permanently delete "${scene.title}" and its feedback?`)) return;
+    const res = await deleteSceneLibraryEntry(scene.id);
+    if (!res?.ok) return showAlert('Error: ' + (res?.error || 'Unknown'));
     refresh();
   };
 
   const handleApprove = async (scene) => {
     const newStatus = scene.status === 'approved' ? 'idea' : 'approved';
-    await editSceneLibraryEntry(scene.id, { ...scene, status: newStatus, spawning_required: !!scene.spawning_required, spawning_details: scene.spawning_details||'', ped_required: !!scene.ped_required });
+    const res = await setSceneLibraryStatus(scene.id, newStatus);
+    if (!res?.ok) return showAlert('Error: ' + (res?.error || 'Unknown'));
     refresh();
   };
 
@@ -315,6 +319,7 @@ export default function SceneLibraryPage() {
                 key={scene.id}
                 scene={scene}
                 canSuggest={canSuggest}
+                canApprove={canApprove}
                 canEdit={canEdit}
                 readOnly={readOnly}
                 onAddToFaction={() => openSceneModal(scene)}
@@ -495,7 +500,7 @@ export default function SceneLibraryPage() {
                         <label style={st.label}>Item</label>
                         <input list={`inv-${idx}`} style={st.input} placeholder="Type to search…" value={item.name}
                           onChange={e => { const n=[...sceneForm.items]; n[idx].name=e.target.value; setSceneForm({...sceneForm, items:n}); }} />
-                        <datalist id={`inv-${idx}`}>{inventory.map((inv,i) => <option key={i} value={inv.name}>{`Stock: ${inv.current_stock}`}</option>)}</datalist>
+                        <datalist id={`inv-${idx}`}>{inventory.map((inv,i) => <option key={i} value={inv.name}>{inv.category || ''}</option>)}</datalist>
                       </div>
                       <div style={{ width:76 }}>
                         <label style={st.label}>Qty</label>
@@ -616,7 +621,7 @@ export default function SceneLibraryPage() {
   );
 }
 
-function SceneCard({ scene, canSuggest, canEdit, readOnly, onAddToFaction, onEdit, onDelete, onApprove, onFeedback }) {
+function SceneCard({ scene, canSuggest, canApprove, canEdit, readOnly, onAddToFaction, onEdit, onDelete, onApprove, onFeedback }) {
   const tags = scene.tags ? scene.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
   const isApproved = scene.status === 'approved';
   const [expanded, setExpanded] = useState(false);
@@ -702,7 +707,7 @@ function SceneCard({ scene, canSuggest, canEdit, readOnly, onAddToFaction, onEdi
         )}
 
         <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-          {canEdit && (
+          {canApprove && (
             <button
               onClick={onApprove}
               style={{

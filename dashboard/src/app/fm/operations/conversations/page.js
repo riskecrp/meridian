@@ -17,11 +17,12 @@ export default function ConversationsPage() {
   const [convoLoading, setConvoLoading] = useState(false);
   const [convoChannel, setConvoChannel] = useState('');
   const [convoAvailableChannels, setConvoAvailableChannels] = useState([]);
+  const [convoError, setConvoError] = useState('');
 
   useEffect(() => {
     if (auth.loading || auth.level < 3) return;
     if (convoAvailableChannels.length === 0) {
-      getAvailableChannels().then(setConvoAvailableChannels);
+      getAvailableChannels().then(c => setConvoAvailableChannels(c || [])).catch(e => setConvoError(e?.message || 'Could not load channels.'));
     }
   }, [auth.loading, auth.level]);
 
@@ -31,13 +32,17 @@ export default function ConversationsPage() {
   return (
     <OperationsShell title="Conversations" docs={[{"title": "Operations — Conversations Tab", "label": "Conversations Guide", "minLevel": 3}]} authLevel={auth?.level || 3}>
       <div className="space-y-4">
+        {convoError && <div style={{ color:'var(--red)', fontSize:12 }}>{convoError}</div>}
         <div className="rounded-xl p-4" style={{ background: 'var(--bg-1)', border: '1px solid var(--border)' }}>
           <div className="flex flex-wrap gap-3 items-end">
             <div className="flex-1 min-w-[200px] relative">
               <div style={st.label}>Member (optional)</div>
-              <input style={st.input} value={convoMember} onChange={async e => {
+              <input style={st.input} value={convoMember} onChange={e => {
                 const v = e.target.value; setConvoMember(v);
-                if (v.length >= 1) { const s = await getMemberSuggestions(v); setConvoMemberSuggestions(s); } else { setConvoMemberSuggestions([]); }
+                // Debounced: one server round-trip per pause, not per keystroke.
+                clearTimeout(window.__convoSuggT);
+                if (v.length >= 1) window.__convoSuggT = setTimeout(async () => setConvoMemberSuggestions(await getMemberSuggestions(v).catch(() => [])), 250);
+                else setConvoMemberSuggestions([]);
               }} placeholder="Search by member name..." />
               {convoMemberSuggestions.length > 0 && convoMember && (
                 <div className="absolute top-full left-0 right-0 mt-1 rounded max-h-[200px] overflow-y-auto z-50" style={{ background: 'var(--bg-2)', border: '1px solid var(--border)' }}>
@@ -67,11 +72,15 @@ export default function ConversationsPage() {
               ))}
             </div>
             <button style={st.btn} disabled={convoLoading} onClick={async () => {
-              setConvoLoading(true);
-              const stats = await getConversationStats(convoFromDate, convoToDate, convoMember, convoChannel);
-              setConvoStats(stats);
-              const summary = await generateConversationSummary(convoFromDate, convoToDate, convoMember, convoChannel);
-              setConvoSummary(summary);
+              if (!convoFromDate || !convoToDate) { setConvoError('Pick a from and to date.'); return; }
+              if (convoFromDate > convoToDate) { setConvoError('The from date is after the to date.'); return; }
+              setConvoLoading(true); setConvoError('');
+              try {
+                const stats = await getConversationStats(convoFromDate, convoToDate, convoMember, convoChannel);
+                setConvoStats(stats);
+                const summary = await generateConversationSummary(convoFromDate, convoToDate, convoMember, convoChannel);
+                setConvoSummary(summary);
+              } catch (e) { setConvoError(e?.message || 'Could not load conversation data.'); }
               setConvoLoading(false);
             }}>{convoLoading ? 'Loading...' : 'Fetch Stats'}</button>
           </div>
@@ -133,7 +142,7 @@ export default function ConversationsPage() {
                 </div>
                 <div className="rounded-xl p-4" style={{ background: 'var(--bg-1)', border: '1px solid var(--border)' }}>
                   <div className="text-sm font-bold mb-3">By Channel</div>
-                  <div className="text-[13px] quill-content" style={{ color: 'var(--fg-2)' }} dangerouslySetInnerHTML={{ __html: convoSummary.channelSummaries }} />
+                  <div className="text-[13px] quill-content" style={{ color: 'var(--fg-2)' }} dangerouslySetInnerHTML={{ __html: typeof convoSummary.channelSummaries === 'string' ? convoSummary.channelSummaries : '' }} />
                 </div>
               </div>
             )}

@@ -5,32 +5,35 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../../lib/useAuth";
 import QuillEditor from "../../../../lib/QuillEditor";
 import {
-  getFactions, getFactionDetail, getFactionContacts, getFactionImports, toggleFactionImport,
+  getFactionDetail, getFactionContacts, getFactionImports, toggleFactionImport,
   stagePromotion, completePromotion, cancelPromotion, demoteFaction,
   addMember, updateMember, deleteMember,
   addFactionProperty, editFactionProperty, deleteFactionProperty,
-  updateFactionLinks, renameFaction, deleteFaction,
+  updateFactionLinks, renameFaction, deleteFaction, restoreFaction,
   addNote, editNote, addOOCNote, editOOCNote, editSceneLog, editFactionSceneRewards,
   requestDeletion, directDelete, aiSummarize, getNPCsForRP, getFactionProperties, requestRPChange,
   getFactionPortalMessages, postPortalMessage, deletePortalMessage, togglePortalMessagePin, markContactRead,
   editAuditEntry, deleteAuditEntry, getStaffForTeam,
 } from "../../../fm/factions/actions.js";
 import {
-  getReviewHistory, getReviewData, submitReview, setReviewStatus,
-  getFactionLeadershipSummary, getMyPersonalNotes, submitPersonalNote,
+  getReviewHistory, getReviewDataFor, submitReview, setReviewStatus,
+  getFactionLeadershipSummary, submitPersonalNote,
   generateFeedbackDraft, adjustFeedbackDraft, sendFeedbackToFaction, markFeedbackSent,
 } from "../../../fm/leadership/actions.js";
 import {
   getFleetOverview, getFleetTierDefaults, addFleetVehicle, deleteFleetVehicle,
   addFleetGarage, deleteFleetGarage, setFleetOverride, clearFleetOverride,
 } from "../../../fm/operations/actions.js";
-import { assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getThreadMessages } from "../../../fm/teams/actions.js";
-import { getFactionFleetSummary, getFeedbackSentThisMonth } from "../../actions.js";
+import { assignIcContact, setIcContactStatus, completeIcContact } from "../../../fm/teams/actions.js";
+import { getFactionFleetSummary } from "../../actions.js";
 import { FM_GUILD_ID } from "../../../../lib/constants";
+import { sanitizeHtml } from "../../../fm/leadership/_shared/sanitize.js";
+import { PROPERTY_TYPES, REVIEW_STATUSES } from "../../../../../../shared/validate.js";
 
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const money = (n) => "$" + (n || 0).toLocaleString();
 const IC_STATUS = { pending_discussion: ["disc", "Pending Discussion"], pending_roleplay: ["rp", "Pending Roleplay"], completed: ["done", "Completed"] };
+const PORTAL_BASE = process.env.NEXT_PUBLIC_PORTAL_URL || "https://meridiandatabase.net";
 
 import Modal from "../../Modal.js";
 
@@ -57,13 +60,11 @@ function FactionHub() {
   const isL3 = level >= 3;
   const isLeader = level >= 2 || auth?.isLeadStoryteller;
 
-  const [summary, setSummary] = useState(null);
   const [detail, setDetail] = useState(null);
   const [contacts, setContacts] = useState([]);
   const [imports, setImports] = useState([]);
   const [fleet, setFleet] = useState(null);
   const [fleetSum, setFleetSum] = useState(null);
-  const [fbSent, setFbSent] = useState(null);
   const [assignFor, setAssignFor] = useState(null); // { contactId, staff, sel }
   const [tierDefaults, setTierDefaults] = useState({});
   const [reviews, setReviews] = useState([]);
@@ -71,6 +72,7 @@ function FactionHub() {
   const [leadSummary, setLeadSummary] = useState({ notes: [], pending: [] });
   const [recForm, setRecForm] = useState({ recommendation: "", feedback: "" });
   const [noteTextLs, setNoteTextLs] = useState("");
+  const [noteStatusLs, setNoteStatusLs] = useState("");
   const [fbMsg, setFbMsg] = useState("");
   const [portal, setPortal] = useState([]);
   const tabParam = sp.get("tab");
@@ -92,8 +94,6 @@ function FactionHub() {
   const [portalPin, setPortalPin] = useState(false);
 
   const load = async () => {
-    const facs = await getFactions().catch(() => []);
-    const s = (facs || []).find(f => f.name === name); setSummary(s || null);
     const d = await getFactionDetail(name).catch(() => null);
     if (!d) { setNotFound(true); setLoading(false); return; }
     setDetail(d);
@@ -105,24 +105,36 @@ function FactionHub() {
     if (isL3) getFleetOverview().then(all => setFleet((all || []).find(f => f.id === d.id) || null)).catch(() => {});
     if (isLeader) {
       getReviewHistory(d.id).then(r => setReviews(r || [])).catch(() => {});
-      getReviewData().then(all => { const info = (all || []).find(f => f.id === d.id) || null; setReviewInfo(info); if (info?.currentReview) setRecForm({ recommendation: info.currentReview.recommendation || "", feedback: info.currentReview.feedback || "" }); }).catch(() => {});
-      getFactionLeadershipSummary(d.id).then(x => setLeadSummary(x || { notes: [], pending: [] })).catch(() => {});
-      getFeedbackSentThisMonth(d.name).then(setFbSent).catch(() => {});
+      getReviewDataFor(d.id).then(info => { setReviewInfo(info || null); if (info?.currentReview) setRecForm({ recommendation: info.currentReview.recommendation || "", feedback: info.currentReview.feedback || "" }); }).catch(() => {});
+      getFactionLeadershipSummary(d.id).then(x => { setLeadSummary(x || { notes: [], pending: [] }); if (x?.mine) { setNoteTextLs(x.mine.note || ""); setNoteStatusLs(x.mine.status || ""); } }).catch(() => {});
     }
     setLoading(false);
   };
   useEffect(() => { if (!auth?.loading && auth?.id && name) load(); }, [auth?.id, auth?.loading, name]);
 
-  const run = async (fn) => { setBusy(true); setErr(""); try { const r = await fn(); if (r && r.ok === false) { setErr(r.error || "Failed."); setBusy(false); return false; } } catch { setErr("Failed."); setBusy(false); return false; } setBusy(false); setForm(null); await load(); return true; };
+  // Every server action goes through run(): { ok:false, error } and thrown
+  // errors both surface as `err` instead of silently closing a form.
+  const run = async (fn) => {
+    setBusy(true); setErr("");
+    try { const r = await fn(); if (r && r.ok === false) { setErr(r.error || "Failed."); setBusy(false); return false; } }
+    catch (e) { setErr(e?.message || "Failed."); setBusy(false); return false; }
+    setBusy(false); setForm(null); await load(); return true;
+  };
 
   if (auth?.loading || loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok) return <div className="view" style={{ color: "var(--ink-3)" }}>Not authorized.</div>;
   if (notFound) return <div className="view"><Link className="hub-back" href="/v2/factions">← Factions</Link><div className="empty">Faction “{name}” not found.</div></div>;
 
+  // The server decides what this viewer may change: team scope for L1/L2,
+  // archived status, Event Team / Lead Storyteller read-only. Every write
+  // control keys off `canWrite` so a button never leads to a refused action.
+  const canWrite = !!detail.writable;
+  const archived = !!detail.archived;
+  const fbSent = reviewInfo?.feedbackSent || null;
   const activeIC = contacts.filter(c => c.status !== "completed").length;
   const permittedCount = imports.filter(i => i.permitted).length;
   const td = tierDefaults[detail.tier] || {};
-  let promo = null; try { if (detail.pendingPromo) promo = JSON.parse(detail.pendingPromo); } catch {}
+  const promo = detail.promo || null;
   const newImports = promo ? (promo.imports || []).filter(n => !(detail.authorizedItems || []).includes(n)) : [];
 
   const TABS = [
@@ -135,21 +147,26 @@ function FactionHub() {
     ...(isLeader ? [{ id: "review", label: "Review", lock: true }, { id: "admin", label: "Admin" }] : []),
   ];
 
-  // ── Stage RP Change (multi-step modal). When opened from an incoming IC
-  //    contact, the request goes through stageRoleplay so the contact advances
-  //    to pending_roleplay and its Discord thread is notified. ──
+  // ── Stage RP Change (multi-step modal). The request records the NPC it will
+  //    rewrite and, when opened from an incoming IC contact, the contact id —
+  //    the server advances that contact to pending_roleplay and tells its thread.
   const openStageRP = async (contactId = null) => {
     const [npcs, props] = await Promise.all([getNPCsForRP().catch(() => []), getFactionProperties(detail.id).catch(() => [])]);
-    setForm({ kind: "rp", step: "type", type: "", npcs, props, oldVal: "", newVal: "", turf: "", contactId });
+    setErr("");
+    setForm({ kind: "rp", step: "type", type: "", npcs, props, oldVal: "", newVal: "", turf: "", contactId: typeof contactId === "number" ? contactId : null });
   };
   const submitRP = async () => {
     const f = form; let payload;
-    if (f.type === "NPC") { const parts = (f.oldVal || "").split("|"); payload = { faction: detail.name, type: "NPC", oldValue: parts[1] || f.oldVal, newValue: f.newVal, turf: parts[2] || "N/A" }; }
-    else if (f.type === "HQ") payload = { faction: detail.name, type: "HQ", oldValue: f.oldVal, newValue: f.newVal, turf: "N/A" };
-    else payload = { faction: detail.name, type: "Other", oldValue: f.oldVal || "N/A", newValue: f.newVal, turf: "N/A" };
+    if (f.type === "NPC") {
+      const npc = f.npcs.find(n => String(n.id) === String(f.oldVal));
+      payload = { factionId: detail.id, type: "NPC", npcId: npc?.id, oldValue: npc?.npc_type || "N/A", newValue: f.newVal, turf: npc?.turf || "N/A" };
+    } else if (f.type === "HQ") payload = { factionId: detail.id, type: "HQ", oldValue: f.oldVal, newValue: f.newVal, turf: "N/A" };
+    else if (f.type === "TURF") payload = { factionId: detail.id, type: "TURF", oldValue: f.oldVal || "N/A", newValue: f.newVal, turf: f.turf || f.oldVal || "N/A" };
+    else payload = { factionId: detail.id, type: "Other", oldValue: f.oldVal || "N/A", newValue: f.newVal, turf: "N/A" };
     if (!payload.newValue?.trim()) return;
-    if (f.contactId) await run(() => stageRoleplay(f.contactId, { type: payload.type, turf: payload.turf, oldValue: payload.oldValue, newValue: payload.newValue }));
-    else await run(() => requestRPChange(payload));
+    if (f.contactId) payload.contactId = f.contactId;
+    const ok = await run(() => requestRPChange(payload));
+    if (ok) window.alert("RP change requested — FM Leadership has been pinged to approve it.");
   };
 
   // ── OOC editor ──
@@ -157,8 +174,8 @@ function FactionHub() {
   const submitOOC = async () => {
     const present = form.staff.filter(m => form.att[m.discord_id]); const absent = form.staff.filter(m => !form.att[m.discord_id]);
     const html = `<h3>Attendance</h3><p><strong>Present:</strong> ${present.map(m => m.display_name).join(", ") || "None"}</p><p><strong>Absent:</strong> ${absent.map(m => m.display_name).join(", ") || "None"}</p><hr/>${form.text}`;
-    await run(() => addOOCNote(detail.id, detail.name, html, present.map(m => m.discord_id)));
-    setActSub("ooc");
+    const ok = await run(() => addOOCNote(detail.id, detail.name, html, present.map(m => m.discord_id)));
+    if (ok) setActSub("ooc");
   };
 
   return (
@@ -168,14 +185,26 @@ function FactionHub() {
         <div className="hub-title">
           <h1>{detail.name}</h1>
           <span className={`tier ${tierBand(detail.tier)}`} style={{ fontSize: 11, padding: "3px 8px" }}>Tier {detail.tier}</span>
-          {summary?.teamName && <span className="chip role">{summary.teamName}</span>}
-          {isL3 && <button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ kind: "rename", value: detail.name })}>Rename</button>}
+          {detail.teamName && <span className="chip role">{detail.teamName}</span>}
+          {archived && <span className="chip lock">ARCHIVED</span>}
+          {isL3 && !archived && <button className="act" style={{ padding: "2px 8px" }} onClick={() => { setErr(""); setForm({ kind: "rename", value: detail.name }); }}>Rename</button>}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          {isLeader && <button className="btn ghost" style={{ color: "var(--amber)" }} onClick={openStageRP}>Stage RP change</button>}
-          <a className="btn ghost" href={`https://meridiandatabase.net/faction/${encodeURIComponent(detail.name)}`} target="_blank" rel="noreferrer">Portal ↗</a>
+          {level >= 2 && canWrite && <button className="btn ghost" style={{ color: "var(--amber)" }} onClick={() => openStageRP()}>Stage RP change</button>}
+          <a className="btn ghost" href={`${PORTAL_BASE}/faction/${encodeURIComponent(detail.name)}`} target="_blank" rel="noreferrer">Portal ↗</a>
         </div>
       </div>
+
+      {archived && (
+        <div style={{ padding: "10px 14px", borderRadius: 10, background: "var(--amber-bg)", border: "1px solid color-mix(in srgb,var(--amber) 35%,transparent)", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, color: "var(--amber)", fontWeight: 700 }}>This faction is archived{detail.archivedAt ? ` (since ${String(detail.archivedAt).slice(0, 10)})` : ""} — read-only. Nothing here can be changed until it is restored.</span>
+          {isL3 && <button className="act" disabled={busy} onClick={() => { if (window.confirm(`Restore ${detail.name} to the active list?`)) run(() => restoreFaction(detail.id)); }}>Restore faction</button>}
+        </div>
+      )}
+      {!archived && !canWrite && level >= 1 && !isLeader && (
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8 }}>Read-only: {detail.teamName ? `${detail.teamName} manages this faction` : "this faction is outside your team"}.</div>
+      )}
+      {err && !form && <div className="err" style={{ marginBottom: 8 }}>{err}</div>}
 
       {/* Pending promo banner — status only; completing/cancelling lives in ONE
           place, the Review tab's Apply step, so there aren't two sets of the
@@ -208,13 +237,13 @@ function FactionHub() {
                 <div><div className="k">Fleet</div><div className="v">{fleetSum ? <>{fleetSum.totalQuantity} / {fleetSum.limits.maxTotal}{fleetSum.limits.isOverridden && <span className="chip lock" style={{ marginLeft: 6, fontSize: 9 }}>OVR</span>}</> : (td.total ?? "—")} <span style={{ fontSize: 11, color: "var(--ink-3)" }}>({fleetSum ? `${fleetSum.typeCount}/${fleetSum.limits.maxTypes}` : (td.types ?? "—")} types)</span></div></div>
                 <div><div className="k">Garages</div><div className="v">{fleetSum ? `${fleetSum.garageCount} / ${fleetSum.limits.maxGarages}` : (td.garages ?? "—")}</div></div>
                 <div><div className="k">Stipend</div><div className="v">{fleetSum ? money(fleetSum.stipend) : td.stipend != null ? money(td.stipend) : "—"}</div></div>
-                <div><div className="k">Scenes · 30d</div><div className="v">{summary?.scenes30d ?? "—"}</div></div>
-                <div><div className="k">Last promoted</div><div className="v">{detail.lastPromoted || summary?.lastPromoted || "Never"}</div></div>
+                <div><div className="k">Scenes · 30d</div><div className="v">{detail.scenes30d ?? "—"}</div></div>
+                <div><div className="k">Last promoted</div><div className="v">{detail.lastPromoted || "Never"}</div></div>
               </div>
             </div>
             <div className="card">
-              <div className="hd"><div className="t">Team</div></div>
-              <div className="kv"><div><div className="k">Lead</div><div className="v">{summary?.leadName || "—"}</div></div><div style={{ gridColumn: "span 2" }}><div className="k">Guides</div><div className="v" style={{ fontSize: 12.5 }}>{summary?.guidesText || "None"}</div></div></div>
+              <div className="hd"><div className="t">Team</div>{detail.teamName && <div className="meta">{detail.teamName}</div>}</div>
+              <div className="kv"><div><div className="k">Lead</div><div className="v">{detail.leadName || "—"}</div></div><div style={{ gridColumn: "span 2" }}><div className="k">Guides</div><div className="v" style={{ fontSize: 12.5 }}>{detail.guidesText || "None"}</div></div></div>
             </div>
           </div>
           <div className="stack">
@@ -225,7 +254,7 @@ function FactionHub() {
                   <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, textTransform: "uppercase", color: "var(--ink-3)", width: 60 }}>{field}</span>
                   {detail[field] ? <a href={detail[field]} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", fontSize: 12 }}>Open ↗</a> : <span style={{ color: "var(--ink-3)", fontSize: 12 }}>—</span>}
                   <span style={{ flex: 1 }} />
-                  {isL3 && <button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ kind: "link", field, value: detail[field] || "" })}>Edit</button>}
+                  {level >= 2 && canWrite && <button className="act" style={{ padding: "2px 8px" }} onClick={() => { setErr(""); setForm({ kind: "link", field, value: detail[field] || "" }); }}>Edit</button>}
                 </div>
               ))}
             </div>
@@ -236,7 +265,7 @@ function FactionHub() {
       {/* ── Roster ── */}
       {tab === "roster" && (
         <div className="card">
-          <div className="hd"><div className="t">Known command</div>{level >= 1 && <button className="btn" onClick={() => setForm({ kind: "member", name: "", phone: "N/A", residence: "N/A", role: 0 })}>Add +</button>}</div>
+          <div className="hd"><div className="t">Known command</div>{canWrite && <button className="btn" onClick={() => { setErr(""); setForm({ kind: "member", name: "", phone: "N/A", residence: "N/A", role: 0 }); }}>Add +</button>}</div>
           {detail.members.length === 0 ? <div className="empty">No members on file.</div> : (
             <table className="dtable"><thead><tr><th>Character</th><th>Role</th><th>Phone</th><th>Residence</th><th></th></tr></thead><tbody>
               {detail.members.map(m => (
@@ -244,9 +273,9 @@ function FactionHub() {
                   <td><b>{m.character_name}</b></td>
                   <td>{m.is_leader >= 2 ? <span className="chip lock">Leader</span> : m.is_leader === 1 ? <span className="chip role">Command</span> : <span style={{ color: "var(--ink-3)" }}>Member</span>}</td>
                   <td style={{ color: "var(--ink-2)" }}>{m.phone}</td><td style={{ color: "var(--ink-2)" }}>{m.residence}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>{level >= 1 && <>
-                    <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ kind: "member", id: m.id, name: m.character_name, phone: m.phone, residence: m.residence, role: m.is_leader })}>Edit</button>
-                    <button className="act" style={{ padding: "2px 7px", marginLeft: 4, color: "var(--rose)" }} onClick={() => { if (window.confirm(`Remove ${m.character_name}?`)) run(() => deleteMember(m.id, m.character_name, detail.id, detail.name)); }}>Del</button>
+                  <td style={{ whiteSpace: "nowrap" }}>{canWrite && <>
+                    <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setErr(""); setForm({ kind: "member", id: m.id, name: m.character_name, phone: m.phone, residence: m.residence, role: m.is_leader }); }}>Edit</button>
+                    <button className="act" style={{ padding: "2px 7px", marginLeft: 4, color: "var(--rose)" }} onClick={() => { if (window.confirm(`Remove ${m.character_name}?`)) run(() => deleteMember(m.id)); }}>Del</button>
                   </>}</td>
                 </tr>
               ))}
@@ -263,9 +292,9 @@ function FactionHub() {
               {[["scenes", "Scenes"], ["intel", "Intel"], ["ooc", "OOC"]].map(([id, l]) => <button key={id} className={`tab${actSub === id ? " on" : ""}`} onClick={() => { setActSub(id); setEditNoteId(null); }}>{l}</button>)}
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              {actSub === "intel" && <button className="act" onClick={() => setForm({ kind: "intel", value: "" })}>Add note +</button>}
-              {actSub === "intel" && level >= 2 && <button className="act primary" disabled={aiBusy} onClick={async () => { setAiBusy(true); const r = await aiSummarize(detail.name).catch(() => ({ ok: false })); setAiBusy(false); setAiText(r.ok ? r.summary : `Error: ${r.error || "failed"}`); }}>{aiBusy ? "Generating…" : "AI Summarize ✨"}</button>}
-              {actSub === "ooc" && level >= 1 && <button className="act primary" onClick={openOOC}>Document meeting +</button>}
+              {actSub === "intel" && canWrite && <button className="act" onClick={() => { setErr(""); setForm({ kind: "intel", value: "" }); }}>Add note +</button>}
+              {actSub === "intel" && level >= 2 && canWrite && <button className="act primary" disabled={aiBusy} onClick={async () => { setAiBusy(true); const r = await aiSummarize(detail.name).catch(() => ({ ok: false })); setAiBusy(false); setAiText(r.ok ? r.summary : `Error: ${r.error || "failed"}`); }}>{aiBusy ? "Generating…" : "AI Summarize ✨"}</button>}
+              {actSub === "ooc" && canWrite && <button className="act primary" onClick={openOOC}>Document meeting +</button>}
             </div>
           </div>
           <div style={{ borderTop: "1px solid var(--line)", marginTop: 10 }}>
@@ -274,12 +303,12 @@ function FactionHub() {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                   <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{l.date}</span><span style={{ fontWeight: 600, color: "var(--ink-1)", fontSize: 12 }}>{l.logged_by}</span>
                   <span style={{ flex: 1 }} />
-                  {l.author_id === auth.id && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditNoteId(`s${l.id}`); setEditText(l.notes); }}>Edit</button>}
-                  {l.author_id === auth.id && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { if (window.confirm("Request deletion of this scene?")) { await requestDeletion("scene_log", l.notes, l.id); window.alert("Deletion request submitted."); } }}>Req del</button>}
-                  {isL3 && <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ kind: "rewards", id: l.id, value: l.rewards === "None" ? "" : (l.rewards || "") })}>Rewards</button>}
-                  {isL3 && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this scene?")) run(() => directDelete("scene_log", l.id)); }}>Del</button>}
+                  {(l.author_id === auth.id || isL3) && !archived && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditNoteId(`s${l.id}`); setEditText(l.notes); }}>Edit</button>}
+                  {l.author_id === auth.id && !isL3 && !archived && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { if (window.confirm("Request deletion of this scene?")) { const r = await requestDeletion("scene_log", l.notes, l.id).catch(e => ({ ok: false, error: e.message })); window.alert(r?.ok ? "Deletion request submitted." : (r?.error || "Request failed.")); } }}>Req del</button>}
+                  {isL3 && !archived && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setErr(""); setForm({ kind: "rewards", id: l.id, value: l.rewards === "None" ? "" : (l.rewards || "") }); }}>Rewards</button>}
+                  {isL3 && !archived && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this scene?")) run(() => directDelete("scene_log", l.id)); }}>Del</button>}
                 </div>
-                {editNoteId === `s${l.id}` ? <div><textarea className="filter-inp" rows={3} value={editText} onChange={e => setEditText(e.target.value)} /><div style={{ display: "flex", gap: 6, marginTop: 6 }}><button className="act primary" onClick={() => run(() => editSceneLog(l.id, editText)).then(() => setEditNoteId(null))}>Save</button><button className="act" onClick={() => setEditNoteId(null)}>Cancel</button></div></div>
+                {editNoteId === `s${l.id}` ? <div><textarea className="filter-inp" rows={3} value={editText} onChange={e => setEditText(e.target.value)} /><div style={{ display: "flex", gap: 6, marginTop: 6 }}><button className="act primary" onClick={() => run(() => editSceneLog(l.id, editText)).then(ok => ok && setEditNoteId(null))}>Save</button><button className="act" onClick={() => setEditNoteId(null)}>Cancel</button></div></div>
                   : <><div style={{ color: "var(--ink-1)", whiteSpace: "pre-wrap" }}>{l.notes}</div>{l.rewards && l.rewards !== "None" && <div style={{ marginTop: 6, fontFamily: "var(--v2-mono)", fontSize: 11, color: "var(--good)", background: "var(--good-bg)", padding: "4px 8px", borderRadius: 6, display: "inline-block" }}>{l.rewards}</div>}</>}
               </div>
             )))}
@@ -288,11 +317,11 @@ function FactionHub() {
               {detail.notes.length === 0 ? <div className="empty">No intel notes.</div> : detail.notes.map(n => (
                 <div className="note" key={n.id}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><span style={{ fontWeight: 700, color: "var(--accent)", fontSize: 12 }}>{n.author}</span><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{n.date}</span><span style={{ flex: 1 }} />
-                    {n.author_id === auth.id && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditNoteId(`i${n.id}`); setEditText(n.text); }}>Edit</button>}
-                    {n.author_id === auth.id && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { if (window.confirm("Request deletion?")) { await requestDeletion("intel_note", n.text, n.id); window.alert("Deletion request submitted."); } }}>Req del</button>}
-                    {isL3 && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this note?")) run(() => directDelete("intel_note", n.id)); }}>Del</button>}
+                    {(n.author_id === auth.id || isL3) && !archived && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditNoteId(`i${n.id}`); setEditText(n.text); }}>Edit</button>}
+                    {n.author_id === auth.id && !isL3 && !archived && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { if (window.confirm("Request deletion?")) { const r = await requestDeletion("intel_note", n.text, n.id).catch(e => ({ ok: false, error: e.message })); window.alert(r?.ok ? "Deletion request submitted." : (r?.error || "Request failed.")); } }}>Req del</button>}
+                    {isL3 && !archived && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this note?")) run(() => directDelete("intel_note", n.id)); }}>Del</button>}
                   </div>
-                  {editNoteId === `i${n.id}` ? <div><textarea className="filter-inp" rows={3} value={editText} onChange={e => setEditText(e.target.value)} /><div style={{ display: "flex", gap: 6, marginTop: 6 }}><button className="act primary" onClick={() => run(() => editNote(n.id, editText)).then(() => setEditNoteId(null))}>Save</button><button className="act" onClick={() => setEditNoteId(null)}>Cancel</button></div></div>
+                  {editNoteId === `i${n.id}` ? <div><textarea className="filter-inp" rows={3} value={editText} onChange={e => setEditText(e.target.value)} /><div style={{ display: "flex", gap: 6, marginTop: 6 }}><button className="act primary" onClick={() => run(() => editNote(n.id, editText)).then(ok => ok && setEditNoteId(null))}>Save</button><button className="act" onClick={() => setEditNoteId(null)}>Cancel</button></div></div>
                     : <div style={{ color: "var(--ink-1)", whiteSpace: "pre-wrap" }}>{n.text}</div>}
                 </div>
               ))}
@@ -300,11 +329,11 @@ function FactionHub() {
             {actSub === "ooc" && (detail.oocNotes.length === 0 ? <div className="empty">No OOC notes.</div> : detail.oocNotes.map(n => (
               <div className="note" key={n.id}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--accent)" }}>{n.date}</span><span style={{ fontWeight: 600, color: "var(--ink-1)", fontSize: 12 }}>By {n.author}</span><span style={{ flex: 1 }} />
-                  {(n.author_id === auth.id || level >= 2) && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditNoteId(`o${n.id}`); setEditText(n.text); }}>Edit</button>}
-                  {isL3 && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this OOC note?")) run(() => directDelete("ooc_note", n.id)); }}>Del</button>}
+                  {(n.author_id === auth.id || (level >= 2 && canWrite)) && !archived && <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditNoteId(`o${n.id}`); setEditText(n.text); }}>Edit</button>}
+                  {isL3 && !archived && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this OOC note?")) run(() => directDelete("ooc_note", n.id)); }}>Del</button>}
                 </div>
-                {editNoteId === `o${n.id}` ? <div><QuillEditor value={editText} onChange={setEditText} placeholder="Meeting notes…" /><div style={{ display: "flex", gap: 6, marginTop: 6 }}><button className="act primary" onClick={() => run(() => editOOCNote(n.id, editText)).then(() => setEditNoteId(null))}>Save</button><button className="act" onClick={() => setEditNoteId(null)}>Cancel</button></div></div>
-                  : <div className="quill-content" style={{ color: "var(--ink-1)" }} dangerouslySetInnerHTML={{ __html: n.text }} />}
+                {editNoteId === `o${n.id}` ? <div><QuillEditor value={editText} onChange={setEditText} placeholder="Meeting notes…" /><div style={{ display: "flex", gap: 6, marginTop: 6 }}><button className="act primary" onClick={() => run(() => editOOCNote(n.id, editText)).then(ok => ok && setEditNoteId(null))}>Save</button><button className="act" onClick={() => setEditNoteId(null)}>Cancel</button></div></div>
+                  : <div className="quill-content" style={{ color: "var(--ink-1)" }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(n.text) }} />}
               </div>
             )))}
           </div>
@@ -315,32 +344,33 @@ function FactionHub() {
       {tab === "assets" && (
         <div className="stack">
           <div className="card">
-            <div className="hd"><div className="t">Properties</div>{level >= 1 && <button className="btn" onClick={() => setForm({ kind: "prop", address: "", type: "Property", isHQ: false })}>Add +</button>}</div>
+            <div className="hd"><div className="t">Properties</div>{level >= 2 && canWrite ? <button className="btn" onClick={() => { setErr(""); setForm({ kind: "prop", address: "", type: "Property", isHQ: false }); }}>Add +</button> : <div className="meta">team leads manage</div>}</div>
             {detail.properties.length === 0 ? <div className="empty">No properties.</div> : (
               <table className="dtable"><thead><tr><th>Address</th><th>Type</th><th></th><th></th></tr></thead><tbody>
                 {detail.properties.map(p => (
                   <tr key={p.id}><td><b>{p.address}</b></td><td>{p.property_type || "Property"}</td><td>{p.isHQ ? <span className="chip lock">HQ</span> : ""}</td>
-                    <td style={{ whiteSpace: "nowrap" }}>{level >= 1 && <>
-                      <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ kind: "prop", id: p.id, address: p.address, type: p.property_type || "Property", isHQ: p.isHQ })}>Edit</button>
-                      <button className="act" style={{ padding: "2px 7px", marginLeft: 4, color: "var(--rose)" }} onClick={() => { if (window.confirm("Remove this property?")) run(() => deleteFactionProperty(p.id, detail.name)); }}>Del</button>
+                    <td style={{ whiteSpace: "nowrap" }}>{level >= 2 && canWrite && <>
+                      <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setErr(""); setForm({ kind: "prop", id: p.id, address: p.address, type: p.property_type || "Property", isHQ: p.isHQ }); }}>Edit</button>
+                      <button className="act" style={{ padding: "2px 7px", marginLeft: 4, color: "var(--rose)" }} onClick={() => { if (window.confirm("Remove this property?")) run(() => deleteFactionProperty(p.id)); }}>Del</button>
                     </>}</td>
                   </tr>
                 ))}
               </tbody></table>
             )}
           </div>
-          <FleetCard fleet={fleet} fleetSum={fleetSum} td={td} tier={detail.tier} isL3={isL3} busy={busy} run={run} setForm={setForm} form={form} setErr={setErr} err={err} money={money} CapBar={CapBar} factionId={detail.id} />
+          <FleetCard fleet={fleet} fleetSum={fleetSum} td={td} tier={detail.tier} isL3={isL3 && !archived} busy={busy} run={run} setForm={setForm} form={form} setErr={setErr} err={err} money={money} CapBar={CapBar} factionId={detail.id} />
         </div>
       )}
 
       {/* ── Imports ── */}
       {tab === "imports" && (
         <div className="card">
-          <div className="hd"><div className="t">Authorized imports</div><div className="meta">{permittedCount} / {imports.length}{isL3 ? " · toggle to change" : " · L3 manages"}</div></div>
+          <div className="hd"><div className="t">Authorized imports</div><div className="meta">{permittedCount} / {imports.length}{isL3 && !archived ? " · toggle to change" : archived ? " · archived" : " · L3 manages"}</div></div>
+          {err && tab === "imports" && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
           {Object.entries(imports.reduce((a, i) => { (a[i.tier] = a[i.tier] || []).push(i); return a; }, {})).sort((a, b) => a[0] - b[0]).map(([tier, items]) => (
             <div key={tier}><div className="imp-grp">Tier {tier}</div>{items.map(i => (
               <div className="imp-row" key={i.id}><span className="nm">{i.name}{i.category ? <span style={{ color: "var(--ink-3)", marginLeft: 6, fontSize: 11 }}>{i.category}</span> : null}</span>
-                <button className={`tg${i.permitted ? " on" : ""}`} disabled={!isL3 || busy} onClick={() => run(() => toggleFactionImport(detail.id, i.id, !i.permitted))}>{i.permitted ? "Authorized" : "Off"}</button>
+                <button className={`tg${i.permitted ? " on" : ""}`} disabled={!isL3 || archived || busy} onClick={() => run(() => toggleFactionImport(detail.id, i.id, !i.permitted))}>{i.permitted ? "Authorized" : "Off"}</button>
               </div>
             ))}</div>
           ))}

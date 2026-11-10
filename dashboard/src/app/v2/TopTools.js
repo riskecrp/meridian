@@ -1,37 +1,45 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getMyAttention, getAllDocuments } from "./actions.js";
+import { getAllDocuments } from "./actions.js";
+import { getInboxUnreadCount } from "../fm/dashboard/actions.js";
 import { getFactions } from "../fm/factions/actions.js";
 import { getLoreEntries, getNPCs } from "../fm/storytelling/actions.js";
 
-/* ── Global "+ New" — the four creation verbs, reachable from any page.
-      Each lands on the page that owns the form, with a param that opens it. ── */
+/* ── Global "+ New" — the creation verbs, reachable from any page. Each lands
+      on the page that owns the form, with a param that opens it. Items a
+      read-only actor (Event Team off its own surfaces, Lead Storyteller)
+      cannot submit are not offered. ── */
 export function PlusMenu({ auth }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
+  const level = auth?.level || 0;
   const items = [
-    { label: "Task", sub: "Assign to a person or team", href: "/v2?create=task" },
-    { label: "Event / Reminder", sub: "Scheduled, with optional 30-min ping", href: "/v2?create=event" },
-    { label: "Scene log", sub: "Record outcome + rewards", href: "/v2/story?tab=scenelogs&new=1" },
-    { label: "Meeting note", sub: "Full-page editor · your factions & team", href: "/v2/notes" },
+    ...(level >= 1 ? [
+      { label: "Task", sub: "Assign to a person or team", href: "/v2?create=task" },
+      { label: "Event / Reminder", sub: "Scheduled, announced in Discord", href: "/v2?create=event" },
+    ] : []),
+    ...(level >= 1 || auth?.isEventTeam ? [{ label: "Scene log", sub: "Record outcome + rewards", href: "/v2/story?tab=scenelogs&new=1" }] : []),
+    ...(level >= 1 ? [{ label: "Meeting note", sub: "Full-page editor · your factions & team", href: "/v2/notes" }] : []),
   ];
+  if (!items.length) return null;
   const toggle = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
-    setPos({ top: r.bottom + 8, left: Math.max(8, r.right - 250) });
+    setPos({ top: r.bottom + 8, left: Math.max(8, Math.min(r.right - 250, window.innerWidth - 258)) });
     setOpen(o => !o);
   };
   return (
     <>
-      <button className="btn" style={{ padding: "0 12px", height: 30, fontSize: 12 }} onClick={toggle}>+ New</button>
+      <button className="btn tn-new" style={{ padding: "0 12px", height: 30, fontSize: 12 }} onClick={toggle} aria-haspopup="menu" aria-expanded={open}>+ New</button>
       {open && createPortal(
         <div className="v2-root">
           <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
-          <div style={{ position: "fixed", top: pos.top, left: pos.left, zIndex: 95, width: 250, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 6, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
+          <div role="menu" style={{ position: "fixed", top: pos.top, left: pos.left, zIndex: 95, width: 250, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, padding: 6, boxShadow: "0 8px 28px rgba(0,0,0,.14)" }}>
             {items.map(it => (
-              <button key={it.label} onClick={() => { setOpen(false); router.push(it.href); }}
+              <button key={it.label} role="menuitem" onClick={() => { setOpen(false); router.push(it.href); }}
                 style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 7, background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit" }}
                 onMouseEnter={e => e.currentTarget.style.background = "var(--panel-2)"}
                 onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
@@ -50,26 +58,29 @@ export function PlusMenu({ auth }) {
 export function Bell({ auth, active }) {
   const n = useInboxUnread(auth);
   return (
-    <a href="/v2/inbox" className="tb-btn" title="Inbox — your pings"
+    <Link href="/v2/inbox" className="tb-btn" title="Inbox — your pings" aria-label={`Inbox${n > 0 ? `, ${n} unread` : ""}`}
       style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", ...(active ? { color: "var(--accent)", borderColor: "var(--accent)", background: "var(--accent-bg)" } : {}) }}>
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2a3.5 3.5 0 0 0-3.5 3.5V8L3 10.5h10L11.5 8V5.5A3.5 3.5 0 0 0 8 2zM6.5 12a1.5 1.5 0 0 0 3 0" /></svg>
       {n > 0 && (
         <span style={{ position: "absolute", top: -5, right: -5, minWidth: 15, height: 15, padding: "0 4px", borderRadius: 8, background: "var(--rose)", color: "#fff", fontSize: 9, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--v2-mono)", border: "2px solid var(--bg)" }}>{n > 99 ? "99+" : n}</span>
       )}
-    </a>
+    </Link>
   );
 }
 
-/* ── Live inbox unread count, refreshed every 3 minutes. ── */
+/* ── Live inbox unread count: one cheap COUNT query, refreshed every 3 minutes
+      and whenever the tab regains focus. ── */
 export function useInboxUnread(auth) {
   const [n, setN] = useState(0);
   useEffect(() => {
     if (!auth?.ok) return;
     let alive = true;
-    const tick = () => getMyAttention().then(a => { if (alive) setN(a?.counts?.inboxUnread || 0); }).catch(() => {});
+    const tick = () => getInboxUnreadCount().then(a => { if (alive) setN(a?.unread || 0); }).catch(() => {});
     tick();
     const iv = setInterval(tick, 180000);
-    return () => { alive = false; clearInterval(iv); };
+    const onVis = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { alive = false; clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
   }, [auth?.ok]);
   return n;
 }
@@ -91,7 +102,7 @@ export function CommandPalette({ auth, navTargets, open, setOpen }) {
     if (dyn === null) {
       Promise.all([
         getFactions().catch(() => []),
-        getAllDocuments().catch(() => []),
+        getAllDocuments({ titlesOnly: true }).catch(() => []),
         getLoreEntries().catch(() => []),
         canNPC ? getNPCs().catch(() => []) : Promise.resolve([]),
       ]).then(([facs, docs, lore, npcs]) => {
@@ -130,7 +141,7 @@ export function CommandPalette({ auth, navTargets, open, setOpen }) {
   return createPortal(
     <div className="v2-root">
       <div style={{ position: "fixed", inset: 0, zIndex: 120, background: "rgba(0,0,0,0.35)" }} onClick={() => setOpen(false)} />
-      <div style={{ position: "fixed", top: "14vh", left: "50%", transform: "translateX(-50%)", zIndex: 125, width: "min(560px, calc(100vw - 32px))", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, boxShadow: "0 16px 48px rgba(0,0,0,.22)", overflow: "hidden" }}>
+      <div role="dialog" aria-label="Search" style={{ position: "fixed", top: "14vh", left: "50%", transform: "translateX(-50%)", zIndex: 125, width: "min(560px, calc(100vw - 32px))", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, boxShadow: "0 16px 48px rgba(0,0,0,.22)", overflow: "hidden" }}>
         <input ref={inputRef} value={q} onKeyDown={onKey}
           onChange={e => { setQ(e.target.value); setSel(0); }}
           placeholder="Jump to a page, faction, document, KB entry, NPC…"

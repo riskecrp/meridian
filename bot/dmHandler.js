@@ -1,6 +1,7 @@
 /**
  * DM Task Handler
- * Allows FM Leadership to create and manage tasks via Discord DMs to the bot.
+ * Lets FM staff who opted in (staff.dm_tracking_enabled) create and manage
+ * tasks by DMing the bot, and stores forwarded messages for the dashboard inbox.
  *
  * Commands (all case-insensitive):
  *   task [description]              → create task for FM Leadership (default)
@@ -10,164 +11,49 @@
  *   task @name | [description]      → create task for a specific staff member
  *   tasks                           → list your open tasks
  *   done [uid]                      → mark a task complete
+ *   claim [uid]                     → claim a task
  *   help                            → show this list
+ *
+ * Every task write goes through shared/tasks.js (same rules, audit rows and
+ * pings as the dashboard and the buttons); the database is the shared
+ * connection (DATABASE_PATH), not a private one on a hardcoded path.
  */
-
-import Database from 'better-sqlite3';
-import { logAudit } from './lib/audit.js';
-
-const DB_PATH = '/opt/meridian/data/meridian.db';
-
-// Target aliases resolve through discord_roles so a role re-ID doesn't silently
-// send DM-created tasks to a dead role.
-function roleId(key) {
-  const d = db();
-  try {
-    return d.prepare("SELECT role_id FROM discord_roles WHERE key = ?").get(key)?.role_id || '';
-  } finally { d.close(); }
-}
-const ROLE_LEADERSHIP = () => roleId('fm_leadership');
-const ROLE_LEADS      = () => roleId('fm_team_lead');
-const ROLE_ALL_FM     = () => roleId('fm_team_guide');
+import { queryOne, run } from './lib/db.js';
+import { getRole } from './lib/pings.js';
+import { actorFromDiscord } from '../shared/actor.js';
+import { createTask, completeTask, claimTask, visibleTasks, decorate, getTask } from '../shared/tasks.js';
+import { nowIso, parseDate } from '../shared/dates.js';
 
 function isAuthorized(discordId) {
-  const d = db();
-  try {
-    const row = d.prepare("SELECT dm_tracking_enabled FROM staff WHERE discord_id = ?").get(discordId);
-    return row?.dm_tracking_enabled === 1;
-  } finally { d.close(); }
+  return queryOne("SELECT dm_tracking_enabled FROM staff WHERE discord_id = ?", [discordId])?.dm_tracking_enabled === 1;
 }
 
-function db() {
-  const d = new Database(DB_PATH);
-  d.pragma('journal_mode = WAL');
-  d.pragma('busy_timeout = 5000');
-  return d;
+function formatDate(value) {
+  const d = parseDate(value);
+  return d ? d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 }
 
-function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-}
+// ── Target resolution ────────────────────────────────────────────────────────
 
-function formatDate(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-}
-
-// ── Auth ────────────────────────────────────────────────────────────────────
-
-function getActor(discordId) {
-  const d = db();
-  const row = d.prepare(
-    "SELECT discord_id, display_name, clearance, team_id FROM staff WHERE discord_id = ? AND discord_id NOT LIKE 'placeholder%'"
-  ).get(discordId);
-  d.close();
-  return row || null;
-}
-
-// ── Task helpers ─────────────────────────────────────────────────────────────
-
-function resolveTarget(raw, actorId, d) {
-  if (!raw) return { id: ROLE_LEADERSHIP(), type: 'Role', label: 'FM Leadership' };
-
+function resolveTarget(raw, actorId) {
+  if (!raw) return { id: getRole('fm_leadership'), type: 'Role', label: 'FM Leadership' };
   const r = raw.trim().toLowerCase();
-
-  if (r === 'me')                              return { id: actorId,        type: 'User', label: 'yourself'      };
-  if (r === 'leads' || r === 'team leads')     return { id: ROLE_LEADS(),   type: 'Role', label: 'Team Leads'    };
-  if (r === 'all'   || r === 'all fm')         return { id: ROLE_ALL_FM(),  type: 'Role', label: 'All FM'        };
-  if (r === 'leadership' || r === 'fm leadership') return { id: ROLE_LEADERSHIP(), type: 'Role', label: 'FM Leadership' };
-
-  // Try to match a staff member by name
-  const staff = d.prepare(
-    "SELECT discord_id, display_name FROM staff WHERE lower(display_name) LIKE ? AND discord_id NOT LIKE 'placeholder%' LIMIT 1"
-  ).get(`%${r}%`);
+  if (r === 'me')                                   return { id: actorId, type: 'User', label: 'yourself' };
+  if (r === 'leads' || r === 'team leads')          return { id: getRole('fm_team_lead'), type: 'Role', label: 'Team Leads' };
+  if (r === 'all' || r === 'all fm')                return { id: getRole('fm_team_guide'), type: 'Role', label: 'All FM' };
+  if (r === 'leadership' || r === 'fm leadership')  return { id: getRole('fm_leadership'), type: 'Role', label: 'FM Leadership' };
+  const staff = queryOne("SELECT discord_id, display_name FROM staff WHERE lower(display_name) LIKE ? AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY length(display_name) LIMIT 1", [`%${r}%`]);
   if (staff) return { id: staff.discord_id, type: 'User', label: staff.display_name };
-
   return null;
 }
 
-function createTask(actor, targetId, targetType, targetLabel, description) {
-  const d = db();
-  try {
-    const taskId  = uid();
-    const now     = new Date().toISOString();
-    const selfAssign = targetType === 'User' && targetId === actor.discord_id;
-    // notify_creator: 1 if creator can't see the destination (non-leadership creating leadership task)
-    const notify  = (!selfAssign && targetId === ROLE_LEADERSHIP() && actor.clearance < 3) ? 1 : 0;
-
-    d.prepare(
-      `INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by,
-        created_by_id, created_by_name, next_reminder, created_at, notify_creator)
-       VALUES (?, ?, ?, ?, 'None', ?, ?, NULL, ?, ?)`
-    ).run(taskId, description, targetId, targetType, actor.discord_id, actor.display_name, now, notify);
-
-    d.prepare(
-      `INSERT INTO task_log (action, actor, task_uid, description, target, created_at)
-       VALUES ('CREATED', ?, ?, ?, ?, ?)`
-    ).run(actor.display_name, taskId, description, `${targetType}: ${targetId}`, now);
-    logAudit(actor.discord_id, actor.display_name, 'CREATE', 'task', taskId, description.slice(0, 120), `via DM · ${targetType}: ${targetId}`);
-
-    return { ok: true, uid: taskId, label: targetLabel };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  } finally {
-    d.close();
-  }
-}
-
-function listOpenTasks(actorId) {
-  const d = db();
-  try {
-    const rows = d.prepare(`
-      SELECT task_uid, description, target_type, target_id, claimed_by, created_at
-      FROM tasks
-      WHERE (created_by_id = ? OR target_id = ? OR (target_type = 'Role' AND target_id = ?))
-        AND task_uid NOT IN (SELECT task_uid FROM task_log WHERE action = 'COMPLETED')
-      ORDER BY created_at DESC
-      LIMIT 10
-    `).all(actorId, actorId, ROLE_LEADERSHIP());
-    return rows;
-  } finally {
-    d.close();
-  }
-}
-
-function completeTask(uid, actorId, actorName) {
-  const d = db();
-  try {
-    const task = d.prepare("SELECT task_uid, description FROM tasks WHERE task_uid = ?").get(uid);
-    if (!task) return { ok: false, error: `No task found with ID \`${uid}\`.` };
-
-    const already = d.prepare("SELECT 1 FROM task_log WHERE task_uid = ? AND action = 'COMPLETED'").get(uid);
-    if (already) return { ok: false, error: 'That task is already marked complete.' };
-
-    const now = new Date().toISOString();
-    d.prepare(
-      `INSERT INTO task_log (action, actor, task_uid, description, target, created_at)
-       VALUES ('COMPLETED', ?, ?, ?, 'Completed via DM', ?)`
-    ).run(actorName, uid, task.description, now);
-    logAudit('', actorName, 'COMPLETE', 'task', uid, task.description?.slice(0, 120), 'via DM');
-
-    return { ok: true, description: task.description };
-  } finally {
-    d.close();
-  }
-}
-
-// ── Target label lookup for list display ─────────────────────────────────────
-
-function labelFor(type, id) {
-  if (type === 'Role') {
-    if (id === ROLE_LEADERSHIP()) return 'FM Leadership';
-    if (id === ROLE_LEADS())      return 'Team Leads';
-    if (id === ROLE_ALL_FM())     return 'All FM';
-    return 'Role';
-  }
-  const d = db();
-  try {
-    const s = d.prepare("SELECT display_name FROM staff WHERE discord_id = ?").get(id);
-    return s?.display_name || 'User';
-  } finally { d.close(); }
+/** Exact uid, or an unambiguous prefix among the tasks this actor can see. */
+function resolveUid(actor, input) {
+  const id = String(input || '').trim();
+  if (!id) return null;
+  if (getTask(id)) return id;
+  const hits = visibleTasks(actor).filter(t => t.task_uid.startsWith(id));
+  return hits.length === 1 ? hits[0].task_uid : null;
 }
 
 // ── Main handler ─────────────────────────────────────────────────────────────
@@ -184,10 +70,13 @@ const HELP = `**Meridian Task Bot — DM Commands**
   Create a task for a specific target.
 
 \`tasks\`
-  List your 10 most recent open tasks.
+  List the open tasks you can see.
+
+\`claim [id]\`
+  Claim a task by its id (or its first characters).
 
 \`done [id]\`
-  Mark a task complete by its short ID.
+  Mark a task complete by its id (or its first characters).
 
 \`help\`
   Show this message.`;
@@ -202,7 +91,6 @@ export async function handleDM(message) {
     content = (snapshot?.content ?? snapshot?.message?.content ?? '').trim();
     if (content) isForward = true;
     else {
-      // Try iterating the collection entries
       for (const [, s] of message.messageSnapshots) {
         const c = (s?.content ?? s?.message?.content ?? '').trim();
         if (c) { content = c; isForward = true; break; }
@@ -214,37 +102,29 @@ export async function handleDM(message) {
 
   // Forwarded message — store it in forwarded_dms for the dashboard
   if (isForward) {
-    const d = db();
+    const msgId = message.id || String(Date.now());
+    const snapshot = message.messageSnapshots?.first();
+    const authorId = snapshot?.author?.id ?? snapshot?.message?.author?.id ?? 'unknown';
+    const authorName = snapshot?.author?.username ?? snapshot?.message?.author?.username ?? 'Unknown';
+    const sourceChannelId = snapshot?.channelId ?? snapshot?.message?.channelId ?? '';
+    const sourceMessageId = snapshot?.id ?? snapshot?.message?.id ?? '';
     try {
-      const msgId    = message.id || Date.now().toString();
-      const snapshot = message.messageSnapshots?.first();
-
-      // Pull author info from snapshot
-      const authorId   = snapshot?.author?.id       ?? snapshot?.message?.author?.id   ?? 'unknown';
-      const authorName = snapshot?.author?.username  ?? snapshot?.message?.author?.username ?? 'Unknown';
-
-      // Original channel + message for the "jump back" link
-      const sourceChannelId = snapshot?.channelId ?? snapshot?.message?.channelId ?? '';
-      const sourceMessageId = snapshot?.id        ?? snapshot?.message?.id        ?? '';
-
-      d.prepare(
-        `INSERT OR IGNORE INTO forwarded_dms
-           (message_id, author_id, author_name, content, source_channel, source_channel_id, source_message_id, target_user_id, forwarded_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(msgId, authorId, authorName, content, 'DM Forward', sourceChannelId, sourceMessageId, message.author.id, new Date().toISOString());
-
+      run(`INSERT OR IGNORE INTO forwarded_dms (message_id, author_id, author_name, content, source_channel, source_channel_id, source_message_id, target_user_id, forwarded_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [msgId, authorId, authorName, content, 'DM Forward', sourceChannelId, sourceMessageId, message.author.id, nowIso()]);
       console.log(`[DM] Stored forward from ${authorName} — channel ${sourceChannelId} msg ${sourceMessageId}`);
       await message.reply(`✅ Logged to your dashboard.\n> ${content.slice(0, 200)}`);
-    } finally {
-      d.close();
+    } catch (e) {
+      console.error('[DM] forward store failed:', e.message);
+      await message.reply('❌ Could not store that message.').catch(() => {});
     }
     return;
   }
 
   if (!isAuthorized(message.author.id)) return;
-  console.log(`[DM] Received from ${message.author.id} — content: "${message.content?.slice(0,80)}" snapshots: ${message.messageSnapshots?.size ?? 0}`);
+  console.log(`[DM] Received from ${message.author.id} — content: "${message.content?.slice(0, 80)}" snapshots: ${message.messageSnapshots?.size ?? 0}`);
 
-  const actor = getActor(message.author.id);
+  const actor = actorFromDiscord(message.author.id, message.author.globalName || message.author.username);
   if (!actor) {
     await message.reply('Could not find your staff record.');
     return;
@@ -252,37 +132,41 @@ export async function handleDM(message) {
 
   const lower = content.toLowerCase();
 
-  // ── help ──
-  if (lower === 'help') {
-    await message.reply(HELP);
-    return;
-  }
+  if (lower === 'help') { await message.reply(HELP); return; }
 
   // ── tasks (list) ──
   if (lower === 'tasks' || lower === 'task list') {
-    const rows = listOpenTasks(actor.discord_id);
-    if (!rows.length) {
-      await message.reply('No open tasks found.');
-      return;
-    }
-    const lines = rows.map(t => {
-      const target  = labelFor(t.target_type, t.target_id);
-      const claimed = t.claimed_by && t.claimed_by !== 'None' ? ` · claimed` : '';
-      return `\`${t.task_uid}\` **${t.description.slice(0, 80)}**\n  → ${target}${claimed} · ${formatDate(t.created_at)}`;
-    });
+    const rows = visibleTasks(actor).map(decorate).slice(0, 10);
+    if (!rows.length) { await message.reply('No open tasks found.'); return; }
+    const lines = rows.map(t =>
+      `\`${t.task_uid}\` **${t.description.slice(0, 80)}**\n  → ${t.targetLabel}${t.claimed_by && t.claimed_by !== 'None' ? ` · claimed by ${t.claimerName}` : ''} · ${formatDate(t.created_at)}`);
     await message.reply(`**Open Tasks (${rows.length})**\n\n${lines.join('\n\n')}`);
+    return;
+  }
+
+  const needsWrite = lower.startsWith('done ') || lower.startsWith('claim ') || lower.startsWith('task ') || lower === 'task';
+  if (needsWrite && actor.level < 1) {
+    await message.reply('❌ Creating, claiming or completing tasks needs FM clearance (L1+); your access is read-only.');
     return;
   }
 
   // ── done [uid] ──
   if (lower.startsWith('done ')) {
-    const taskUid = content.slice(5).trim();
-    const result  = completeTask(taskUid, actor.discord_id, actor.display_name);
-    if (!result.ok) {
-      await message.reply(`❌ ${result.error}`);
-    } else {
-      await message.reply(`✅ Marked complete: **${result.description.slice(0, 100)}**`);
-    }
+    const uid = resolveUid(actor, content.slice(5));
+    if (!uid) { await message.reply(`❌ No task found with ID \`${content.slice(5).trim()}\`. Send \`tasks\` to list the ids you can see.`); return; }
+    const r = await completeTask(actor, uid, '', { via: 'DM' });
+    if (!r.ok) await message.reply(`❌ ${r.error}`);
+    else await message.reply(`✅ Marked complete: **${getTask(uid)?.description.slice(0, 100) || uid}**`);
+    return;
+  }
+
+  // ── claim [uid] ──
+  if (lower.startsWith('claim ')) {
+    const uid = resolveUid(actor, content.slice(6));
+    if (!uid) { await message.reply(`❌ No task found with ID \`${content.slice(6).trim()}\`. Send \`tasks\` to list the ids you can see.`); return; }
+    const r = await claimTask(actor, uid, { via: 'DM' });
+    if (!r.ok) await message.reply(`❌ ${r.error}`);
+    else await message.reply(`✋ Claimed: **${getTask(uid)?.description.slice(0, 100) || uid}**`);
     return;
   }
 
@@ -293,39 +177,25 @@ export async function handleDM(message) {
       await message.reply('Usage: `task [description]` or `task [target] | [description]`\nType `help` for all commands.');
       return;
     }
-
-    let targetRaw   = null;
+    let targetRaw = null;
     let description = body;
-
     if (body.includes('|')) {
-      const idx    = body.indexOf('|');
-      targetRaw    = body.slice(0, idx).trim();
-      description  = body.slice(idx + 1).trim();
+      const idx = body.indexOf('|');
+      targetRaw = body.slice(0, idx).trim();
+      description = body.slice(idx + 1).trim();
     }
+    if (!description) { await message.reply('Please include a description after the `|`.'); return; }
 
-    if (!description) {
-      await message.reply('Please include a description after the `|`.');
-      return;
-    }
-
-    const d      = db();
-    const target = resolveTarget(targetRaw, actor.discord_id, d);
-    d.close();
-
+    const target = resolveTarget(targetRaw, actor.id);
     if (!target) {
       await message.reply(`❌ Could not find a target matching \`${targetRaw}\`. Try \`leads\`, \`all\`, \`me\`, or a staff name.`);
       return;
     }
-
-    const result = createTask(actor, target.id, target.type, target.label, description);
-    if (!result.ok) {
-      await message.reply(`❌ Failed to create task: ${result.error}`);
-    } else {
-      await message.reply(`✅ Task created for **${target.label}**\n> ${description}\n\nID: \`${result.uid}\``);
-    }
+    const r = await createTask(actor, { desc: description, targetType: target.type, targetId: target.id }, { via: 'DM' });
+    if (!r.ok) await message.reply(`❌ Failed to create task: ${r.error}`);
+    else await message.reply(`✅ Task created for **${target.label}**\n> ${description}\n\nID: \`${r.uid}\``);
     return;
   }
 
-  // Unknown command
   await message.reply('Unknown command. Type `help` for the command list.');
 }

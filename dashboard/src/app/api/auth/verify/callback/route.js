@@ -1,16 +1,35 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { createVerifySession } from '../../../../../lib/verifySession.js';
+import { createVerifySession, VERIFY_COOKIE } from '../../../../../lib/verifySession.js';
 
-const VERIFY_GUILD = '1371212587705958562';
+// Who may use the /verify portal: members of the verification guild who hold
+// the verification role. Both come from the environment; only the guild has a
+// built-in default (the management server the portal was written for) and
+// using it is logged so an unconfigured deployment is visible.
+const DEFAULT_VERIFY_GUILD = '1371212587705958562';
+
+function verifyGuildId() {
+  const g = (process.env.VERIFY_GUILD_ID || '').trim();
+  if (g) return g;
+  console.warn('[Verify Auth] VERIFY_GUILD_ID is not set; falling back to the built-in management guild id.');
+  return DEFAULT_VERIFY_GUILD;
+}
 
 export async function GET(request) {
   const host  = request.headers.get('host');
   const proto = host?.includes('localhost') ? 'http' : 'https';
   const origin = `${proto}://${host}`;
+  const back = (error) => NextResponse.redirect(new URL(`/verify/login?error=${error}`, origin));
   try {
     const code = request.nextUrl.searchParams.get('code');
-    if (!code) return NextResponse.redirect(new URL('/verify/login?error=no_code', origin));
+    if (!code) return back('no_code');
+
+    const roleId = (process.env.VERIFY_ROLE_ID || '').trim();
+    if (!roleId) {
+      console.error('[Verify Auth] VERIFY_ROLE_ID is not set; refusing to sign anyone in.');
+      return back('not_configured');
+    }
+    const guildId = verifyGuildId();
 
     const redirectUri = `${origin}/api/auth/verify/callback`;
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
@@ -25,28 +44,29 @@ export async function GET(request) {
       }),
     });
     const tokenData = await tokenRes.json();
-    if (!tokenData.access_token) return NextResponse.redirect(new URL('/verify/login?error=oauth_failed', origin));
+    if (!tokenData.access_token) return back('oauth_failed');
+    const auth = { authorization: `Bearer ${tokenData.access_token}` };
 
-    const [userRes, guildsRes] = await Promise.all([
-      fetch('https://discord.com/api/users/@me',        { headers: { authorization: `Bearer ${tokenData.access_token}` } }),
-      fetch('https://discord.com/api/users/@me/guilds', { headers: { authorization: `Bearer ${tokenData.access_token}` } }),
-    ]);
-    const user   = await userRes.json();
-    const guilds = await guildsRes.json();
+    const userRes = await fetch('https://discord.com/api/users/@me', { headers: auth });
+    const user = await userRes.json();
+    if (!user?.id) return back('oauth_failed');
 
-    if (!Array.isArray(guilds) || !guilds.some(g => g.id === VERIFY_GUILD)) {
-      return NextResponse.redirect(new URL('/verify/login?error=unauthorized', origin));
-    }
+    // Membership AND role, in one call (scope guilds.members.read). A non-member gets 404 here.
+    const memberRes = await fetch(`https://discord.com/api/users/@me/guilds/${guildId}/member`, { headers: auth });
+    if (!memberRes.ok) return back('unauthorized');
+    const member = await memberRes.json();
+    const roles = Array.isArray(member?.roles) ? member.roles.map(String) : [];
+    if (!roles.includes(roleId)) return back('no_role');
 
-    const displayName = user.global_name || user.username;
+    const displayName = member.nick || user.global_name || user.username;
     const token = createVerifySession(user.id, displayName);
     const cookieStore = await cookies();
-    cookieStore.set('meridian_verify_session', token, {
+    cookieStore.set(VERIFY_COOKIE, token, {
       path: '/', maxAge: 3 * 86400, httpOnly: true, secure: proto === 'https', sameSite: 'lax',
     });
     return NextResponse.redirect(new URL('/verify', origin));
   } catch (err) {
     console.error('[Verify Auth]', err);
-    return NextResponse.redirect(new URL('/verify/login?error=server_error', origin));
+    return back('server_error');
   }
 }

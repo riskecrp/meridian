@@ -1,44 +1,68 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import { query, queryOne } from '../lib/db.js';
+import { query } from '../lib/db.js';
+import { requireStaff, replyEphemeral } from '../lib/auth.js';
+import { findFaction, respondFactions } from '../lib/factions.js';
+import { legacyDate } from '../../shared/dates.js';
+
+// Plain fetch against the OpenAI chat completions API — no SDK dependency.
+// OPENAI_API_KEY is required; OPENAI_MODEL overrides the model. Intel and
+// channel transcripts leave the server here, so this is staff-only.
+const MODEL = () => process.env.OPENAI_MODEL || 'gpt-4o-mini';
+
+/** Returns { text } or { error } — never throws, never swallows an HTTP error. */
+export async function askOpenAI(messages, { maxTokens = 900 } = {}) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return { error: 'OpenAI is not configured on this bot (OPENAI_API_KEY is unset). Ask whoever runs the server.' };
+  try {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: MODEL(), max_tokens: maxTokens, messages }),
+      signal: AbortSignal.timeout(60000),
+    });
+    let data = null;
+    try { data = await r.json(); } catch { data = null; }
+    if (!r.ok) {
+      const detail = data?.error?.message || `HTTP ${r.status}`;
+      return { error: r.status === 401 ? `OpenAI rejected the API key (${detail}).` : r.status === 429 ? `OpenAI is rate-limiting or out of quota (${detail}).` : `OpenAI returned an error (${detail}).` };
+    }
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    return text ? { text } : { error: 'OpenAI returned an empty response.' };
+  } catch (e) {
+    return { error: `Could not reach OpenAI (${e.message}).` };
+  }
+}
 
 export default {
   data: new SlashCommandBuilder().setName('summarize').setDescription('AI-powered summary — faction intel or channel recap')
     .addStringOption(o => o.setName('faction').setDescription('Faction name (omit to summarize this channel)').setRequired(false).setAutocomplete(true)),
 
-  async autocomplete(interaction) {
-    const focused = interaction.options.getFocused().toLowerCase();
-    const factions = query("SELECT name FROM factions ORDER BY name").map(r => r.name);
-    await interaction.respond(factions.filter(f => f.toLowerCase().includes(focused)).slice(0, 25).map(f => ({ name: f, value: f })));
-  },
+  async autocomplete(interaction) { await respondFactions(interaction, { includeArchived: true }); },
 
   async execute(interaction) {
-    if (!process.env.OPENAI_API_KEY) return interaction.reply({ content: 'OpenAI API key not configured.', ephemeral: true });
+    const actor = await requireStaff(interaction, 1);
+    if (!actor) return;
+    if (!process.env.OPENAI_API_KEY) return replyEphemeral(interaction, '❌ OpenAI is not configured on this bot (OPENAI_API_KEY is unset). Ask whoever runs the server.');
 
-    const factionName = interaction.options.getString('faction');
+    const factionInput = interaction.options.getString('faction');
 
-    // ── Faction summary (existing behaviour) ──────────────────────────────────
-    if (factionName) {
-      const f = queryOne("SELECT id FROM factions WHERE name = ?", [factionName]);
-      if (!f) return interaction.reply({ content: `Faction "${factionName}" not found.`, ephemeral: true });
+    // ── Faction summary ───────────────────────────────────────────────────────
+    if (factionInput) {
+      const r = findFaction(factionInput, { allowArchived: true });
+      if (r.error) return replyEphemeral(interaction, `❌ ${r.error}`);
+      const f = r.faction;
       await interaction.deferReply();
       const logs  = query("SELECT date, rewards, logged_by, notes FROM scene_logs WHERE faction_id = ? ORDER BY created_at DESC LIMIT 30", [f.id]);
       const notes = query("SELECT date, author, text FROM intel_notes WHERE faction_id = ? ORDER BY created_at DESC LIMIT 20", [f.id]);
       if (logs.length === 0 && notes.length === 0) return interaction.editReply('No data to summarize.');
-      const input = `Faction: ${factionName}\n\n=== SCENES ===\n${logs.map(l => `[${l.date}] ${l.logged_by}: ${l.notes} | ${l.rewards}`).join('\n')}\n\n=== NOTES ===\n${notes.map(n => `[${n.date}] ${n.author}: ${n.text}`).join('\n')}`;
-      try {
-        const r = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: JSON.stringify({ model: "gpt-4o-mini", messages: [
-            { role: "system", content: "You are a Faction Management analyst for a GTA RP server. Provide a concise brief: 1) Summary, 2) Key Personnel, 3) Recent Activity, 4) Concerns, 5) Recommendations." },
-            { role: "user", content: input }
-          ]})
-        });
-        const data = await r.json();
-        const summary = data.choices?.[0]?.message?.content || "No response.";
-        const embed = new EmbedBuilder().setTitle(`Intel Brief: ${factionName}`).setColor(0x6366F1)
-          .setDescription(summary.substring(0, 4096)).setFooter({ text: 'Powered by AI • May contain inaccuracies' });
-        await interaction.editReply({ embeds: [embed] });
-      } catch (e) { await interaction.editReply('AI summary failed: ' + e.message); }
+      const input = `Faction: ${f.name}\n\n=== SCENES ===\n${logs.map(l => `[${legacyDate(l.date)}] ${l.logged_by}: ${l.notes} | ${l.rewards}`).join('\n')}\n\n=== NOTES ===\n${notes.map(n => `[${legacyDate(n.date)}] ${n.author}: ${n.text}`).join('\n')}`.slice(0, 24000);
+      const res = await askOpenAI([
+        { role: "system", content: "You are a Faction Management analyst for a GTA RP server. Provide a concise brief: 1) Summary, 2) Key Personnel, 3) Recent Activity, 4) Concerns, 5) Recommendations." },
+        { role: "user", content: input },
+      ]);
+      if (res.error) return interaction.editReply(`❌ ${res.error}`);
+      const embed = new EmbedBuilder().setTitle(`Intel Brief: ${f.name}`).setColor(0x6366F1)
+        .setDescription(res.text.substring(0, 4096)).setFooter({ text: 'Powered by AI • May contain inaccuracies' });
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
 
@@ -75,22 +99,16 @@ export default {
 
     const userPrompt = `Channel: #${channelName}\nMessage count in transcript: ${lines.length}\n\n${transcript}`;
 
-    try {
-      const r = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        body: JSON.stringify({ model: "gpt-4o-mini", max_tokens: 600, messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user",   content: userPrompt }
-        ]})
-      });
-      const data = await r.json();
-      const summary = data.choices?.[0]?.message?.content || "No response.";
-      const embed = new EmbedBuilder()
-        .setTitle(`Channel Situation Report — #${channelName}`)
-        .setColor(0x475569)
-        .setDescription(summary.substring(0, 4096))
-        .setFooter({ text: `Last ${lines.length} messages analyzed • Powered by AI` });
-      await interaction.editReply({ embeds: [embed] });
-    } catch (e) { await interaction.editReply('AI summary failed: ' + e.message); }
+    const res = await askOpenAI([
+      { role: "system", content: systemPrompt },
+      { role: "user",   content: userPrompt },
+    ], { maxTokens: 600 });
+    if (res.error) return interaction.editReply(`❌ ${res.error}`);
+    const embed = new EmbedBuilder()
+      .setTitle(`Channel Situation Report — #${channelName}`)
+      .setColor(0x475569)
+      .setDescription(res.text.substring(0, 4096))
+      .setFooter({ text: `Last ${lines.length} messages analyzed • Powered by AI` });
+    await interaction.editReply({ embeds: [embed] });
   }
 };

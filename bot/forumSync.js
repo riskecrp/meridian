@@ -1,6 +1,6 @@
 import { query, run } from './lib/db.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
-import { pingChannel } from './lib/pings.js';
+import { pingChannel, getPingRoute } from './lib/pings.js';
 
 function extractFactionName(message) {
   const candidates = [];
@@ -25,7 +25,7 @@ function normalize(name) {
     .replace(/[^a-z0-9]/gi, '');
 }
 
-function matchFaction(extractedName, factions) {
+export function matchFaction(extractedName, factions) {
   const target = normalize(extractedName);
   if (!target) return null;
 
@@ -50,15 +50,27 @@ function matchFaction(extractedName, factions) {
   return null;
 }
 
+let running = false;
+
 export async function syncForumPosts(client) {
+  if (running) { console.warn('[FORUM_SYNC] previous run still in progress — skipped'); return; }
+  running = true;
   try {
+    const route = getPingRoute('forum.sync.source');
     const forumChannelId = pingChannel('forum.sync.source');
-    if (!forumChannelId) return;
+    if (!forumChannelId) {
+      // A muted or unset route is a state the dashboard must be able to see,
+      // not a silent "last good run" that never changes (BOT-18).
+      const why = !route ? 'route forum.sync.source is missing' : !route.enabled ? 'route forum.sync.source is disabled' : 'route forum.sync.source has no channel';
+      console.warn(`[FORUM_SYNC] skipped: ${why}`);
+      recordSyncFail('forum_sync', why);
+      return;
+    }
     const channel = await client.channels.fetch(forumChannelId).catch(e => {
       console.error('[FORUM_SYNC] Cannot fetch channel:', e.message);
       return null;
     });
-    if (!channel) return;
+    if (!channel) { recordSyncFail('forum_sync', `cannot fetch channel ${forumChannelId}`); return; }
 
     const factions = query("SELECT id, name, aliases FROM factions WHERE archived = 0");
     const counts = {};
@@ -108,7 +120,7 @@ export async function syncForumPosts(client) {
 
     console.log(`[FORUM_SYNC] Scanned ${total} messages, matched ${matched}`);
     recordSyncOk('forum_sync', `${total} messages scanned, ${matched} matched to factions`);
-    const unmatchedEntries = Object.entries(unmatched).sort((a,b) => b[1] - a[1]);
+    const unmatchedEntries = Object.entries(unmatched).sort((a, b) => b[1] - a[1]);
     if (unmatchedEntries.length > 0) {
       console.log('[FORUM_SYNC] Unmatched names:');
       unmatchedEntries.forEach(([n, c]) => console.log(`  "${n}" (${c}x)`));
@@ -116,5 +128,5 @@ export async function syncForumPosts(client) {
   } catch (e) {
     console.error('[FORUM_SYNC] Error:', e.message);
     recordSyncFail('forum_sync', e);
-  }
+  } finally { running = false; }
 }

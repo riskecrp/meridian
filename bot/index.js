@@ -1,9 +1,10 @@
+// Loads .env before anything else reads process.env (see lib/env.js).
+import { envReport } from './lib/env.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { Client, Collection, Events, AuditLogEvent, GatewayIntentBits, Options, REST, Routes, Partials } from 'discord.js';
-import dotenv from 'dotenv';
-import { startScheduler, startChannelPurge, startReminderPurge } from './scheduler.js';
+import { startScheduler, startChannelPurge, startReminderPurge, startHousekeeping } from './scheduler.js';
 import { syncForumPosts } from './forumSync.js';
 import { checkRecurringReminders } from './recurringReminders.js';
 import { syncConversations } from './conversationSync.js';
@@ -14,23 +15,34 @@ import { startFormSubmissions, handleFormButton, handleFormModal } from './formS
 import { handleTaskButton, handleTaskModal } from './taskButtons.js';
 import { handleRPButton, handleRPModal } from './rpButtons.js';
 import { handleDM } from './dmHandler.js';
-import { sendPing, sendPingVia, pingChannel, pingRoleIds, getRole } from './lib/pings.js';
-import { logAudit, actorOf } from './lib/audit.js';
-
-dotenv.config({ path: '/opt/meridian/.env' });
+import { sendPingVia, pingRoleIds, getRole } from './lib/pings.js';
+import { logAudit } from './lib/audit.js';
+import { query, queryOne, run } from './lib/db.js';
+import { requireStaff, resolveActor, replyEphemeral } from './lib/auth.js';
+import { assertFactionWrite } from './lib/factions.js';
+import { answerTaskQuestion } from '../shared/tasks.js';
+import { GUILD_ID } from '../shared/config.js';
+import { syncStaffFromRoles, retireStaffOnLeave } from './lib/staffSync.js';
+import { todayIso } from '../shared/dates.js';
+import { str } from '../shared/validate.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const GUILD_ID_STR          = process.env.GUILD_ID || '1457188814916423855';
+{
+  const { envPath, missing } = envReport();
+  console.log(`[SYSTEM] env from ${envPath}${missing.length ? ` — MISSING: ${missing.join(', ')}` : ''}`);
+  if (!process.env.DISCORD_BOT_TOKEN) { console.error('[SYSTEM] DISCORD_BOT_TOKEN is not set; refusing to start.'); process.exit(1); }
+  if (!GUILD_ID) console.error('[SYSTEM] GUILD_ID is not set: slash commands will not be registered and FM-guild features (staff sync, leadership mentions) are off.');
+}
 
 // Dynamically load all FM staff discord IDs, refreshed every 5 minutes.
 let _cachedStaffIds = null;
 let _staffCacheTime = 0;
-function getWatchedUserIds(query) {
+function getWatchedUserIds() {
   const now = Date.now();
   if (!_cachedStaffIds || now - _staffCacheTime > 300000) {
-    const rows = query("SELECT discord_id FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%'");
+    const rows = query("SELECT discord_id FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1");
     _cachedStaffIds = new Set(rows.map(r => r.discord_id));
     _staffCacheTime = now;
   }
@@ -66,164 +78,182 @@ for (const file of commandFiles) {
   }
 }
 
-// Deploy commands
-const rest = new REST().setToken(process.env.DISCORD_BOT_TOKEN);
-(async () => {
+// Register the slash commands in the FM guild. Runs after login so the
+// application id comes from the logged-in client rather than a second env var,
+// and a failure is reported instead of swallowed inside an IIFE at import.
+async function registerCommands(c) {
+  const appId = c.user?.id || process.env.DISCORD_CLIENT_ID;
+  if (!GUILD_ID || !appId) { console.error('[SYSTEM] Commands not registered: GUILD_ID / application id unknown.'); return; }
   try {
-    console.log(`[SYSTEM] Refreshing ${commandsToRegister.length} commands.`);
-    await rest.put(Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.GUILD_ID), { body: commandsToRegister });
-    console.log(`[SYSTEM] Commands registered.`);
-  } catch (error) { console.error(error); }
-})();
+    const rest = new REST().setToken(process.env.DISCORD_BOT_TOKEN);
+    await rest.put(Routes.applicationGuildCommands(appId, GUILD_ID), { body: commandsToRegister });
+    console.log(`[SYSTEM] ${commandsToRegister.length} commands registered in guild ${GUILD_ID}.`);
+  } catch (error) { console.error('[SYSTEM] Command registration failed:', error.message || error); }
+}
+
+// Hourly jobs never overlap: a run that is still going when the next tick
+// arrives is skipped, not stacked.
+function every(ms, label, fn) {
+  let running = false;
+  const tick = async () => {
+    if (running) { console.warn(`[${label}] previous run still in progress — skipped`); return; }
+    running = true;
+    try { await fn(); } catch (e) { console.error(`[${label}]`, e.message); } finally { running = false; }
+  };
+  setInterval(tick, ms);
+  return tick;
+}
 
 // Ready
-client.once(Events.ClientReady, c => {
+client.once(Events.ClientReady, async c => {
   console.log(`[SYSTEM] Ready as ${c.user.tag}`);
   client.user.setPresence({ activities: [{ name: "Meridian Operations", type: 3 }], status: "online" });
+  await registerCommands(c);
   startScheduler(client);
   startTaskReminder(client);
   startPromotionReview(client);
   startChannelPurge(client);
   startReminderPurge(client);
+  startHousekeeping();
   startFactionFeedback();
   startFormSubmissions();
-  console.log("[SYSTEM] Scheduler + Task Reminders + Promotion Review + Channel Purge + Reminder Purge + Faction Feedback + Form Intake started.");
-  setTimeout(() => syncForumPosts(client).catch(e => console.error("[FORUM_SYNC]", e.message)), 10000);
-  setInterval(() => syncForumPosts(client).catch(e => console.error("[FORUM_SYNC]", e.message)), 3600000);
+  console.log("[SYSTEM] Scheduler + Task Reminders + Promotion Review + Channel Purge + Reminder Purge + Housekeeping + Faction Feedback + Form Intake started.");
+  const forum = every(3600000, 'FORUM_SYNC', () => syncForumPosts(client));
+  setTimeout(forum, 10000);
   console.log("[FORUM_SYNC] Scheduled every hour, first run in 10s");
-  setInterval(() => checkRecurringReminders(client).catch(e => console.error("[RECURRING]", e.message)), 60000);
-  console.log("[RECURRING] Reminders scheduled — checks every minute, fires at 18:00 UTC on 1st/10th of month");
-  setTimeout(() => syncConversations(client).catch(e => console.error("[CONVO_SYNC]", e.message)), 30000);
-  setInterval(() => syncConversations(client).catch(e => console.error("[CONVO_SYNC]", e.message)), 3600000);
+  every(60000, 'RECURRING', () => checkRecurringReminders(client));
+  console.log("[RECURRING] Reminders checked every minute; a definition fires at/after 18:00 UTC on its ping_day");
+  const convo = every(3600000, 'CONVO_SYNC', () => syncConversations(client));
+  setTimeout(convo, 30000);
   console.log("[CONVO_SYNC] Scheduled every hour, first run in 30s");
 });
 
-// Interaction handler
+// ── Interaction handler ───────────────────────────────────────────────────────
+// Every interaction gets an answer: a handler that recognises a custom id but
+// cannot act replies ephemerally with the reason; anything unrecognised gets a
+// short "no longer handled" so Discord never shows "This interaction failed".
+
+async function handleSnooze(interaction) {
+  const actor = await requireStaff(interaction, 1);
+  if (!actor) return;
+  const duration = interaction.customId.split("_")[1];
+  const addMs = duration === "15m" ? 15 * 60000 : 60 * 60000;
+  const newTime = Date.now() + addMs;
+  const uuid = Math.random().toString(36).substring(2, 8);
+  const originalEmbed = interaction.message?.embeds?.[0];
+  const originalMsg = (originalEmbed ? originalEmbed.description : '') || "Snoozed Reminder";
+  const initialStatus = addMs <= 30 * 60000 ? "WARNED" : "ACTIVE";
+  try {
+    run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, ?)",
+      [uuid, actor.id, interaction.channelId, `(Snoozed) ${originalMsg}`.slice(0, 1000), newTime.toString(), new Date(newTime).toISOString(), `<@${actor.id}>`, initialStatus]);
+    logAudit(actor.id, actor.name, 'CREATE', 'reminder', uuid, originalMsg.slice(0, 120), `snoozed ${duration} from a reminder`);
+    await interaction.update({ content: `💤 **Snoozed for ${duration}.**`, components: [] });
+  } catch (err) {
+    console.error("[SNOOZE ERROR]", err);
+    await replyEphemeral(interaction, "❌ Failed to snooze.");
+  }
+}
+
+async function handleFeedbackModal(interaction) {
+  const actor = await requireStaff(interaction, 1);
+  if (!actor) return;
+  const factionId = interaction.customId.replace("feedback_modal_", "");
+  const r = assertFactionWrite(actor, factionId);
+  if (r.error) { await replyEphemeral(interaction, `❌ ${r.error}`); return; }
+  const f = r.faction;
+  const notes = str(interaction.fields.getTextInputValue('notes'), { max: 4000 });
+  const rewards = str(interaction.fields.getTextInputValue('rewards'), { max: 500 }) || 'None';
+  if (!notes) { await replyEphemeral(interaction, '❌ Scene notes are required.'); return; }
+  const ins = run("INSERT INTO scene_logs (date, faction_id, rewards, logged_by, notes, author_id) VALUES (?, ?, ?, ?, ?, ?)",
+    [todayIso(), f.id, rewards, actor.name, notes, actor.id]);
+  logAudit(actor.id, actor.name, 'CREATE', 'scene', Number(ins.lastInsertRowid), f.name, `via /feedback${rewards !== 'None' ? ` · rewards: ${rewards}` : ''}`);
+  await interaction.reply({ content: '✅ **Scene Feedback Logged** for **' + f.name + '**\n> ' + notes.substring(0, 200) + (rewards !== 'None' ? '\n**Rewards:** ' + rewards : '') });
+}
+
 client.on(Events.InteractionCreate, async interaction => {
-  if (interaction.isChatInputCommand()) {
-    const command = client.commands.get(interaction.commandName);
-    if (!command) return;
-    try { await command.execute(interaction); }
-    catch (error) {
-      console.error('[CMD ERROR]', interaction.commandName, error.message || error);
-      try {
-        const reply = { content: 'Error executing command: ' + (error.message || 'Unknown error'), ephemeral: true };
-        if (!interaction.replied && !interaction.deferred) await interaction.reply(reply);
-        else if (interaction.deferred) await interaction.editReply(reply);
-        else await interaction.followUp(reply);
-      } catch(e2) { console.error('[REPLY ERROR]', e2.message); }
-    }
-  } else if (interaction.isAutocomplete()) {
-    const command = client.commands.get(interaction.commandName);
-    if (command?.autocomplete) await command.autocomplete(interaction).catch(e => console.error('[AUTOCOMPLETE ERROR]', e.message));
-  } else if (interaction.isModalSubmit()) {
-    const { customId } = interaction;
-    // Rejecting a form application asks for a reason first (frmmodal:*), so the
-    // rejection itself lands here rather than on the button press.
-    if (await handleFormModal(interaction)) return;
-    if (await handleTaskModal(interaction)) return;
-    if (await handleRPModal(interaction)) return;
-    if (customId.startsWith('task_info_modal_')) {
-      const questionId = parseInt(customId.replace('task_info_modal_', ''));
-      const answer = interaction.fields.getTextInputValue('answer').trim();
-      const { queryOne, run } = await import('./lib/db.js');
-      const q = queryOne("SELECT * FROM task_questions WHERE id = ?", [questionId]);
-      if (!q) { await interaction.reply({ content: '❌ Question not found.', ephemeral: true }); return; }
-      if (q.answer) { await interaction.reply({ content: '❌ Already answered.', ephemeral: true }); return; }
-      const task = queryOne("SELECT task_uid, target_type, target_id, created_by_id FROM tasks WHERE task_uid = ?", [q.task_uid]);
-      if (!task) { await interaction.reply({ content: '❌ Task not found.', ephemeral: true }); return; }
-      if (task.created_by_id && task.created_by_id !== interaction.user.id) {
-        await interaction.reply({ content: '❌ Only the task creator can answer this.', ephemeral: true }); return;
+  try {
+    if (interaction.isChatInputCommand()) {
+      const command = client.commands.get(interaction.commandName);
+      if (!command) { await replyEphemeral(interaction, 'That command is no longer available.'); return; }
+      try { await command.execute(interaction); }
+      catch (error) {
+        console.error('[CMD ERROR]', interaction.commandName, error.message || error);
+        await replyEphemeral(interaction, 'Something went wrong running that command. It has been logged.');
       }
-      const now = new Date().toISOString();
-      const actorName = interaction.user.globalName || interaction.user.username;
-      run("UPDATE task_questions SET answer = ?, answered_by_id = ?, answered_by_name = ?, answered_at = ? WHERE id = ?",
-        [answer, interaction.user.id, actorName, now, questionId]);
-      run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('INFO_ANSWER', ?, ?, '', 'Answered via Discord', ?)",
-        [actorName, q.task_uid, now]);
-      logAudit(interaction.user.id, actorName, 'ANSWER', 'task', q.task_uid, answer.slice(0, 120), 'question answered via Discord');
-      // Notify the asker
-      const token = process.env.DISCORD_BOT_TOKEN;
-      const askerStaff = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [q.asked_by_id]);
-      const askerIsManagement = (askerStaff?.rank || '').toLowerCase().includes('management');
-      const routesToLeadership = task.target_type === 'Role' && (task.target_id === getRole('fm_leadership') || task.target_id === getRole('game_affairs'));
-      const replyUrl = 'https://ecrpfm.com/fm/tasks/' + q.task_uid;
-      await sendPing('task.question.answered',
-        `💬 <@${q.asked_by_id}> — **${actorName}** answered your question:\n> ${answer.replace(/\n/g, '\n> ')}\n\n📋 ${replyUrl}`,
-        { alt: askerIsManagement && routesToLeadership });
-      await interaction.reply({ content: '✅ Answer sent!', ephemeral: true });
       return;
     }
-    if (customId.startsWith("feedback_modal_")) {
-      const { queryOne, run } = await import('./lib/db.js');
-      const factionName = customId.replace("feedback_modal_", "");
-      const notes = interaction.fields.getTextInputValue('notes');
-      const rewards = interaction.fields.getTextInputValue('rewards') || 'None';
-      const f = queryOne("SELECT id FROM factions WHERE name = ?", [factionName]);
-      if (!f) { await interaction.reply({ content: 'Faction not found.', ephemeral: true }); return; }
-      const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '/').toUpperCase();
-      const author = interaction.user.globalName || interaction.user.username;
-      run("INSERT INTO scene_logs (date, faction_id, rewards, logged_by, notes, author_id) VALUES (?, ?, ?, ?, ?, ?)",
-        [today, f.id, rewards, author, notes, interaction.user.id]);
-      logAudit(interaction.user.id, author, 'CREATE', 'scene', f.id, factionName, `via /feedback${rewards !== 'None' ? ` · rewards: ${rewards}` : ''}`);
-      await interaction.reply({ content: '✅ **Scene Feedback Logged** for **' + factionName + '**\n> ' + notes.substring(0, 200) + (rewards !== 'None' ? '\n**Rewards:** ' + rewards : '') });
-    }
-  } else if (interaction.isButton()) {
-    const { customId } = interaction;
-    // Faction feedback (fbk:*) and the form intakes (frm:*) own their own
-    // permission checks — a button press carries none of a slash command's
-    // gating with it.
-    if (await handleFeedbackButton(interaction)) return;
-    if (await handleFormButton(interaction)) return;
-    if (await handleTaskButton(interaction)) return;
-    if (await handleRPButton(interaction)) return;
-    if (customId === "dismiss") {
-      await interaction.update({ content: "✅ **Acknowledged.**", components: [] });
+    if (interaction.isAutocomplete()) {
+      const command = client.commands.get(interaction.commandName);
+      if (command?.autocomplete) await command.autocomplete(interaction).catch(e => console.error('[AUTOCOMPLETE ERROR]', e.message));
+      else await interaction.respond([]).catch(() => {});
       return;
     }
-    if (customId.startsWith('task_info_btn_')) {
-      const questionId = customId.replace('task_info_btn_', '');
-      const { queryOne } = await import('./lib/db.js');
-      const q = queryOne("SELECT id, answer FROM task_questions WHERE id = ?", [parseInt(questionId)]);
-      if (!q) { await interaction.reply({ content: '❌ Question not found.', ephemeral: true }); return; }
-      if (q.answer) { await interaction.reply({ content: '✅ This question has already been answered.', ephemeral: true }); return; }
-      await interaction.showModal({
-        title: 'Answer Question',
-        customId: `task_info_modal_${questionId}`,
-        components: [{ type: 1, components: [{ type: 4, custom_id: 'answer', label: 'Your answer', style: 2, required: true, min_length: 1, max_length: 1000 }] }],
-      });
-      return;
-    }
-    if (customId.startsWith("snooze_")) {
-      const { query, run } = await import('./lib/db.js');
-      const duration = customId.split("_")[1];
-      let addMs = duration === "15m" ? 15*60000 : 60*60000;
-      const newTime = Date.now() + addMs;
-      const uuid = Math.random().toString(36).substring(2, 8);
-      const originalEmbed = interaction.message.embeds[0];
-      const originalMsg = originalEmbed ? originalEmbed.description : "Snoozed Reminder";
-      const initialStatus = addMs <= 30*60000 ? "WARNED" : "ACTIVE";
-      try {
-        run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, ?)",
-          [uuid, interaction.user.id, interaction.channelId, `(Snoozed) ${originalMsg}`, newTime.toString(), new Date(newTime).toISOString(), `<@${interaction.user.id}>`, initialStatus]);
-        logAudit(interaction.user.id, actorOf(interaction), 'CREATE', 'reminder', uuid, originalMsg?.slice(0, 120), `snoozed ${duration} from a reminder`);
-        await interaction.update({ content: `💤 **Snoozed for ${duration}.**`, components: [] });
-      } catch (err) {
-        console.error("[SNOOZE ERROR]", err);
-        await interaction.reply({ content: "❌ Failed to snooze.", ephemeral: true });
+    if (interaction.isModalSubmit()) {
+      const { customId } = interaction;
+      // Rejecting a form application asks for a reason first (frmmodal:*), so the
+      // rejection itself lands here rather than on the button press.
+      if (await handleFormModal(interaction)) return;
+      if (await handleTaskModal(interaction)) return;
+      if (await handleRPModal(interaction)) return;
+      if (customId.startsWith('task_info_modal_')) {
+        const actor = await requireStaff(interaction, 1);
+        if (!actor) return;
+        const questionId = parseInt(customId.replace('task_info_modal_', ''), 10);
+        const answer = interaction.fields.getTextInputValue('answer');
+        const res = await answerTaskQuestion(actor, questionId, answer);
+        await replyEphemeral(interaction, res.ok ? '✅ Answer sent!' : `❌ ${res.error}`);
+        return;
       }
+      if (customId.startsWith("feedback_modal_")) { await handleFeedbackModal(interaction); return; }
+      await replyEphemeral(interaction, 'This form is no longer handled.');
+      return;
     }
+    if (interaction.isButton()) {
+      const { customId } = interaction;
+      if (await handleFeedbackButton(interaction)) return;
+      if (await handleFormButton(interaction)) return;
+      if (await handleTaskButton(interaction)) return;
+      if (await handleRPButton(interaction)) return;
+      if (customId === "dismiss") {
+        if (!await requireStaff(interaction, 1)) return;
+        await interaction.update({ content: "✅ **Acknowledged.**", components: [] });
+        return;
+      }
+      if (customId.startsWith('task_info_btn_')) {
+        if (!await requireStaff(interaction, 1)) return;
+        const questionId = parseInt(customId.replace('task_info_btn_', ''), 10);
+        const q = queryOne("SELECT id, answer FROM task_questions WHERE id = ?", [questionId]);
+        if (!q) { await replyEphemeral(interaction, '❌ Question not found.'); return; }
+        if (q.answer) { await replyEphemeral(interaction, '✅ This question has already been answered.'); return; }
+        await interaction.showModal({
+          title: 'Answer Question',
+          customId: `task_info_modal_${questionId}`,
+          components: [{ type: 1, components: [{ type: 4, custom_id: 'answer', label: 'Your answer', style: 2, required: true, min_length: 1, max_length: 1000 }] }],
+        });
+        return;
+      }
+      if (customId.startsWith("snooze_")) { await handleSnooze(interaction); return; }
+      await replyEphemeral(interaction, 'This button is no longer handled.');
+    }
+  } catch (e) {
+    console.error('[INTERACTION]', e.message || e);
+    await replyEphemeral(interaction, 'Something went wrong handling that. It has been logged.');
   }
 });
 
-// Mention monitor — capture user pings, FM Leadership role pings, and configured watch role pings
+// ── Messages: DMs, passive capture, auto-delete, keyword alerts ──────────────
 client.on(Events.MessageCreate, async msg => {
   try {
     if (msg.author?.bot) return;
-    if (!msg.guild) console.log(`[DM_RAW] from=${msg.author?.id} content="${msg.content?.slice(0,60)}" type=${msg.type} snapshots=${msg.messageSnapshots?.size ?? 0}`);
 
-    // DM handler — runs before guild-specific logic
+    // DM handler — staff only. Anyone else (including forwarded messages from
+    // non-staff) gets a one-line answer instead of silence or a stored forward.
     if (!msg.guild) {
+      const actor = resolveActor({ user: msg.author });
+      if (!actor) {
+        await msg.reply('This bot only takes DMs from FM staff on the roster. If you are staff, enable DM tracking on the dashboard first.').catch(() => {});
+        return;
+      }
       await handleDM(msg);
       return;
     }
@@ -232,7 +262,6 @@ client.on(Events.MessageCreate, async msg => {
     const content     = msg.content || '[no text content]';
     const createdAt   = msg.createdAt.toISOString();
     const authorName  = msg.author.globalName || msg.author.username;
-    const { run, query } = await import('./lib/db.js');
 
     // Auto-delete channels — delete non-bot messages (with optional delay)
     const autoDelCfg = query("SELECT delay_seconds FROM auto_delete_channels WHERE channel_id = ?", [msg.channelId]);
@@ -244,7 +273,7 @@ client.on(Events.MessageCreate, async msg => {
     }
 
     // Individual user pings — all FM staff, captured from any guild the bot is in
-    const watchedUserIds = getWatchedUserIds(query);
+    const watchedUserIds = getWatchedUserIds();
     for (const userId of watchedUserIds) {
       if (msg.mentions?.users?.has(userId)) {
         run(
@@ -258,7 +287,8 @@ client.on(Events.MessageCreate, async msg => {
     }
 
     // FM Leadership role pings (FM guild only)
-    if (msg.guildId === GUILD_ID_STR && msg.mentions?.roles?.has(getRole('fm_leadership'))) {
+    const leadershipRole = getRole('fm_leadership');
+    if (GUILD_ID && msg.guildId === GUILD_ID && leadershipRole && msg.mentions?.roles?.has(leadershipRole)) {
       run(
         `INSERT OR IGNORE INTO role_mentions
            (message_id, channel_id, channel_name, author_id, author_name, content, guild_id, guild_name, created_at)
@@ -293,14 +323,12 @@ client.on(Events.MessageCreate, async msg => {
     }
     // Keyword scanning on all guild messages
     if (msg.guild && content) {
-      await checkKeywords(content, msg, 'message', run, query);
+      await checkKeywords(content, msg, 'message');
     }
   } catch (e) {
     console.error('[MENTIONS] Error storing mention:', e.message);
   }
 });
-
-const RISK_DISCORD_ID = process.env.RISK_DISCORD_ID || '738214924760907907';
 
 // ── Server log channel ────────────────────────────────────────────────────────
 // Everything the server log records in the DB (joins, leaves, edits, deletes,
@@ -322,12 +350,10 @@ async function postServerLog(routeKey, embed) {
   } catch (e) { console.error(`[SERVER_LOG] ${routeKey}:`, e.message); }
 }
 
-// Keyword scanning — checks message content against server_log_keywords table.
-// Fires a DM to risk and logs the alert. event_type: 'message' | 'edit'
 // Stored invite for the server a message came from: the guild's Bot Servers
 // entry names its faction, and the faction carries its Discord invite. Empty
 // when the guild isn't configured or the faction has no invite on file.
-function storedInviteFor(guildId, query) {
+function storedInviteFor(guildId) {
   const row = query(
     `SELECT f.discord_url FROM bot_server_configs bc
        JOIN factions f ON f.id = bc.faction_id
@@ -338,7 +364,10 @@ function storedInviteFor(guildId, query) {
   return row?.discord_url || '';
 }
 
-async function checkKeywords(content, message, eventType, run, query) {
+// Keyword scanning — checks message content against server_log_keywords.
+// The alert goes to the logs.keyword route (whose mention_roles decide who is
+// paged); nobody is DM'd by hardcoded id. event_type: 'message' | 'edit'
+async function checkKeywords(content, message, eventType) {
   if (!content || !message.guild) return;
   const keywords = query("SELECT id, phrase FROM server_log_keywords");
   if (!keywords.length) return;
@@ -346,7 +375,7 @@ async function checkKeywords(content, message, eventType, run, query) {
   let invite;
   for (const kw of keywords) {
     if (!lower.includes(kw.phrase.toLowerCase())) continue;
-    if (invite === undefined) invite = storedInviteFor(message.guild.id, query);
+    if (invite === undefined) invite = storedInviteFor(message.guild.id);
     const guildName   = message.guild?.name || '';
     const channelName = message.channel?.name || message.channel?.id || '';
     const authorId    = message.author?.id || '';
@@ -358,18 +387,6 @@ async function checkKeywords(content, message, eventType, run, query) {
       [kw.phrase, message.id, message.guild.id, guildName, message.channel.id, channelName,
        authorId, authorName, content.substring(0, 1000), eventType]
     );
-    try {
-      const user = await client.users.fetch(RISK_DISCORD_ID);
-      const label = eventType === 'edit' ? '✏️ Edited Message' : '💬 New Message';
-      await user.send(
-        `🚨 **Keyword Alert — "${kw.phrase}"**\n` +
-        `**Type:** ${label}\n` +
-        `**Server:** ${guildName} · #${channelName}\n` +
-        `**Author:** ${authorName} (${authorId})\n` +
-        `**Content:** ${content.substring(0, 500)}\n` +
-        `**Invite:** ${invite ? `<${invite}>` : 'none stored for this server'}`
-      );
-    } catch (e) { console.error('[KW_ALERT] DM failed:', e.message); }
     await postServerLog('logs.keyword', {
       color: LOG_COLOURS.keyword,
       title: `🚨 Trigger word — "${clip(kw.phrase, 100)}"`,
@@ -392,7 +409,6 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
     if (oldMessage.content === newMessage.content) return; // embed load, not a real edit
     const combined = ((oldMessage.content || '') + ' ' + (newMessage.content || '')).toLowerCase();
     if (combined.includes('wordle')) return; // ignore wordle spam
-    const { run, query } = await import('./lib/db.js');
     const before   = oldMessage.partial  ? '[not cached]' : (oldMessage.content  || '[no text]');
     const after    = newMessage.partial  ? '[not cached]' : (newMessage.content  || '[no text]');
     const authorId      = newMessage.author?.id || '';
@@ -408,7 +424,7 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
        authorId, authorName, authorDisplay, before, after]
     );
     if (!newMessage.partial) {
-      await checkKeywords(after, newMessage, 'edit', run, query);
+      await checkKeywords(after, newMessage, 'edit');
     }
     console.log(`[EDIT] ${authorName} edited msg ${newMessage.id} in #${newMessage.channel.name} (${newMessage.guild.name})`);
     await postServerLog('logs.events', {
@@ -429,7 +445,6 @@ client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
 client.on(Events.MessageDelete, async message => {
   try {
     if (!message.guild) return; // ignore DMs
-    const { run } = await import('./lib/db.js');
     const isPartial     = message.partial;
     const content       = isPartial ? '' : (message.content || '[attachment/embed only]');
     const authorId      = isPartial ? '' : (message.author?.id       || '');
@@ -488,81 +503,21 @@ client.on(Events.MessageDelete, async message => {
   } catch (e) { console.error('[DELETE_LOG]', e.message); }
 });
 
-// Auto-add staff when the main FM role is granted in the FM guild
-// Rank roles are read from discord_roles so renames/re-IDs don't need a redeploy.
-// fm_team_guide is the base role every FM member holds.
-const mainFmRole = () => getRole('fm_team_guide');
-
-function fmRankRoles() {
-  const map = {};
-  const put = (key, rank) => { const id = getRole(key); if (id) map[id] = rank; };
-  put('fm_team_lead',    'Team Lead');
-  put('fm_leadership',   'Management');
-  put('game_affairs',    'Management');
-  put('founder',         'Management');
-  put('executive_admin', 'Management');
-  return map;
-}
-
-function deriveFMRank(roleIds) {
-  const ranks = fmRankRoles();
-  let rank = 'Guide';
-  for (const r of roleIds) {
-    if (ranks[r] === 'Management') return 'Management';
-    if (ranks[r] === 'Team Lead')  rank = 'Team Lead';
-  }
-  return rank;
-}
-
+// ── Staff sync (FM guild) ─────────────────────────────────────────────────────
+// Logic lives in lib/staffSync.js (testable without a client).
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   try {
-    if (newMember.guild.id !== GUILD_ID_STR) return;
-    const addedRoles  = [...newMember.roles.cache.keys()].filter(r => !oldMember.roles.cache.has(r));
-    if (!addedRoles.length) return;
-
-    const { run, queryOne } = await import('./lib/db.js');
-    const allRoles    = [...newMember.roles.cache.keys()];
-    const displayName = newMember.nickname || newMember.user.globalName || newMember.user.username;
-
-    // ── New staff: base FM role granted ──────────────────────────────────
-    if (addedRoles.includes(mainFmRole())) {
-      const existing = queryOne("SELECT id FROM staff WHERE discord_id = ?", [newMember.user.id]);
-      if (existing) {
-        console.log(`[STAFF_SYNC] ${displayName} already in staff`);
-      } else {
-        const rank      = deriveFMRank(allRoles);
-        const clearance = rank === 'Management' ? 3 : rank === 'Team Lead' ? 2 : 1;
-        run(
-          "INSERT INTO staff (discord_id, display_name, discord_name, rank, team_id, team_name, clearance) VALUES (?, ?, ?, ?, '', '', ?)",
-          [newMember.user.id, displayName, newMember.user.username, rank, clearance]
-        );
-        console.log(`[STAFF_SYNC] Auto-added ${displayName} as ${rank}`);
-      }
-      return;
-    }
-
-    // ── Existing staff: rank role granted — update their rank ─────────────
-    const rankRoleIds = new Set(Object.keys(fmRankRoles()));
-    const gotRankRole = addedRoles.some(r => rankRoleIds.has(r));
-    if (!gotRankRole) return;
-
-    const existing = queryOne("SELECT id, rank FROM staff WHERE discord_id = ?", [newMember.user.id]);
-    if (!existing) return; // not in staff, nothing to update
-
-    const newRank    = deriveFMRank(allRoles);
-    const clearance  = newRank === 'Management' ? 3 : newRank === 'Team Lead' ? 2 : 1;
-    run(
-      "UPDATE staff SET rank=?, clearance=?, updated_at=datetime('now') WHERE discord_id=?",
-      [newRank, clearance, newMember.user.id]
-    );
-    console.log(`[STAFF_SYNC] Updated ${displayName}: ${existing.rank} → ${newRank}`);
+    if (!GUILD_ID || newMember.guild.id !== GUILD_ID) return;
+    const addedRoles   = [...newMember.roles.cache.keys()].filter(r => !oldMember.roles.cache.has(r));
+    const removedRoles = [...oldMember.roles.cache.keys()].filter(r => !newMember.roles.cache.has(r));
+    if (!addedRoles.length && !removedRoles.length) return;
+    syncStaffFromRoles(newMember, { addedRoles, removedRoles });
   } catch (e) { console.error('[STAFF_SYNC]', e.message); }
 });
 
 // Member join/leave logging — all guilds the bot is in
 client.on(Events.GuildMemberAdd, async member => {
   try {
-    const { run } = await import('./lib/db.js');
     run(
       `INSERT INTO member_join_leave_logs (guild_id, guild_name, user_id, username, display_name, event)
        VALUES (?, ?, ?, ?, ?, 'join')`,
@@ -585,7 +540,6 @@ client.on(Events.GuildMemberAdd, async member => {
 
 client.on(Events.GuildMemberRemove, async member => {
   try {
-    const { run } = await import('./lib/db.js');
     run(
       `INSERT INTO member_join_leave_logs (guild_id, guild_name, user_id, username, display_name, event)
        VALUES (?, ?, ?, ?, ?, 'leave')`,
@@ -593,6 +547,8 @@ client.on(Events.GuildMemberRemove, async member => {
        member.user.username, member.user.globalName || member.user.username]
     );
     console.log(`[LEAVE] ${member.user.username} left ${member.guild.name}`);
+    // Leaving the FM guild retires the staff row (never deleted).
+    if (GUILD_ID && member.guild.id === GUILD_ID) retireStaffOnLeave(member.user.id, member.user.globalName || member.user.username);
     await postServerLog('logs.events', {
       color: LOG_COLOURS.leave,
       title: '📤 Member left',

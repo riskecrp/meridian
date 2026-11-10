@@ -1,284 +1,288 @@
 "use server";
-import { query, queryOne, run } from "../../../lib/db.js";
+// The Teams workspace: team rosters, team/personal task boards and events, and
+// the IC-contact → RP-change bridge.
+//
+// Tasks are thin wrappers over shared/tasks.js (requireActor → shared fn →
+// revalidatePath) so the dashboard, /v2 and the bot enforce one rule set:
+// claims are always the actor's own, completion is soft, dates are ISO and
+// every write is audited with the real record id.
+//
+// IC-contact writes are scoped with lib/access.js: a guide or team lead may
+// only work contacts of factions led by someone on their team; L3 is
+// unscoped; archived factions accept no writes.
+import { randomUUID } from 'node:crypto';
+import { revalidatePath } from 'next/cache';
+import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { getRole } from "../../../lib/discord.js";
-import { sendPing, pingChannel, taskComponents } from "../../../lib/pings.js";
+import { sendPing, sendDiscord, pingChannel, rpComponents, urls } from "../../../lib/pings.js";
 import { requireActor } from "../../../lib/requireActor.js";
+import { assertFactionWrite, resolveFaction, writableFactionIds } from "../../../lib/access.js";
+import * as Tasks from "../../../../../shared/tasks.js";
+import { getRole } from "../../../../../shared/pings.js";
+import { nowIso, todayIso } from "../../../../../shared/dates.js";
+import { str, toInt, isSnowflake, fail, oneOf, RP_TYPES } from "../../../../../shared/validate.js";
 
+const PATHS = ['/v2', '/v2/teams', '/v2/tasks', '/fm/teams', '/fm/dashboard'];
+function refresh() { for (const p of PATHS) { try { revalidatePath(p); } catch { /* outside a request */ } } }
 
-// ── creator notification helper ──
-// True when a creator notification should take the confidentiality branch: the
-// creator is Leadership AND the task is leadership-scoped, so the ping can go to
-// the private channel without hiding it from them. Destinations themselves are
-// configured per route in ping_routes.
-function _creatorRoutesAlt(createdById, currentTargetType, currentTargetId) {
-  if (!createdById) return false;
-  const staff = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [createdById]);
-  const rank = (staff?.rank || '').toLowerCase();
-  const isLeadership = rank.includes('leadership') || rank.includes('management') || rank.includes('game affairs');
-  if (!isLeadership) return false;
-  const leadershipRoleId = getRole('fm_leadership');
-  const gameAffairsId = getRole('game_affairs');
-  return currentTargetType === 'Role' && (currentTargetId === leadershipRoleId || currentTargetId === gameAffairsId);
-}
-
-
-function today() { return new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'/').toUpperCase(); }
+// ── Teams ─────────────────────────────────────────────────────────────────────
 
 export async function getTeams() {
-  try {
-    await requireActor(1);
-    const staff = query("SELECT * FROM staff WHERE discord_id != '' AND discord_id != 'Unassigned_Lead_Placeholder' ORDER BY team_id, rank");
-    const factions = query(`SELECT f.*, 
-      COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id=f.id AND sl.created_at>=datetime('now','-30 days')),0) as scenes30d,
-      COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id=f.id),0) as allTime
-      FROM factions f WHERE f.archived = 0 ORDER BY f.name`);
+  await requireActor(1);
+  const teamRows = query("SELECT team_id, team_name FROM teams ORDER BY team_name");
+  const staff = query("SELECT discord_id, display_name, rank, clearance, team_id, team_name FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY clearance DESC, display_name");
+  const factions = query(`SELECT f.id, f.name, f.tier, f.lead_discord_id,
+      COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id = f.id AND sl.created_at >= datetime('now','-30 days')), 0) AS scenes30d,
+      COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id = f.id), 0) AS allTime
+    FROM factions f WHERE f.archived = 0 ORDER BY f.name`);
 
-    const teams = {};
-    staff.forEach(s => {
-      if (!s.team_id || s.team_name === 'Game Affairs Management') return;
-      if (!teams[s.team_id]) teams[s.team_id] = { id: s.team_id, name: s.team_name || 'Unnamed', leads: [], guides: [], factions: [], total30d: 0, totalAll: 0 };
-      const entry = { discordId: s.discord_id, name: s.display_name, rank: s.rank };
-      if (s.rank.toLowerCase().includes('lead')) teams[s.team_id].leads.push(entry);
-      else teams[s.team_id].guides.push(entry);
-    });
-
-    // Assign factions to teams based on lead
-    factions.forEach(f => {
-      const leadStaff = staff.find(s => s.discord_id === f.lead_discord_id);
-      const tid = leadStaff?.team_id;
-      if (tid && teams[tid]) {
-        teams[tid].factions.push({ id: f.id, name: f.name, tier: f.tier, scenes30d: f.scenes30d, allTime: f.allTime });
-        teams[tid].total30d += f.scenes30d;
-        teams[tid].totalAll += f.allTime;
-      }
-    });
-
-    return Object.values(teams);
-  } catch (e) { console.error("getTeams:", e); return []; }
+  const teams = {};
+  const ensure = (id, name) => (teams[id] ||= { id, name: name || 'Unnamed', leads: [], guides: [], factions: [], total30d: 0, totalAll: 0 });
+  for (const t of teamRows) ensure(t.team_id, t.team_name);
+  for (const s of staff) {
+    if (!s.team_id || s.team_name === 'Game Affairs Management') continue;
+    const team = ensure(s.team_id, s.team_name);
+    const entry = { discordId: s.discord_id, name: s.display_name, rank: s.rank, clearance: s.clearance };
+    // staff.clearance is the truth (never the rank text): L2+ are the leads of a team.
+    (Number(s.clearance) >= 2 ? team.leads : team.guides).push(entry);
+  }
+  const teamOfLead = Object.fromEntries(staff.map(s => [s.discord_id, s.team_id]));
+  for (const f of factions) {
+    const tid = teamOfLead[f.lead_discord_id];
+    if (!tid || !teams[tid]) continue;
+    teams[tid].factions.push({ id: f.id, name: f.name, tier: f.tier, scenes30d: f.scenes30d, allTime: f.allTime });
+    teams[tid].total30d += f.scenes30d;
+    teams[tid].totalAll += f.allTime;
+  }
+  return Object.values(teams).filter(t => t.leads.length || t.guides.length || t.factions.length);
 }
 
+function teamMemberIds(teamId) {
+  return new Set(query("SELECT discord_id FROM staff WHERE team_id = ?", [teamId]).map(s => s.discord_id));
+}
+
+/** Open tasks aimed at a team (its role) or one of its members, limited to what the actor may see. */
 export async function getTeamTasks(teamId) {
-  try {
-    await requireActor(1);
-    const staffInTeam = query("SELECT discord_id FROM staff WHERE team_id = ?", [teamId]);
-    const memberIds = staffInTeam.map(s => s.discord_id);
-    const allTasks = query("SELECT * FROM tasks ORDER BY created_at DESC");
-    return allTasks.filter(t => {
-      if (t.target_type === 'Role' && t.target_id === teamId) return true;
-      if ((t.target_type === 'User' || t.target_type === 'Private') && memberIds.includes(t.target_id)) return true;
-      return false;
-    }).map(t => {
-      const claimer = t.claimed_by !== 'None' ? query("SELECT display_name FROM staff WHERE discord_id = ?", [t.claimed_by])[0]?.display_name || t.claimed_by : 'Unclaimed';
-      return { ...t, claimerName: claimer, creatorName: t.created_by_name || 'Unknown' };
-    });
-  } catch (e) { return []; }
+  const actor = await requireActor(1);
+  const tid = str(teamId);
+  if (!tid) return [];
+  const members = teamMemberIds(tid);
+  return Tasks.visibleTasks(actor)
+    .filter(t => (t.target_type === 'Role' && t.target_id === tid) || (t.target_type === 'User' && members.has(t.target_id)))
+    .map(t => ({ ...Tasks.decorate(t), creatorName: t.created_by_name || 'Unknown' }));
+}
+
+function nameMap(ids) {
+  const list = [...new Set(ids.filter(Boolean))];
+  if (!list.length) return {};
+  const rows = query(`SELECT discord_id, display_name FROM staff WHERE discord_id IN (${list.map(() => '?').join(',')})`, list);
+  return Object.fromEntries(rows.map(r => [r.discord_id, r.display_name]));
+}
+
+function decorateReminders(rows) {
+  const names = nameMap(rows.map(r => r.author_id));
+  return rows.map(r => ({ ...r, authorName: names[r.author_id] || r.author_id, epochMs: parseInt(r.epoch_ms, 10) || 0 }));
 }
 
 export async function getTeamReminders(teamId) {
-  try {
-    await requireActor(1);
-    const staffInTeam = query("SELECT discord_id FROM staff WHERE team_id = ?", [teamId]);
-    const memberIds = staffInTeam.map(s => s.discord_id);
-    const all = query("SELECT * FROM reminders WHERE status != 'FIRED' ORDER BY epoch_ms");
-    return all.filter(r => {
-      const roleMatch = r.target_tag?.match(/<@&(\d+)>/);
-      const userMatch = r.target_tag?.match(/<@(\d+)>/);
-      if (roleMatch && roleMatch[1] === teamId) return true;
-      if (userMatch && memberIds.includes(userMatch[1])) return true;
-      return false;
-    }).map(r => {
-      const authorStaff = query("SELECT display_name FROM staff WHERE discord_id = ?", [r.author_id])[0];
-      return { ...r, authorName: authorStaff?.display_name || r.author_id, epochMs: parseInt(r.epoch_ms) };
-    });
-  } catch (e) { return []; }
+  await requireActor(1);
+  const tid = str(teamId);
+  if (!tid) return [];
+  const members = teamMemberIds(tid);
+  const all = query("SELECT * FROM reminders WHERE status != 'FIRED' ORDER BY CAST(epoch_ms AS INTEGER)");
+  return decorateReminders(all.filter(r => {
+    const role = r.target_tag?.match(/<@&(\d+)>/);
+    const user = r.target_tag?.match(/<@(\d+)>/);
+    return (role && role[1] === tid) || (user && members.has(user[1]));
+  }));
 }
 
+/** Every open task the actor may see (the shared visibility rule), newest first. */
 export async function getMyTasks() {
-  try {
-    const actor = await requireActor(1);
-    const discordId = actor.id, teamId = actor.teamId, rank = actor.rank;
-    const allTasks = query("SELECT * FROM tasks ORDER BY created_at DESC");
-    const isLead = rank?.toLowerCase().includes('lead');
-    const isMgmt = rank?.toLowerCase().includes('management') || rank?.toLowerCase().includes('admin');
-    const leadRoleId = getRole('fm_team_lead');
-    const leadershipRoleId = getRole('fm_leadership');
-    const allFmRoleId = getRole('fm_team_guide');
-
-    return allTasks.filter(t => {
-      if (t.target_id === discordId) return true;
-      if (t.target_type === 'Role' && t.target_id === teamId) return true;
-      if (t.claimed_by === discordId) return true;
-      if (isLead && t.target_type === 'Role' && t.target_id === leadRoleId) return true;
-      if (isMgmt && t.target_type === 'Role' && (t.target_id === leadershipRoleId || t.target_id === allFmRoleId)) return true;
-      return false;
-    }).map(t => {
-      const claimer = t.claimed_by !== 'None' ? query("SELECT display_name FROM staff WHERE discord_id = ?", [t.claimed_by])[0]?.display_name || t.claimed_by : 'Unclaimed';
-      return { ...t, claimerName: claimer };
-    });
-  } catch (e) { return []; }
+  const actor = await requireActor(1);
+  return Tasks.visibleTasks(actor).map(Tasks.decorate);
 }
 
 export async function getMyReminders() {
-  try {
-    const actor = await requireActor(1);
-    const discordId = actor.id, teamId = actor.teamId, rank = actor.rank;
-    const all = query("SELECT * FROM reminders WHERE status != 'FIRED' ORDER BY epoch_ms");
-    const isLead = rank?.toLowerCase().includes('lead');
-    const isMgmt = rank?.toLowerCase().includes('management');
-    const leadRoleId = getRole('fm_team_lead');
-    const leadershipRoleId = getRole('fm_leadership');
-
-    return all.filter(r => {
-      if (r.author_id === discordId) return true;
-      const roleMatch = r.target_tag?.match(/<@&(\d+)>/);
-      const userMatch = r.target_tag?.match(/<@(\d+)>/);
-      if (userMatch && userMatch[1] === discordId) return true;
-      if (roleMatch && roleMatch[1] === teamId) return true;
-      if (isLead && roleMatch && roleMatch[1] === leadRoleId) return true;
-      if (isMgmt && roleMatch && (roleMatch[1] === leadershipRoleId)) return true;
-      return false;
-    }).map(r => ({ ...r, authorName: r.author_id, epochMs: parseInt(r.epoch_ms) }));
-  } catch (e) { return []; }
+  const actor = await requireActor(1);
+  const leadRole = getRole('fm_team_lead');
+  const guideRole = getRole('fm_team_guide');
+  const all = query("SELECT * FROM reminders WHERE status != 'FIRED' ORDER BY CAST(epoch_ms AS INTEGER)");
+  // Same audience rule as tasks: mine, aimed at me, my team, all-FM; leads add
+  // the lead role; leadership sees every role event.
+  return decorateReminders(all.filter(r => {
+    if (r.author_id === actor.id) return true;
+    const role = r.target_tag?.match(/<@&(\d+)>/);
+    const user = r.target_tag?.match(/<@(\d+)>/);
+    if (user && user[1] === actor.id) return true;
+    if (!role) return false;
+    if (actor.level >= 3) return true;
+    if (role[1] === actor.teamId || role[1] === guideRole) return true;
+    return actor.level >= 2 && role[1] === leadRole;
+  }));
 }
+
+// ── Tasks (thin wrappers over shared/tasks.js) ────────────────────────────────
 
 export async function createTask(data) {
-  try {
-    const actor = await requireActor(1);
-    const uid = Date.now().toString();
-    const ts = today();
-    const nextReminder = data.enableDM ? (Date.now() + 86400000).toString() : null;
-  const _leadershipRoleId_create = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const _gameAffairsId_create = getRole('game_affairs');
-  const _routesToLeadership_create = data.targetType === 'Role' && (data.targetId === _leadershipRoleId_create || data.targetId === _gameAffairsId_create);
-  const notifyCreator = (actor.level < 3 && _routesToLeadership_create) ? 1 : 0;
-
-    run("INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, next_reminder, created_at, notify_creator) VALUES (?, ?, ?, ?, 'None', ?, ?, ?, ?, ?)",
-      [uid, data.desc, data.targetId, data.targetType, actor.id, actor.name, nextReminder, ts, notifyCreator]);
-    run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('CREATED', ?, ?, ?, ?, ?)",
-      [actor.name, uid, data.desc, `${data.targetType}: ${data.targetId}`, ts]);
-    logAudit(actor.id, actor.name, 'CREATE', 'task', null, data.desc.substring(0,50), `Assigned to ${data.targetType}: ${data.targetId}`);
-
-    // Discord ping — skip if FM Leadership is assigning to themselves
-    const selfAssign = actor.level >= 3 && data.targetType === 'User' && data.targetId === actor.id;
-    if (!selfAssign) {
-      const leadershipRoleId = getRole('fm_leadership');
-      const gameAffairsId = getRole('game_affairs');
-      const routeLeadership = data.targetType === 'Role' && (data.targetId === leadershipRoleId || data.targetId === gameAffairsId);
-      const tag = data.targetType === 'Role' ? `<@&${data.targetId}>` : `<@${data.targetId}>`;
-      await sendPing('task.assigned', `📋 **NEW TASK ASSIGNED** | ${tag}\n**Task:** ${(data.desc || '').substring(0, 300)}\n**Assigned By:** ${actor.name}`, { alt: routeLeadership, components: taskComponents(uid) });
-    }
-    return { ok: true };
-  } catch (e) { return { ok: false }; }
+  const actor = await requireActor(1);
+  const r = await Tasks.createTask(actor, data || {}, { via: 'dashboard' });
+  if (r.ok) refresh();
+  return r;
 }
 
-export async function claimTask(taskUid, claimerId, claimerName, enableDM) {
-  try {
-    const actor = await requireActor(1);
-    run("UPDATE tasks SET claimed_by = ? WHERE task_uid = ?", [claimerId, taskUid]);
-    if (enableDM) run("UPDATE tasks SET next_reminder = ? WHERE task_uid = ?", [(Date.now() + 86400000).toString(), taskUid]);
-    run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('CLAIMED', ?, ?, '', 'Status Updated', ?)",
-      [`${claimerName} (${claimerId})`, taskUid, today()]);
-    logAudit(claimerId, claimerName, 'EDIT', 'task', null, taskUid, 'Task claimed');
-    await sendPing('task.claimed.broadcast', `✅ **TASK CLAIMED** by ${claimerName}`);
-  const _t = queryOne("SELECT description, created_by_id, notify_creator FROM tasks WHERE task_uid = ?", [taskUid]);
-  if (_t && _t.notify_creator === 1 && _t.created_by_id && _t.created_by_id !== actor.id) {
-    await sendPing('task.claimed.creator', '🤚 <@' + _t.created_by_id + '> — your task "' + (_t.description || '').substring(0, 200) + '" was claimed by **' + actor.name + '**.');
-  }
-
-    return { ok: true };
-  } catch (e) { return { ok: false }; }
+/**
+ * Claim a task as yourself. `opts` may be `{ enableDM }` (or a boolean) to turn
+ * on the 24h DM reminder for the claim. A claimer id is never taken from the
+ * client: a claim is always the actor's own.
+ */
+export async function claimTask(taskUid, opts) {
+  const actor = await requireActor(1);
+  const r = await Tasks.claimTask(actor, str(taskUid), { via: 'dashboard' });
+  if (!r.ok) return r;
+  const enableDM = typeof opts === 'object' && opts !== null ? !!opts.enableDM : opts === true;
+  if (enableDM) run("UPDATE tasks SET next_reminder = ? WHERE task_uid = ? AND claimed_by = ?", [String(Date.now() + 86400000), str(taskUid), actor.id]);
+  refresh();
+  return r;
 }
 
 export async function completeTask(taskUid, note) {
-  try {
-    const actor = await requireActor(1);
-    const task = queryOne("SELECT description, target_id, target_type, created_by_id, notify_creator FROM tasks WHERE task_uid = ?", [taskUid]);
-    run("DELETE FROM tasks WHERE task_uid = ?", [taskUid]);
-    run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('COMPLETED', ?, ?, ?, 'Task Cleared', ?)",
-      [actor.name, taskUid, task?.description || '', today()]);
-    logAudit(actor.id, actor.name, 'DELETE', 'task', null, taskUid, 'Task completed and removed');
-    if (task) {
-      const leadershipRoleId = getRole('fm_leadership');
-      const gameAffairsId = getRole('game_affairs');
-      const wasLeadershipTarget = task.target_type === 'Role' && (task.target_id === leadershipRoleId || task.target_id === gameAffairsId);
-      if (wasLeadershipTarget && task.created_by_id && task.created_by_id !== actor.id) {
-        await sendPing('task.completed.creator', `✅ <@${task.created_by_id}> — your task "${task.description}" has been completed by **${actor.name}**.`);
-      }
-    }
-    return { ok: true };
-  } catch (e) { return { ok: false }; }
+  const actor = await requireActor(1);
+  const r = await Tasks.completeTask(actor, str(taskUid), note, { via: 'dashboard' });
+  if (r.ok) refresh();
+  return r;
 }
 
 export async function editTask(taskUid, newDesc) {
-  try {
-    const actor = await requireActor(1);
-    const task = queryOne("SELECT created_by_id FROM tasks WHERE task_uid = ?", [taskUid]);
-    if (!task) return { ok: false, error: "Task not found" };
-    if (task.created_by_id !== actor.id && actor.level < 2) {
-      return { ok: false, error: "Only the creator or L2+ can edit this task" };
-    }
-    run("UPDATE tasks SET description = ? WHERE task_uid = ?", [newDesc, taskUid]);
-    logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, newDesc.substring(0,100));
-    return { ok: true };
-  } catch (e) { return { ok: false }; }
+  const actor = await requireActor(1);
+  const r = await Tasks.editTask(actor, str(taskUid), newDesc);
+  if (r.ok) refresh();
+  return r;
 }
 
+export async function reassignTask(taskUid, newTargetId, newTargetType, note) {
+  const actor = await requireActor(1);
+  const r = await Tasks.reassignTask(actor, str(taskUid), newTargetId, newTargetType, note);
+  if (r.ok) refresh();
+  return r;
+}
+
+export async function unclaimTask(taskUid, note) {
+  const actor = await requireActor(1);
+  const r = await Tasks.unclaimTask(actor, str(taskUid), note, { via: 'dashboard' });
+  if (r.ok) refresh();
+  return r;
+}
+
+export async function requestTaskInfo(taskUid, question) {
+  const actor = await requireActor(1);
+  return Tasks.requestTaskInfo(actor, str(taskUid), question);
+}
+
+export async function answerTaskQuestion(questionId, answer) {
+  const actor = await requireActor(1);
+  const qid = toInt(questionId, { min: 1 });
+  if (!qid) return fail('Question not found.');
+  return Tasks.answerTaskQuestion(actor, qid, answer);
+}
+
+export async function getTaskByUid(taskUid) {
+  const actor = await requireActor(1);
+  const task = Tasks.getTask(str(taskUid));
+  if (!task || !Tasks.canSeeTask(actor, task)) return null;
+  return Tasks.decorate(task);
+}
+
+export async function getTaskQuestions(taskUid) {
+  const actor = await requireActor(1);
+  const task = Tasks.getTask(str(taskUid));
+  if (!task || !Tasks.canSeeTask(actor, task)) return [];
+  return Tasks.taskQuestions(task.task_uid);
+}
+
+// ── Events / reminders ────────────────────────────────────────────────────────
+
+function validateReminderTarget(targetType, targetId) {
+  if (targetType !== 'Role' && targetType !== 'User') return 'Target type must be Role or User.';
+  if (!targetId) return 'A target is required.';
+  if (targetType === 'User') {
+    if (!queryOne("SELECT 1 FROM staff WHERE discord_id = ? AND discord_id NOT LIKE 'placeholder%'", [targetId])) return 'That person is not on the staff roster.';
+    return null;
+  }
+  const known = queryOne("SELECT 1 FROM discord_roles WHERE role_id = ?", [targetId]) || queryOne("SELECT 1 FROM teams WHERE team_id = ?", [targetId]);
+  if (!known && !isSnowflake(targetId)) return 'Unknown role.';
+  return null;
+}
+
+/**
+ * Schedule an event / reminder. `data`: { message, epochMs, eventType, note,
+ * targetType, targetId }. The 30-minute warning is a global route switch
+ * (ping_routes 'reminder.warning'), not a per-event option, so `enable30m` is
+ * accepted and ignored.
+ */
 export async function createReminder(data) {
-  try {
-    const actor = await requireActor(1);
-    const uuid = Math.random().toString(36).substring(2, 8);
-    const targetTag = data.targetType === 'Role' ? `<@&${data.targetId}>` : `<@${data.targetId}>`;
-    const readable = new Date(data.epochMs).toISOString();
+  const actor = await requireActor(1);
+  const d = data && typeof data === 'object' ? data : {};
+  const eventType = str(d.eventType, { max: 60 });
+  const note = str(d.note, { max: 500 });
+  let message = str(d.message, { max: 600 });
+  if (!message && note) message = `[${eventType || 'Event'}] ${note}`;
+  if (!message) return fail('A message is required.');
+  const epochMs = toInt(d.epochMs);
+  if (!epochMs || epochMs < 1e12 || epochMs > 4e12) return fail('A valid date and time is required.');
+  if (epochMs < Date.now() - 60000) return fail('The event time must be in the future.');
+  const targetType = str(d.targetType);
+  const targetId = str(d.targetId);
+  const bad = validateReminderTarget(targetType, targetId);
+  if (bad) return fail(bad);
 
-    // Events/reminders go to the event route; leadership-targeted ones take the
-    // confidentiality branch. The reminder row stores the resolved channel so the
-    // bot scheduler fires it in the same place.
-    const leadershipRoleId2 = getRole('fm_leadership');
-    const gameAffairsId2 = getRole('game_affairs');
-    const eventAlt = data.targetType === 'Role' && (data.targetId === leadershipRoleId2 || data.targetId === gameAffairsId2);
-    const ch = pingChannel('event.created', { alt: eventAlt, ignoreEnabled: true });
+  const uuid = randomUUID().replace(/-/g, '').slice(0, 12);
+  const targetTag = targetType === 'Role' ? `<@&${targetId}>` : `<@${targetId}>`;
+  const readable = new Date(epochMs).toISOString();
+  // Leadership-targeted events take the confidentiality branch. The row stores
+  // the resolved channel so the bot scheduler fires it in the same place.
+  const alt = targetType === 'Role' && (targetId === getRole('fm_leadership') || targetId === getRole('game_affairs'));
+  const channel = pingChannel('event.created', { alt, ignoreEnabled: true });
 
-    run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, 'ACTIVE')",
-      [uuid, actor.id, ch, data.message, data.epochMs.toString(), readable, targetTag]);
-    logAudit(actor.id, actor.name, 'CREATE', 'reminder', null, data.message.substring(0,50), `Scheduled for ${readable}`);
+  run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, 'ACTIVE')",
+    [uuid, actor.id, channel, message, String(epochMs), readable, targetTag]);
+  logAudit(actor.id, actor.name, 'CREATE', 'reminder', uuid, message.slice(0, 80), `Scheduled for ${readable} · ${targetType} ${targetId}`);
 
-    // Announce
-    const epoch = Math.floor(data.epochMs / 1000);
-    const embeds = [{ title: `📌 ${data.eventType || 'Event'} Scheduled`, description: `**Time:** <t:${epoch}:F> (<t:${epoch}:R>)\n${data.note ? `**Details:** ${data.note}` : ''}\n\n*Via Meridian Dashboard*`, color: 0x5865F2 }];
-    await sendPing('event.created', targetTag, { alt: eventAlt, embeds });
-    return { ok: true };
-  } catch (e) { return { ok: false }; }
+  const epoch = Math.floor(epochMs / 1000);
+  const embeds = [{ title: `📌 ${eventType || 'Event'} Scheduled`, description: `**Time:** <t:${epoch}:F> (<t:${epoch}:R>)\n${note ? `**Details:** ${note}` : ''}\n\n*Via Meridian Dashboard*`, color: 0x5865F2 }];
+  await sendPing('event.created', targetTag, { alt, embeds });
+  refresh();
+  return { ok: true, uuid };
 }
 
 export async function snoozeReminder(uuid) {
-  try {
-    await requireActor(1);
-    const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [uuid]);
-    if (!r) return { ok: false };
-    const newTime = parseInt(r.epoch_ms) + 3600000;
-    run("UPDATE reminders SET epoch_ms = ?, readable_time = ?, status = 'ACTIVE' WHERE uuid = ?", [newTime.toString(), new Date(newTime).toISOString(), uuid]);
-    return { ok: true };
-  } catch (e) { return { ok: false }; }
+  const actor = await requireActor(1);
+  const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [str(uuid)]);
+  if (!r) return fail('Reminder not found.');
+  if (r.author_id !== actor.id && actor.level < 2) return fail('Only the author or a team lead can snooze this event.');
+  const newTime = (parseInt(r.epoch_ms, 10) || Date.now()) + 3600000;
+  run("UPDATE reminders SET epoch_ms = ?, readable_time = ?, status = 'ACTIVE' WHERE uuid = ?", [String(newTime), new Date(newTime).toISOString(), r.uuid]);
+  logAudit(actor.id, actor.name, 'EDIT', 'reminder', r.uuid, r.message.slice(0, 80), 'Snoozed 1h');
+  refresh();
+  return { ok: true };
 }
 
 export async function deleteReminder(uuid) {
-  try {
-    const me = await requireActor(1);
-    const r = queryOne("SELECT author_id FROM reminders WHERE uuid = ?", [uuid]);
-    if (!r) return { ok: false, error: "Reminder not found" };
-    if (r.author_id !== me.id && me.level < 2) {
-      return { ok: false, error: "Only the author or L2+ can delete this reminder" };
-    }
-    run("DELETE FROM reminders WHERE uuid = ?", [uuid]);
-    logAudit(me.id, me.name, 'DELETE', 'reminder', null, uuid, 'Reminder deleted');
-    return { ok: true };
-  } catch (e) { return { ok: false }; }
+  const actor = await requireActor(1);
+  const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [str(uuid)]);
+  if (!r) return fail('Reminder not found.');
+  if (r.author_id !== actor.id && actor.level < 2) return fail('Only the author or a team lead can delete this event.');
+  run("DELETE FROM reminders WHERE uuid = ?", [r.uuid]);
+  logAudit(actor.id, actor.name, 'DELETE', 'reminder', r.uuid, r.message.slice(0, 80), 'Event deleted');
+  refresh();
+  return { ok: true };
 }
+
+// ── Pickers ───────────────────────────────────────────────────────────────────
 
 export async function getStaffList() {
   await requireActor(1);
-  return query("SELECT discord_id, display_name, team_id, team_name, rank FROM staff WHERE discord_id != '' AND discord_id != 'Unassigned_Lead_Placeholder' ORDER BY display_name");
+  return query("SELECT discord_id, display_name, team_id, team_name, rank, clearance FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY display_name");
 }
 
 export async function getRoleTargets() {
@@ -286,315 +290,207 @@ export async function getRoleTargets() {
   const leadershipId = getRole('fm_leadership');
   const leadId = getRole('fm_team_lead');
   const allFmId = getRole('fm_team_guide');
-  const teams = query("SELECT DISTINCT team_id, team_name FROM staff WHERE team_id != '' AND team_name NOT IN ('FM Leadership','FM Team Leads','Faction Management')");
+  const teams = query("SELECT team_id, team_name FROM teams WHERE team_name NOT IN ('FM Leadership','FM Team Leads','Faction Management','Game Affairs Management') ORDER BY team_name");
   return { leadershipId, leadId, allFmId, teams };
 }
 
+// ── IC Contacts ───────────────────────────────────────────────────────────────
 
-// Reassign an individually-assigned task — mirrors dashboard/actions.js reassignMyTask
-export async function reassignTask(taskUid, newTargetId, newTargetType, note) {
-  const actor = await requireActor(2);
-  const task = queryOne("SELECT description, target_id, target_type, created_by_id FROM tasks WHERE task_uid = ?", [taskUid]);
-  if (!task) return { ok: false, error: "Task not found" };
-  // No restriction — L2+ can reassign any task.
-  if (!['User', 'Role', 'Team'].includes(newTargetType)) {
-    return { ok: false, error: "Invalid target type" };
-  }
-  if (!newTargetId) return { ok: false, error: "Missing target" };
+const IC_SELECT = `SELECT c.*, f.name AS faction_name, f.archived AS faction_archived
+  FROM faction_ic_contacts c JOIN factions f ON f.id = c.faction_id`;
 
-  const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsId = getRole('game_affairs');
-
-  if (actor.level < 3) {
-    if (newTargetType === 'Role' && (newTargetId === leadershipRoleId || newTargetId === gameAffairsId)) {
-      return { ok: false, error: "L2 cannot reassign to FM Leadership or Game Affairs Management" };
-    }
-    if (newTargetType === 'User') {
-      const staff = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [newTargetId]);
-      const rankStr = (staff?.rank || '').toLowerCase();
-      if (rankStr.includes('leadership') || rankStr.includes('management') || rankStr.includes('game affairs')) {
-        return { ok: false, error: "L2 cannot reassign tasks to L3 staff" };
-      }
-    }
-  }
-
-  let targetLabel = newTargetType + ': ' + newTargetId;
-  if (newTargetType === 'User') {
-    const s = queryOne("SELECT display_name FROM staff WHERE discord_id = ?", [newTargetId]);
-    if (s?.display_name) targetLabel = 'User: ' + s.display_name;
-  } else if (newTargetType === 'Team') {
-    const t = queryOne("SELECT team_name FROM staff WHERE team_id = ? LIMIT 1", [newTargetId]);
-    if (t?.team_name) targetLabel = 'Team: ' + t.team_name;
-  } else if (newTargetType === 'Role') {
-    if (newTargetId === leadershipRoleId) targetLabel = 'Role: FM Leadership';
-    else if (newTargetId === gameAffairsId) targetLabel = 'Role: Game Affairs Management';
-  }
-
-  let _newNotifyCreator = 0;
-  if (task.created_by_id) {
-    const _creatorStaff = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [task.created_by_id]);
-    const _creatorRank = (_creatorStaff?.rank || '').toLowerCase();
-    const _creatorIsLeadership = _creatorRank.includes('leadership') || _creatorRank.includes('management') || _creatorRank.includes('game affairs');
-    const _newRoutesToLeadership = newTargetType === 'Role' && (newTargetId === leadershipRoleId || newTargetId === gameAffairsId);
-    _newNotifyCreator = (!_creatorIsLeadership && _newRoutesToLeadership) ? 1 : 0;
-  }
-  run("UPDATE tasks SET target_id = ?, target_type = ?, claimed_by = 'None', notify_creator = ? WHERE task_uid = ?",
-    [newTargetId, newTargetType, _newNotifyCreator, taskUid]);
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('REASSIGNED', ?, ?, ?, ?, ?)",
-    [actor.name, taskUid, task.description || '', targetLabel, new Date().toISOString()]);
-  logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, 'Reassigned to ' + targetLabel);
-
-  const routeToLeadership = newTargetType === 'Role' && (newTargetId === leadershipRoleId || newTargetId === gameAffairsId);
-  const tag = newTargetType === 'Role' ? '<@&' + newTargetId + '>' : (newTargetType === 'User' ? '<@' + newTargetId + '>' : '@' + targetLabel);
-  await sendPing('task.reassigned', '📋 **TASK REASSIGNED** | ' + tag + '\n**Reassigned By:** ' + actor.name + '\n**Task:** ' + (task.description || '').substring(0, 200), { alt: routeToLeadership });
-
-  if (_newNotifyCreator === 1 && task.created_by_id && task.created_by_id !== actor.id) {
-    await sendPing('task.reassigned.creator', '🔁 <@' + task.created_by_id + '> — your task "' + (task.description || '').substring(0, 200) + '" was reassigned by **' + actor.name + '** to ' + targetLabel + '.');
-  }
-
-  return { ok: true };
+function teamFactionIds(teamId) {
+  return query(`SELECT DISTINCT f.id FROM factions f JOIN staff s ON s.discord_id = f.lead_discord_id WHERE s.team_id = ? AND f.archived = 0`, [teamId]).map(r => r.id);
 }
 
-export async function unclaimTask(taskUid, note) {
-  const actor = await requireActor(1);
-  const task = queryOne("SELECT description, claimed_by, created_by_id, notify_creator FROM tasks WHERE task_uid = ?", [taskUid]);
-  if (!task) return { ok: false, error: "Task not found" };
-  if (task.claimed_by === 'None' || !task.claimed_by) return { ok: false, error: "Task is not claimed" };
-  if (task.claimed_by !== actor.id && actor.level < 3) {
-    return { ok: false, error: "Only the claimer or L3 can unclaim a task" };
-  }
-  run("UPDATE tasks SET claimed_by = 'None' WHERE task_uid = ?", [taskUid]);
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('UNCLAIMED', ?, ?, ?, 'Unclaimed', ?)",
-    [actor.name, taskUid, task.description || '', new Date().toISOString()]);
-  logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, 'Unclaimed');
-  if (task.notify_creator === 1 && task.created_by_id && task.created_by_id !== actor.id) {
-    await sendPing('task.unclaimed.creator', '↩️ <@' + task.created_by_id + '> — your task "' + (task.description || '').substring(0, 200) + '" was unclaimed by **' + actor.name + '** and is available again.' + (note ? '\n**Note:** ' + note : ''));
-  }
-  return { ok: true };
+function contactsForFactions(ids, { includeCompleted = false, limit = 0 } = {}) {
+  if (!ids.length) return [];
+  const ph = ids.map(() => '?').join(',');
+  return query(`${IC_SELECT} WHERE c.faction_id IN (${ph})${includeCompleted ? '' : " AND c.status != 'completed'"} ORDER BY c.submitted_at DESC${limit ? ` LIMIT ${limit}` : ''}`, ids);
 }
 
-export async function requestTaskInfo(taskUid, question) {
-  const actor = await requireActor(1);
-  if (!question || !question.trim()) return { ok: false, error: "Question is required" };
-  const task = queryOne("SELECT description, target_type, target_id, created_by_id FROM tasks WHERE task_uid = ?", [taskUid]);
-  if (!task) return { ok: false, error: "Task not found" };
-  if (!task.created_by_id) return { ok: false, error: "Task has no recorded creator" };
-  if (task.created_by_id === actor.id) return { ok: false, error: "You are the creator of this task" };
-
-  const _alt_ri = _creatorRoutesAlt(task.created_by_id, task.target_type, task.target_id);
-  const _now_ri = new Date().toISOString();
-  run("INSERT INTO task_questions (task_uid, asked_by_id, asked_by_name, question, asked_at) VALUES (?, ?, ?, ?, ?)",
-    [taskUid, actor.id, actor.name, question.trim(), _now_ri]);
-  const _replyUrl_ri = 'https://ecrpfm.com/fm/tasks/' + taskUid;
-  await sendPing('task.question.asked', '❓ <@' + task.created_by_id + '> — **' + actor.name + '** has a question about your task "' + (task.description || '').substring(0, 200) + '":\n> ' + question.trim().replace(/\n/g, '\n> ') + '\n\n👉 Reply on the dashboard: ' + _replyUrl_ri, { alt: _alt_ri });
-
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('INFO_REQUEST', ?, ?, ?, ?, ?)",
-    [actor.name, taskUid, (task.description || '').substring(0, 200), question.substring(0, 300), new Date().toISOString()]);
-  logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, 'Requested info: ' + question.substring(0, 100));
-
-  return { ok: true };
-}
-
-export async function getTaskByUid(taskUid) {
-  await requireActor(1);
-  const task = queryOne("SELECT * FROM tasks WHERE task_uid = ?", [taskUid]);
-  if (!task) return null;
-  if (task.claimed_by && task.claimed_by !== 'None') {
-    const claimer = queryOne("SELECT display_name FROM staff WHERE discord_id = ?", [task.claimed_by]);
-    task.claimerName = claimer?.display_name || task.claimed_by;
-  } else { task.claimerName = ''; }
-  if (task.target_type === 'User') {
-    const u = queryOne("SELECT display_name FROM staff WHERE discord_id = ?", [task.target_id]);
-    task.targetLabel = u?.display_name || task.target_id;
-  } else if (task.target_type === 'Team') {
-    const t = queryOne("SELECT team_name FROM staff WHERE team_id = ? LIMIT 1", [task.target_id]);
-    task.targetLabel = t?.team_name || task.target_id;
-  } else if (task.target_type === 'Role') {
-    const leadershipId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-    if (task.target_id === leadershipId) task.targetLabel = 'FM Leadership';
-    else if (task.target_id === getRole('game_affairs')) task.targetLabel = 'Game Affairs Management';
-    else task.targetLabel = task.target_id;
-  } else { task.targetLabel = task.target_id; }
-  return task;
-}
-
-export async function getTaskQuestions(taskUid) {
-  await requireActor(1);
-  return query("SELECT * FROM task_questions WHERE task_uid = ? ORDER BY asked_at ASC", [taskUid]);
-}
-
-export async function answerTaskQuestion(questionId, answer) {
-  const actor = await requireActor(1);
-  if (!answer || !answer.trim()) return { ok: false, error: "Answer is required" };
-  const q = queryOne("SELECT * FROM task_questions WHERE id = ?", [questionId]);
-  if (!q) return { ok: false, error: "Question not found" };
-  if (q.answer) return { ok: false, error: "Question is already answered" };
-  const task = queryOne("SELECT description, target_type, target_id, created_by_id FROM tasks WHERE task_uid = ?", [q.task_uid]);
-  if (!task) return { ok: false, error: "Task not found" };
-  if (task.created_by_id !== actor.id) {
-    return { ok: false, error: "Only the task creator can answer questions" };
-  }
-  const now = new Date().toISOString();
-  run("UPDATE task_questions SET answer = ?, answered_by_id = ?, answered_by_name = ?, answered_at = ? WHERE id = ?",
-    [answer.trim(), actor.id, actor.name, now, questionId]);
-  if (q.asked_by_id) {
-    const alt = _creatorRoutesAlt(q.asked_by_id, task.target_type, task.target_id);
-    const replyUrl = 'https://ecrpfm.com/fm/tasks/' + q.task_uid;
-    await sendPing('task.question.answered', '💬 <@' + q.asked_by_id + '> — **' + actor.name + '** answered your question on task "' + (task.description || '').substring(0, 200) + '":\n> ' + answer.trim().replace(/\n/g, '\n> ') + '\n\n📋 ' + replyUrl, { alt });
-  }
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('INFO_ANSWER', ?, ?, ?, ?, ?)",
-    [actor.name, q.task_uid, (task.description || '').substring(0, 200), answer.substring(0, 300), now]);
-  logAudit(actor.id, actor.name, 'EDIT', 'task', null, q.task_uid, 'Answered: ' + answer.substring(0, 100));
-  return { ok: true };
-}
-
-
-// ── IC Contacts ──────────────────────────────────────────────────────────────
-
+/** Open IC contacts for the factions led by a team. Reads are global. */
 export async function getTeamIcContacts(teamId) {
   await requireActor(1);
-  const staffInTeam = query("SELECT discord_id FROM staff WHERE team_id = ?", [teamId]);
-  const factionIds = query(`
-    SELECT DISTINCT f.id FROM factions f
-    JOIN staff s ON s.discord_id = f.lead_discord_id
-    WHERE s.team_id = ? AND f.archived = 0
-  `, [teamId]).map(r => r.id);
-  if (factionIds.length === 0) return [];
-  const placeholders = factionIds.map(() => '?').join(',');
-  return query(
-    `SELECT * FROM faction_ic_contacts WHERE faction_id IN (${placeholders}) AND status != 'completed' ORDER BY submitted_at DESC`,
-    factionIds
-  );
+  const tid = str(teamId);
+  return tid ? contactsForFactions(teamFactionIds(tid)) : [];
 }
 
 export async function getTeamIcContactsAll(teamId) {
   await requireActor(1);
-  const factionIds = query(`
-    SELECT DISTINCT f.id FROM factions f
-    JOIN staff s ON s.discord_id = f.lead_discord_id
-    WHERE s.team_id = ? AND f.archived = 0
-  `, [teamId]).map(r => r.id);
-  if (factionIds.length === 0) return [];
-  const placeholders = factionIds.map(() => '?').join(',');
-  return query(
-    `SELECT * FROM faction_ic_contacts WHERE faction_id IN (${placeholders}) ORDER BY submitted_at DESC LIMIT 50`,
-    factionIds
-  );
+  const tid = str(teamId);
+  return tid ? contactsForFactions(teamFactionIds(tid), { includeCompleted: true, limit: 50 }) : [];
 }
 
-export async function assignIcContact(contactId, assignToId, assignToName) {
+/** Every IC contact (L3), or the actor's team's contacts (L2), with the owning team. */
+export async function getAllIcContacts() {
+  const actor = await requireActor(2);
+  const rows = query(`SELECT c.*, f.name AS faction_name, f.archived AS faction_archived, t.team_name, t.team_id
+    FROM faction_ic_contacts c
+    JOIN factions f ON f.id = c.faction_id
+    LEFT JOIN staff s ON s.discord_id = f.lead_discord_id
+    LEFT JOIN teams t ON t.team_id = s.team_id
+    ORDER BY c.submitted_at DESC`);
+  const scope = writableFactionIds(actor);
+  return scope === null ? rows : rows.filter(r => scope.has(r.faction_id));
+}
+
+function loadContact(contactId) {
+  const cid = toInt(contactId, { min: 1 });
+  const contact = cid ? queryOne(`${IC_SELECT} WHERE c.id = ?`, [cid]) : null;
+  return contact ? { contact } : { error: 'Contact not found.' };
+}
+
+const contactLabel = (c) => `${c.faction_name} · ${c.sender_name}`;
+
+async function postToThread(threadId, content) {
+  if (!threadId) return false;
+  return sendDiscord(threadId, content, undefined, undefined, { allowedMentions: { parse: [] } });
+}
+
+export async function assignIcContact(contactId, assignToId) {
   const actor = await requireActor(1);
-  const contact = queryOne("SELECT thread_id FROM faction_ic_contacts WHERE id=?", [contactId]);
-  run("UPDATE faction_ic_contacts SET assigned_to=?, assigned_name=? WHERE id=?",
-    [assignToId, assignToName, contactId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', null, contactId, `Assigned to ${assignToName}`);
-  await postToThread(contact?.thread_id, `**Assigned** to ${assignToName} by ${actor.name}`);
+  const { contact, error } = loadContact(contactId);
+  if (error) return fail(error);
+  const scope = assertFactionWrite(actor, contact.faction_id);
+  if (scope.error) return fail(scope.error);
+  const assignee = queryOne("SELECT discord_id, display_name FROM staff WHERE discord_id = ? AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1", [str(assignToId)]);
+  if (!assignee) return fail('That person is not on the staff roster.');
+  run("UPDATE faction_ic_contacts SET assigned_to = ?, assigned_name = ? WHERE id = ?", [assignee.discord_id, assignee.display_name, contact.id]);
+  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', contact.id, contactLabel(contact), `Assigned to ${assignee.display_name}`);
+  await postToThread(contact.thread_id, `**Assigned** to ${assignee.display_name} by ${actor.name}`);
+  refresh();
   return { ok: true };
 }
 
-const STATUS_LABELS = {
-  pending_discussion: 'Pending Discussion',
-  pending_roleplay:   'Pending Roleplay',
-};
+const STATUS_LABELS = { pending_discussion: 'Pending Discussion', pending_roleplay: 'Pending Roleplay' };
 
 export async function setIcContactStatus(contactId, status) {
   const actor = await requireActor(1);
-  if (!STATUS_LABELS[status]) return { ok: false, error: 'Invalid status' };
-  const contact = queryOne("SELECT thread_id FROM faction_ic_contacts WHERE id=?", [contactId]);
-  run("UPDATE faction_ic_contacts SET status=? WHERE id=?", [status, contactId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', null, contactId, `Status → ${status}`);
-  await postToThread(contact?.thread_id, `**Status updated** to ${STATUS_LABELS[status]} by ${actor.name}`);
-  return { ok: true };
-}
-
-async function postToThread(threadId, content) {
-  const token = process.env.DISCORD_BOT_TOKEN;
-  if (!token || !threadId) return;
-  try {
-    await fetch(`https://discord.com/api/v10/channels/${threadId}/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    });
-  } catch {}
-}
-
-export async function stageRoleplay(contactId, rpData) {
-  const actor = await requireActor(2);
-  const contact = queryOne(`
-    SELECT c.*, f.name as faction_name
-    FROM faction_ic_contacts c
-    JOIN factions f ON f.id = c.faction_id
-    WHERE c.id = ?
-  `, [contactId]);
-  if (!contact) return { ok: false, error: 'Not found' };
-
-  // Create the RP change request through the existing cycle
-  const { requestRPChange } = await import('../factions/actions.js');
-  const rpResult = await requestRPChange({
-    faction:  contact.faction_name,
-    type:     rpData.type,
-    turf:     rpData.turf     || 'N/A',
-    oldValue: rpData.oldValue || 'N/A',
-    newValue: rpData.newValue,
-  }, actor);
-  if (!rpResult?.ok) return { ok: false, error: 'Failed to create RP change request' };
-
-  // Advance IC contact to pending_roleplay
-  run("UPDATE faction_ic_contacts SET status='pending_roleplay' WHERE id=?", [contactId]);
-
-  // Notify in thread
-  let threadMsg = `**RP Staged** by ${actor.name}\n**Type:** ${rpData.type}`;
-  if (rpData.type === 'NPC') threadMsg += `\n**Turf:** ${rpData.turf}\n**Current:** ${rpData.oldValue}\n**New:** ${rpData.newValue}`;
-  else if (rpData.type === 'HQ') threadMsg += `\n**Old:** ${rpData.oldValue}\n**New:** ${rpData.newValue}`;
-  else threadMsg += `\n**Details:** ${rpData.newValue}`;
-  threadMsg += `\n\nAn RP change request has been submitted and is pending Leadership approval.`;
-  await postToThread(contact.thread_id, threadMsg);
-
-  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', null, contactId, `RP staged — ${rpData.type}`);
+  const s = oneOf(str(status), Object.keys(STATUS_LABELS));
+  if (!s) return fail('Invalid status.');
+  const { contact, error } = loadContact(contactId);
+  if (error) return fail(error);
+  const scope = assertFactionWrite(actor, contact.faction_id);
+  if (scope.error) return fail(scope.error);
+  if (contact.status === s) return { ok: true };
+  run("UPDATE faction_ic_contacts SET status = ? WHERE id = ?", [s, contact.id]);
+  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', contact.id, contactLabel(contact), `Status ${contact.status} → ${s}`);
+  await postToThread(contact.thread_id, `**Status updated** to ${STATUS_LABELS[s]} by ${actor.name}`);
+  refresh();
   return { ok: true };
 }
 
 export async function completeIcContact(contactId) {
   const actor = await requireActor(1);
-  const contact = queryOne("SELECT * FROM faction_ic_contacts WHERE id=?", [contactId]);
-  if (!contact) return { ok: false, error: 'Not found' };
-
-  run("UPDATE faction_ic_contacts SET status='completed' WHERE id=?", [contactId]);
-
-  await postToThread(contact.thread_id,
-    `**Contact Completed** by ${actor.name} — this IC contact has been resolved and archived.`
-  );
-
-  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', null, contactId, 'Completed and archived');
+  const { contact, error } = loadContact(contactId);
+  if (error) return fail(error);
+  const scope = assertFactionWrite(actor, contact.faction_id);
+  if (scope.error) return fail(scope.error);
+  if (contact.status === 'completed') return fail('This contact is already completed.');
+  run("UPDATE faction_ic_contacts SET status = 'completed' WHERE id = ?", [contact.id]);
+  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', contact.id, contactLabel(contact), 'Completed and archived');
+  await postToThread(contact.thread_id, `**Contact Completed** by ${actor.name} — this IC contact has been resolved and archived.`);
+  refresh();
   return { ok: true };
 }
 
-export async function getAllIcContacts() {
-  await requireActor(3);
-  const contacts = query(`
-    SELECT c.*, t.team_name, t.team_id
-    FROM faction_ic_contacts c
-    LEFT JOIN factions f ON f.id = c.faction_id
-    LEFT JOIN staff s ON s.discord_id = f.lead_discord_id
-    LEFT JOIN teams t ON t.team_id = s.team_id
-    ORDER BY c.submitted_at DESC
-  `);
-  return contacts;
+/**
+ * The bridge: stage an RP change from an IC contact. Validates the request,
+ * records the NPC id and contact id on the pending_executions row, refuses a
+ * duplicate (a second PENDING request for the same faction + type + target),
+ * advances the contact to pending_roleplay and pings rp.requested with the
+ * Approve / Deny buttons. `rpData`: { type, npcId?, turf?, oldValue?, newValue }.
+ */
+export async function stageRoleplay(contactId, rpData) {
+  const actor = await requireActor(2);
+  const { contact, error } = loadContact(contactId);
+  if (error) return fail(error);
+  const scope = assertFactionWrite(actor, contact.faction_id);
+  if (scope.error) return fail(scope.error);
+  if (contact.status === 'completed') return fail('This contact is completed; reopen it before staging an RP change.');
+
+  const d = rpData && typeof rpData === 'object' ? rpData : {};
+  const type = oneOf(str(d.type), RP_TYPES);
+  if (!type) return fail(`RP change type must be one of ${RP_TYPES.join(', ')}.`);
+  const newValue = str(d.newValue, { max: 500 });
+  if (!newValue) return fail(type === 'Other' ? 'Describe the change.' : 'A new value is required.');
+  let turf = str(d.turf, { max: 120 }) || 'N/A';
+  let oldValue = str(d.oldValue, { max: 500 }) || 'N/A';
+  let npcId = null;
+
+  if (type === 'NPC') {
+    const id = toInt(d.npcId, { min: 1 });
+    let npc = id ? queryOne("SELECT id, name, npc_type, turf FROM npcs WHERE id = ?", [id]) : null;
+    if (id && !npc) return fail('That NPC no longer exists.');
+    if (!npc) {
+      if (turf === 'N/A' || oldValue === 'N/A') return fail('Pick the NPC to change.');
+      const rows = query("SELECT id, name, npc_type, turf FROM npcs WHERE turf = ? AND npc_type = ? ORDER BY id", [turf, oldValue]);
+      if (!rows.length) return fail('No NPC of that type on that turf.');
+      if (rows.length > 1) return fail('More than one NPC matches that turf and type; pick the NPC by name.');
+      npc = rows[0];
+    }
+    npcId = npc.id; turf = npc.turf; oldValue = npc.npc_type;      // server-side truth, not the form's copy
+    if (newValue === oldValue) return fail('The new NPC type is the same as the current one.');
+  } else if (type === 'HQ') {
+    if (oldValue === 'N/A') return fail('Pick the current HQ address.');
+    if (newValue === oldValue) return fail('The new address is the same as the current one.');
+  } else if (type === 'TURF') {
+    if (turf === 'N/A') return fail('Name the turf.');
+  }
+
+  // One open request per faction + type + target (the NPC, the HQ being moved, the turf, or the same details).
+  const [dupWhere, dupArgs] = type === 'NPC' ? ['(pe.npc_id = ? OR (pe.turf = ? AND pe.old_value = ?))', [npcId, turf, oldValue]]
+    : type === 'HQ' ? ['pe.old_value = ?', [oldValue]]
+    : type === 'TURF' ? ['pe.turf = ?', [turf]]
+    : ['pe.new_value = ?', [newValue]];
+  const dup = queryOne(`SELECT pe.id FROM pending_executions pe WHERE pe.faction_id = ? AND pe.execution_type = ? AND pe.status = 'PENDING' AND ${dupWhere}`, [contact.faction_id, type, ...dupArgs]);
+  if (dup) return fail(`An RP change request for this is already pending approval (#${dup.id}).`);
+
+  const execId = transaction(() => {
+    const ins = run("INSERT INTO pending_executions (date, faction_id, execution_type, turf, old_value, new_value, requested_by, requester_id, status, npc_id, contact_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)",
+      [todayIso(), contact.faction_id, type, turf, oldValue, newValue, actor.name, actor.id, npcId, contact.id]);
+    const id = Number(ins.lastInsertRowid);
+    run("UPDATE faction_ic_contacts SET status = 'pending_roleplay', rp_change_id = ? WHERE id = ?", [id, contact.id]);
+    return id;
+  });
+
+  logAudit(actor.id, actor.name, 'CREATE', 'rp_change', execId, contact.faction_name, `${type}: ${oldValue} → ${newValue}${npcId ? ` (npc #${npcId})` : ''} · from IC contact #${contact.id}`);
+  logAudit(actor.id, actor.name, 'EDIT', 'ic_contact', contact.id, contactLabel(contact), `RP staged — ${type} (request #${execId})`);
+
+  let msg = `🔔 **RP Change Request**\n**Faction:** ${contact.faction_name}\n**Type:** ${type}\n**Requested By:** ${actor.name}\n**From IC contact:** ${contact.sender_name}`;
+  if (type === 'NPC') msg += `\n**Turf:** ${turf}\n**Current:** ${oldValue}\n**New:** ${newValue}`;
+  else if (type === 'HQ') msg += `\n**Old Address:** ${oldValue}\n**New Address:** ${newValue}`;
+  else if (type === 'TURF') msg += `\n**Turf:** ${turf}\n**Change:** ${newValue}`;
+  else msg += `\n**Details:** ${newValue}`;
+  msg += `\n📋 ${urls.approvals()}`;
+  await sendPing('rp.requested', msg, { components: rpComponents(execId, 'pending') });
+
+  let threadMsg = `**RP Staged** by ${actor.name}\n**Type:** ${type}`;
+  if (type === 'NPC') threadMsg += `\n**Turf:** ${turf}\n**Current:** ${oldValue}\n**New:** ${newValue}`;
+  else if (type === 'HQ') threadMsg += `\n**Old:** ${oldValue}\n**New:** ${newValue}`;
+  else threadMsg += `\n**Details:** ${newValue}`;
+  threadMsg += `\n\nRP change request #${execId} has been submitted and is pending Leadership approval.`;
+  await postToThread(contact.thread_id, threadMsg);
+  refresh();
+  return { ok: true, id: execId };
 }
 
+/** Last 50 messages of an IC-contact thread. Only threads that belong to a contact are readable. */
 export async function getThreadMessages(threadId) {
-  await requireActor(3);
-  if (!threadId) return [];
+  await requireActor(1);
+  const tid = str(threadId);
+  if (!tid || !queryOne("SELECT 1 FROM faction_ic_contacts WHERE thread_id = ?", [tid])) return [];
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) return [];
   try {
-    const res = await fetch(`https://discord.com/api/v10/channels/${threadId}/messages?limit=50`, {
+    const res = await fetch(`https://discord.com/api/v10/channels/${tid}/messages?limit=50`, {
       headers: { Authorization: `Bot ${token}` },
       cache: 'no-store',
     });
     if (!res.ok) return [];
     const msgs = await res.json();
+    if (!Array.isArray(msgs)) return [];
     return msgs.reverse().map(m => ({
       id: m.id,
       content: m.content,
@@ -605,13 +501,22 @@ export async function getThreadMessages(threadId) {
   } catch { return []; }
 }
 
+/**
+ * Form data for RpChangeForm. NPCs are scoped to the faction where the
+ * registry allows it — an NPC's turf names who holds it, so NPCs whose turf is
+ * the faction (or one of its aliases) come first; when none match, every
+ * claimable NPC is offered and `scoped` is false. Properties are the faction's.
+ */
 export async function getIcContactFormData(factionId) {
   await requireActor(1);
-  const npcs = query("SELECT id, name, npc_type, turf FROM npcs ORDER BY turf, npc_type, name");
-  const npcTypes = [...new Set(npcs.map(n => n.npc_type))].sort();
-  const properties = query(
-    "SELECT id, address, is_hq FROM properties WHERE faction_id = ? ORDER BY is_hq DESC, address",
-    [factionId]
-  );
-  return { npcs, npcTypes, properties };
+  const r = resolveFaction(factionId, { allowArchived: true });
+  if (r.error) return { npcs: [], npcTypes: [], properties: [], scoped: false, error: r.error };
+  const f = r.faction;
+  const names = new Set([f.name, ...String(f.aliases || '').split(',')].map(s => s.trim().toLowerCase()).filter(Boolean));
+  const all = query("SELECT id, name, npc_type, turf, claimable FROM npcs ORDER BY turf, npc_type, name");
+  const npcTypes = [...new Set(all.map(n => n.npc_type).filter(Boolean))].sort();
+  const mine = all.filter(n => names.has(String(n.turf || '').toLowerCase()));
+  const npcs = mine.length ? mine : all.filter(n => n.claimable !== 0 && n.turf !== 'Neutral');
+  const properties = query("SELECT id, address, is_hq, property_type FROM properties WHERE faction_id = ? AND confiscated = 0 ORDER BY is_hq DESC, address", [f.id]);
+  return { npcs, npcTypes, properties, scoped: mine.length > 0 };
 }

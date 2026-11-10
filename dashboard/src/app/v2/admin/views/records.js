@@ -2,23 +2,82 @@
 // Admin › Records: Audit Log, Archive, Server Logs (Leadership), Conversations.
 // Split out of admin/page.js — content unchanged.
 import { useEffect, useMemo, useState } from "react";
-import { getAuditLog, deleteAuditLogEntry, getArchivedFactions, restoreFaction, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../../fm/operations/actions.js";
+import { getAuditLog, deleteAuditLogEntry, getSyncStatus, getArchivedFactions, restoreFaction, getConversationStats, generateConversationSummary, getMemberSuggestions, getAvailableChannels } from "../../../fm/operations/actions.js";
 import { isOwner as ownerId } from "../../../../lib/constants.js";
+
+// Run an action; `{ok:false}` or a throw becomes an alert instead of a silent refresh.
+async function act(fn) {
+  try {
+    const r = await fn();
+    if (r && r.ok === false) { window.alert(r.error || "Action failed."); return false; }
+    return true;
+  } catch (e) { window.alert(e?.message || "Action failed."); return false; }
+}
+
+/* ── Background-job health (sync_status, written by bot/lib/syncStatus.js) ──
+   A job is judged against its own cadence: no success in three times the
+   interval it claims means it has stopped, whether or not it reported an
+   error. A silent stall is the failure journald cannot show you. */
+function jobState(j) {
+  if (!j.last_ok_at) return { tone: "var(--rose)", text: j.last_error ? "failing, never succeeded" : "never run" };
+  const okAgo = (Date.now() - new Date(j.last_ok_at.replace(" ", "T") + (j.last_ok_at.endsWith("Z") ? "" : "Z")).getTime()) / 60000;
+  if (j.consecutive_failures > 0) return { tone: "var(--rose)", text: `${j.consecutive_failures} failure${j.consecutive_failures === 1 ? "" : "s"} in a row` };
+  if (j.expected_every_minutes > 0 && okAgo > j.expected_every_minutes * 3) return { tone: "var(--amber)", text: `nothing for ${okAgo < 120 ? Math.round(okAgo) + "m" : Math.round(okAgo / 60) + "h"}` };
+  return { tone: "var(--good)", text: okAgo < 90 ? `ok ${Math.max(0, Math.round(okAgo))}m ago` : `ok ${Math.round(okAgo / 60)}h ago` };
+}
+function fmtJobTs(ts) { return ts ? String(ts).replace("T", " ").slice(0, 16) : "—"; }
+
+function JobHealth({ jobs }) {
+  if (!jobs?.length) return null;
+  return (
+    <div className="card">
+      <div className="hd"><div className="t">Background jobs</div><div className="meta">last run · last ok · last error</div></div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(250px,1fr))", gap: "8px 18px", paddingTop: 6 }}>
+        {jobs.map(j => {
+          const s = jobState(j);
+          return (
+            <div key={j.job} style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}>
+              <span style={{ color: s.tone, fontSize: 11 }}>●</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{j.label || j.job} <span style={{ color: s.tone, fontSize: 11 }}>{s.text}</span></div>
+                <div style={{ fontSize: 10.5, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>run {fmtJobTs(j.last_run_at)} · ok {fmtJobTs(j.last_ok_at)}{j.runs ? ` · ${j.runs} runs` : ""}</div>
+                <div style={{ fontSize: 10.5, color: j.last_error ? "var(--rose)" : "var(--ink-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={j.last_error || j.last_detail}>
+                  {j.last_error ? `${fmtJobTs(j.last_error_at)} — ${j.last_error}` : (j.last_detail || "—")}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 /* ── Audit Log (pruning is owner-only — an editable audit trail isn't one) ── */
 function Audit({ auth }) {
   const isOwner = ownerId(auth?.id) || ownerId(auth?._realId);
   const [rows, setRows] = useState([]);
+  const [jobs, setJobs] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
-  const load = () => getAuditLog(200).then(r => { setRows(r || []); setLoading(false); });
+  const [error, setError] = useState("");
+  const load = async () => {
+    setError("");
+    const [log, status] = await Promise.allSettled([getAuditLog(200), getSyncStatus()]);
+    if (log.status === "fulfilled") setRows(log.value || []); else setError(log.reason?.message || "Could not load the audit log.");
+    setJobs(status.status === "fulfilled" ? (status.value || []) : []);
+    setLoading(false);
+  };
   useEffect(() => { load(); }, []);
   if (loading) return <div className="empty">Loading…</div>;
-  const shown = rows.filter(l => !q || [l.actor_name, l.action, l.target_type, l.target_label, l.details].some(x => (x || "").toLowerCase().includes(q.toLowerCase())));
+  if (error) return <div className="empty" style={{ color: "var(--rose)" }}>{error}</div>;
+  // 'bot' is searchable too (source column), so "show me what the bot did" is one word.
+  const shown = rows.filter(l => !q || [l.actor_name, l.action, l.target_type, l.target_label, l.details, l.source].some(x => (x || "").toLowerCase().includes(q.toLowerCase())));
   return (
     <>
-      <input className="filter-inp" placeholder="Search actor, action, target…" value={q} onChange={e => setQ(e.target.value)} style={{ marginBottom: 14, maxWidth: 340 }} />
-      <div className="card"><div style={{ overflowX: "auto" }}>
+      <JobHealth jobs={jobs} />
+      <input className="filter-inp" placeholder="Search actor, action, target, source…" value={q} onChange={e => setQ(e.target.value)} style={{ marginBottom: 14, maxWidth: 340 }} />
+      <div className="card"><div className="hd"><div className="t">Last 200 entries</div><div className="meta">{shown.length} shown</div></div><div style={{ overflowX: "auto" }}>
         <table className="dtable" style={{ minWidth: 720 }}>
           <thead><tr><th>Timestamp</th><th>Action</th><th>Target</th><th>Details</th><th>Actor</th>{isOwner && <th></th>}</tr></thead>
           <tbody>
@@ -27,9 +86,12 @@ function Audit({ auth }) {
                 <td style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)", whiteSpace: "nowrap" }}>{l.timestamp}</td>
                 <td style={{ fontWeight: 700, whiteSpace: "nowrap", color: (l.action.includes("DELETE") || l.action === "REJECT") ? "var(--rose)" : l.action.includes("CREATE") ? "var(--good)" : "var(--accent)" }}>{l.action}</td>
                 <td style={{ color: "var(--ink-2)", whiteSpace: "nowrap" }}>{l.target_type}</td>
-                <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.target_label || l.details}</td>
-                <td style={{ color: "var(--ink-3)", whiteSpace: "nowrap" }}>{l.actor_name}</td>
-                {isOwner && <td><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this audit entry?")) { await deleteAuditLogEntry(l.id); load(); } }}>Del</button></td>}
+                <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={[l.target_label, l.details].filter(Boolean).join(" — ")}>{l.target_label || l.details}</td>
+                <td style={{ color: "var(--ink-3)", whiteSpace: "nowrap" }}>
+                  {l.actor_name}
+                  {l.source === "bot" && <span className="chip" style={{ marginLeft: 6, background: "var(--accent-bg)", color: "var(--accent)" }} title="Performed through the Discord bot">BOT</span>}
+                </td>
+                {isOwner && <td><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this audit entry?")) { if (await act(() => deleteAuditLogEntry(l.id))) load(); } }}>Del</button></td>}
               </tr>
             ))}
           </tbody>
@@ -45,13 +107,19 @@ function Archive() {
   const [q, setQ] = useState("");
   const [exp, setExp] = useState(null);
   const [busy, setBusy] = useState(false);
-  const load = async () => { setBusy(true); const r = await getArchivedFactions().catch(() => []); setRows(r || []); setBusy(false); };
+  const [error, setError] = useState("");
+  const load = async () => {
+    setBusy(true); setError("");
+    try { setRows((await getArchivedFactions()) || []); } catch (e) { setError(e?.message || "Could not load the archive."); setRows([]); }
+    setBusy(false);
+  };
   const shown = (rows || []).filter(f => !q || [f.name, f.leadName].some(x => (x || "").toLowerCase().includes(q.toLowerCase())));
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
         <input className="filter-inp" placeholder="Search archived factions…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 320 }} />
         {rows === null && <button className="btn" disabled={busy} onClick={load}>{busy ? "Loading…" : "Load archive"}</button>}
+        {error && <span style={{ fontSize: 12, color: "var(--rose)" }}>{error}</span>}
       </div>
       {rows === null ? <div className="empty">Click “Load archive” to view historical factions.</div>
         : shown.length === 0 ? <div className="empty">No archived factions.</div> : (
@@ -65,7 +133,7 @@ function Archive() {
                     <span className="desc">{f.name}</span>
                     <span className="tier lo">T{f.tier}</span>
                     <span style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>{f.memberCount}m · {f.sceneCount}sc · {f.archived_at?.slice(0, 10)}</span>
-                    <button className="act good" style={{ padding: "2px 8px" }} onClick={async e => { e.stopPropagation(); if (window.confirm(`Restore "${f.name}"?`)) { await restoreFaction(f.id); load(); } }}>Restore</button>
+                    <button className="act good" style={{ padding: "2px 8px" }} onClick={async e => { e.stopPropagation(); if (window.confirm(`Restore "${f.name}"?`)) { if (await act(() => restoreFaction(f.id))) load(); } }}>Restore</button>
                     <span className="caret">▼</span>
                   </div>
                   {open && (
@@ -269,17 +337,29 @@ function KeywordAlerts() {
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [guild, setGuild] = useState("All");
-  const loadKeywords = () => fetch("/api/keywords").then(r => r.ok ? r.json() : []).then(d => { setKeywords(d); setLoadingKw(false); }).catch(() => setLoadingKw(false));
-  const loadAlerts = () => fetch("/api/keywordalerts").then(r => r.ok ? r.json() : []).then(d => { setAlerts(d); setLoadingAl(false); }).catch(() => setLoadingAl(false));
+  const [kwError, setKwError] = useState("");
+  const loadKeywords = () => fetch("/api/keywords").then(r => r.ok ? r.json() : []).then(d => { setKeywords(Array.isArray(d) ? d : []); setLoadingKw(false); }).catch(() => setLoadingKw(false));
+  const loadAlerts = () => fetch("/api/keywordalerts").then(r => r.ok ? r.json() : []).then(d => { setAlerts(Array.isArray(d) ? d : []); setLoadingAl(false); }).catch(() => setLoadingAl(false));
   useEffect(() => { loadKeywords(); loadAlerts(); }, []);
+  // The route answers 400 (empty/too short), 403 (not L3), 409 (already
+  // monitored) — all of which used to look like success here.
+  const kwCall = async (method, body) => {
+    setKwError("");
+    try {
+      const r = await fetch("/api/keywords", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setKwError(d.error || `Request failed (${r.status}).`); return false; }
+      return true;
+    } catch (e) { setKwError(e?.message || "Request failed."); return false; }
+  };
   const addKeyword = async () => {
     const phrase = newPhrase.trim();
     if (!phrase) return;
     setSaving(true);
-    await fetch("/api/keywords", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phrase }) });
-    setNewPhrase(""); setSaving(false); loadKeywords();
+    if (await kwCall("POST", { phrase })) setNewPhrase("");
+    setSaving(false); loadKeywords();
   };
-  const removeKeyword = async (id) => { await fetch("/api/keywords", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }); loadKeywords(); };
+  const removeKeyword = async (id) => { await kwCall("DELETE", { id }); loadKeywords(); };
   const guilds = useMemo(() => ["All", ...new Set(alerts.map(a => a.guild_name))].sort(), [alerts]);
   const filtered = useMemo(() => alerts.filter(a => {
     if (guild !== "All" && a.guild_name !== guild) return false;
@@ -294,6 +374,7 @@ function KeywordAlerts() {
           <input className="filter-inp" style={{ flex: 1, maxWidth: 380 }} placeholder="Add keyword or phrase…" value={newPhrase} onChange={e => setNewPhrase(e.target.value)} onKeyDown={e => e.key === "Enter" && addKeyword()} />
           <button className="btn" disabled={saving || !newPhrase.trim()} onClick={addKeyword}>{saving ? "…" : "Add"}</button>
         </div>
+        {kwError && <div className="err" style={{ marginBottom: 8 }}>{kwError}</div>}
         {loadingKw ? <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Loading…</div> : keywords.length === 0 ? <div style={{ fontSize: 12, fontStyle: "italic", color: "var(--ink-3)" }}>No keywords set. Add one above.</div> : (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {keywords.map(kw => (
@@ -343,18 +424,24 @@ function Conversations() {
   const [loading, setLoading] = useState(false);
   const [channel, setChannel] = useState("");
   const [channels, setChannels] = useState([]);
-  useEffect(() => { getAvailableChannels().then(c => setChannels(c || [])); }, []);
+  const [error, setError] = useState("");
+  useEffect(() => { getAvailableChannels().then(c => setChannels(c || [])).catch(e => setError(e?.message || "Could not load channels.")); }, []);
   const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 };
   const run = async () => {
-    setLoading(true);
-    const s = await getConversationStats(fromDate, toDate, member, channel);
-    setStats(s);
-    const sum = await generateConversationSummary(fromDate, toDate, member, channel);
-    setSummary(sum);
+    if (!fromDate || !toDate) { setError("Pick a from and to date."); return; }
+    if (fromDate > toDate) { setError("The from date is after the to date."); return; }
+    setLoading(true); setError("");
+    try {
+      const s = await getConversationStats(fromDate, toDate, member, channel);
+      setStats(s);
+      const sum = await generateConversationSummary(fromDate, toDate, member, channel);
+      setSummary(sum);
+    } catch (e) { setError(e?.message || "Could not load conversation data."); }
     setLoading(false);
   };
   return (
     <>
+      {error && <div className="err" style={{ marginBottom: 10 }}>{error}</div>}
       <div className="card">
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
           <div style={{ flex: 1, minWidth: 200, position: "relative" }}>
@@ -436,7 +523,7 @@ function Conversations() {
                   : <div style={{ fontSize: 13, color: "var(--ink-3)" }}><em>Select a member above to see their individual activity summary.</em></div>}
               </div>
               <div className="card" style={{ marginBottom: 0 }}><div className="hd"><div className="t">By channel</div></div>
-                <div className="quill-content" style={{ fontSize: 13, color: "var(--ink-1)" }} dangerouslySetInnerHTML={{ __html: summary.channelSummaries }} />
+                <div className="quill-content" style={{ fontSize: 13, color: "var(--ink-1)" }} dangerouslySetInnerHTML={{ __html: typeof summary.channelSummaries === "string" ? summary.channelSummaries : "" }} />
               </div>
             </div>
           )}

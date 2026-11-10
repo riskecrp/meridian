@@ -6,7 +6,8 @@ import { useAuth } from "../../../lib/useAuth";
 import {
   getLoreEntries, getCommandEntries, addKBEntry, editKBEntry, deleteKBEntry,
   getChangeLogs, addChangeLog, editChangeLog, deleteChangeLog,
-  getSceneLibrary,
+  getSceneLibrary, addSceneLibraryEntry, editSceneLibraryEntry, setSceneLibraryStatus, deleteSceneLibraryEntry,
+  getSceneLibraryFeedback, addSceneLibraryFeedback,
   getLoadouts, addWeapon, editWeapon, deleteWeapon,
   addAmmoCompat, removeAmmoCompat, addAttachmentCompat, removeAttachmentCompat,
   getAmmoList, getAttachmentList,
@@ -24,6 +25,32 @@ import Vehicles from "./VehicleCatalog.js";
 
 const GTAMap = dynamic(() => import("../../../lib/GTAMap"), { ssr: false, loading: () => <div style={{ height: 400, display: "grid", placeItems: "center", color: "var(--ink-3)" }}>Loading map…</div> });
 
+// Every section id the Library knows, in nav order (A–Z; Knowledge Base is the
+// landing section). `min` is the clearance a section needs; LST/ET read it too.
+const ALL_TABS = [
+  { id: "arsenal", label: "Arsenal" },
+  { id: "changelog", label: "Change Log" },
+  { id: "docs", label: "Documents" },
+  { id: "kb", label: "Knowledge Base" },
+  { id: "npcs", label: "NPC Ecosystem", min: 2 },
+  { id: "peds", label: "Peds" },
+  { id: "scenes", label: "Scene Library" },
+  { id: "scenelogs", label: "Scene Logs" },
+  { id: "vehicles", label: "Vehicle Catalog" },
+];
+// Older links and the legacy /fm route names still resolve (F31).
+const TAB_ALIASES = {
+  library: "scenes", scene: "scenes", ideas: "scenes",
+  network: "npcs", npc: "npcs", turfs: "npcs",
+  loadouts: "arsenal", weapons: "arsenal", spawner: "arsenal", spawn: "arsenal", spawns: "arsenal",
+  changes: "changelog", log: "changelog",
+  knowledge: "kb", lore: "kb",
+  documents: "docs", sop: "docs", sops: "docs",
+  ped: "peds", scenelog: "scenelogs", logs: "scenelogs",
+  vehicle: "vehicles", catalog: "vehicles", garage: "vehicles",
+};
+const SPAWN_ALIASES = ["spawner", "spawn", "spawns"];
+
 export default function V2StoryPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Story /></Suspense>;
 }
@@ -31,52 +58,57 @@ export default function V2StoryPage() {
 function V2Story() {
   const auth = useAuth();
   const level = auth?.level || 0;
-  const isET = auth?.isEventTeam;
-  const canNPC = level >= 2 || isET || auth?.isLeadStoryteller;
-  const canMgmt = level >= 3 || isET;
-  const canEditArsenal = level >= 2 || isET;
+  const isET = !!auth?.isEventTeam;
+  const isLST = !!auth?.isLeadStoryteller;
+  // Policy 3/4: Lead Storytellers read everything; Event Team reads everything
+  // and writes only scene logs, the scene library, spawn commands and the change log.
+  const canNPC = level >= 2 || isET || isLST;
+  const canMgmtRead = level >= 3 || isET;   // Management KB commands, spawn commands
+  const canSpawnWrite = level >= 3 || isET; // spawn command CRUD (ET has full rights)
+  const canL3Write = level >= 3;            // vehicles catalog, NPCs/turfs, "+ Management"
 
   // Section comes from the nav dropdown via ?tab= (no in-page tab row).
   const sp = useSearchParams();
   const [data, setData] = useState({});
   const [loaded, setLoaded] = useState({});
+  const [errs, setErrs] = useState({});
   const [busy, setBusy] = useState(false);
 
   const loaders = {
-    kb: async () => ({ lore: await getLoreEntries().catch(() => []), command: canMgmt ? await getCommandEntries().catch(() => []) : [] }),
-    changelog: () => getChangeLogs().catch(() => []),
-    scenes: () => getSceneLibrary().catch(() => []),
+    kb: async () => ({ lore: await getLoreEntries(), command: canMgmtRead ? await getCommandEntries() : [] }),
+    changelog: () => getChangeLogs(),
+    scenes: () => getSceneLibrary(),
     arsenal: async () => ({
-      loadouts: await getLoadouts().catch(() => []),
-      ammo: await getAmmoList().catch(() => []),
-      att: await getAttachmentList().catch(() => []),
-      spawns: canMgmt ? await getSpawnItems().catch(() => []) : [],
+      loadouts: await getLoadouts(),
+      ammo: await getAmmoList(),
+      att: await getAttachmentList(),
+      spawns: canMgmtRead ? await getSpawnItems() : [],
     }),
-    npcs: async () => ({ npcs: await getNPCs().catch(() => []), turfs: await getTurfs().catch(() => []) }),
+    npcs: async () => ({ npcs: await getNPCs(), turfs: await getTurfs() }),
   };
-  const ensure = async (t) => { if (loaded[t] || !loaders[t]) return; setBusy(true); const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); setLoaded(l => ({ ...l, [t]: true })); setBusy(false); };
-  const reload = async (t) => { const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); };
+  const EMPTY = { kb: { lore: [], command: [] }, changelog: [], scenes: [], arsenal: { loadouts: [], ammo: [], att: [], spawns: [] }, npcs: { npcs: [], turfs: [] } };
+  const load = async (t) => {
+    try { const r = await loaders[t](); setData(d => ({ ...d, [t]: r })); setErrs(e => ({ ...e, [t]: "" })); }
+    catch (e) { setData(d => ({ ...d, [t]: d[t] || EMPTY[t] })); setErrs(x => ({ ...x, [t]: e?.message || "Could not load this section." })); }
+  };
+  const ensure = async (t) => { if (loaded[t] || !loaders[t]) return; setBusy(true); await load(t); setLoaded(l => ({ ...l, [t]: true })); setBusy(false); };
+  const reload = (t) => load(t);
 
-  // Same order as the Library nav dropdown (A–Z); Knowledge Base stays the
-  // landing section.
-  const TABS = [
-    { id: "arsenal", label: "Arsenal" },
-    { id: "changelog", label: "Change Log" },
-    { id: "docs", label: "Documents" },
-    { id: "kb", label: "Knowledge Base" },
-    ...(canNPC ? [{ id: "npcs", label: "NPC Ecosystem" }] : []),
-    { id: "peds", label: "Peds" },
-    { id: "scenes", label: "Scene Library" },
-    { id: "scenelogs", label: "Scene Logs" },
-    { id: "vehicles", label: "Vehicle Catalog" },
-  ];
-  const tabParam = sp.get("tab");
-  const tab = TABS.some(t => t.id === tabParam) ? tabParam : "kb";
+  const TABS = ALL_TABS.filter(t => !t.min || (t.id === "npcs" ? canNPC : level >= t.min));
+  const tabParam = (sp.get("tab") || "").trim().toLowerCase();
+  const resolved = TAB_ALIASES[tabParam] || tabParam;
+  const known = ALL_TABS.find(t => t.id === resolved);
+  const allowed = TABS.some(t => t.id === resolved);
+  const tab = allowed ? resolved : "kb";
+  let notice = "";
+  if (tabParam && !known) notice = `There is no Library section called "${tabParam}" — showing the Knowledge Base.`;
+  else if (known && !allowed) notice = `${known.label} needs L${known.min}+ clearance — showing the Knowledge Base.`;
+  const arsenalSub = SPAWN_ALIASES.includes(tabParam) && canMgmtRead ? "spawn" : "loadouts";
   // ⌘K / "+ New" hand-offs: ?q= seeds a section's search, ?new=1 opens the scene form.
   const initialQ = sp.get("q") || "";
   const openNew = sp.get("new") === "1";
   const router = useRouter();
-  useEffect(() => { if (openNew) router.replace(`/v2/story?tab=${tab}`, { scroll: false }); }, [openNew]);
+  useEffect(() => { if (openNew) router.replace(`/v2/story?tab=${tab}${initialQ ? `&q=${encodeURIComponent(initialQ)}` : ""}`, { scroll: false }); }, [openNew]);
 
   useEffect(() => { if (!auth?.loading && auth?.id) ensure(tab); }, [tab, auth?.id, auth?.loading]);
 
@@ -94,24 +126,26 @@ function V2Story() {
           <div className="sub">Switch sections from the Library menu in the top bar.</div>
         </div>
       </div>
+      {notice && <div className="empty" style={{ marginBottom: 12 }}>{notice}</div>}
       {busy && !loaded[tab] && <div className="empty">Loading…</div>}
+      {errs[tab] && <div className="err" style={{ marginBottom: 12 }}>{errs[tab]}</div>}
 
       {tab === "docs" && <DocumentsView auth={auth} />}
       {tab === "peds" && <Peds auth={auth} initialQ={initialQ} />}
-      {tab === "vehicles" && <Vehicles canEdit={canMgmt} />}
-      {tab === "kb" && loaded.kb && <KB auth={auth} canMgmt={canMgmt} lore={data.kb.lore} cmds={data.kb.command} reload={() => reload("kb")} initialQ={initialQ} />}
+      {tab === "vehicles" && <Vehicles canEdit={canL3Write} />}
+      {tab === "kb" && loaded.kb && <KB auth={auth} canMgmt={canMgmtRead} canAddMgmt={canL3Write} lore={data.kb.lore} cmds={data.kb.command} reload={() => reload("kb")} initialQ={initialQ} />}
       {tab === "changelog" && loaded.changelog && <ChangeLog auth={auth} rows={data.changelog} reload={() => reload("changelog")} />}
-      {tab === "scenes" && loaded.scenes && <Scenes rows={data.scenes} />}
+      {tab === "scenes" && loaded.scenes && <Scenes auth={auth} rows={data.scenes} reload={() => reload("scenes")} initialQ={initialQ} />}
       {tab === "scenelogs" && <SceneLogs auth={auth} openNew={openNew} />}
-      {tab === "arsenal" && loaded.arsenal && <Arsenal canEdit={canEditArsenal} canMgmt={canMgmt} d={data.arsenal} reload={() => reload("arsenal")} />}
+      {tab === "arsenal" && loaded.arsenal && <Arsenal canEdit={level >= 2} canMgmt={canMgmtRead} canSpawnWrite={canSpawnWrite} d={data.arsenal} reload={() => reload("arsenal")} initialSub={arsenalSub} />}
       {tab === "npcs" && loaded.npcs && <NPCs auth={auth} npcs={data.npcs.npcs} turfs={data.npcs.turfs} reload={() => reload("npcs")} initialQ={initialQ} />}
     </div>
   );
 }
 
 /* ── Knowledge Base ── */
-function KB({ auth, canMgmt, lore, cmds, reload, initialQ = "" }) {
-  const canEdit = auth.level >= 2 || auth.isEventTeam;
+function KB({ auth, canMgmt, canAddMgmt, lore, cmds, reload, initialQ = "" }) {
+  const canEdit = auth.level >= 2; // policy 4: Event Team is read-only here
   const [copied, copy] = useCopy();
   const [search, setSearch] = useState(initialQ);
   useEffect(() => { if (initialQ) { setSearch(initialQ); setFilter(null); } }, [initialQ]);
@@ -138,7 +172,7 @@ function KB({ auth, canMgmt, lore, cmds, reload, initialQ = "" }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <input className="filter-inp" style={{ flex: 1, minWidth: 200 }} placeholder="Search title, content, category, notes…" value={search} onChange={e => setSearch(e.target.value)} />
         {canEdit && <button className="btn" onClick={() => setForm({ type: "lore", category: "", title: "", content: "", notes: "" })}>+ Entry</button>}
-        {canMgmt && <button className="btn ghost" onClick={() => setForm({ type: "command", category: "", title: "", content: "", notes: "" })}>+ Management</button>}
+        {canAddMgmt && <button className="btn ghost" onClick={() => setForm({ type: "command", category: "", title: "", content: "", notes: "" })}>+ Management</button>}
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
         <button className={`pill${filter === null ? " on" : ""}`} onClick={() => setFilter(null)}>All <span className="ct">{lore.length}</span></button>
@@ -146,6 +180,7 @@ function KB({ auth, canMgmt, lore, cmds, reload, initialQ = "" }) {
         <button className={`pill${filter === "__fav" ? " on amber" : ""}`} onClick={() => setFilter(filter === "__fav" ? null : "__fav")}>★ Favorites <span className="ct">{favs.length}</span></button>
         {canMgmt && <button className={`pill${filter === "__mgmt" ? " on good" : ""}`} onClick={() => setFilter(filter === "__mgmt" ? null : "__mgmt")}>Management <span className="ct">{cmds.length}</span></button>}
       </div>
+      {err && !form && <div className="err" style={{ marginBottom: 10 }}>{err}</div>}
       {items.length === 0 ? <div className="empty">No entries match.</div> : (
         <div className="entry-grid">
           {items.map(item => {
@@ -163,7 +198,7 @@ function KB({ auth, canMgmt, lore, cmds, reload, initialQ = "" }) {
                   <button className={`copybtn${ic ? " done" : ""}`} style={{ flex: 1 }} onClick={() => copy(item.content || item.title, item.uid)}>{ic ? "✓ Copied" : "Copy"}</button>
                   {canEdit && <>
                     <button className="copybtn" onClick={() => setForm({ id: item.id, type: item.dtype, category: item.category || "", title: item.title || "", content: item.content || "", notes: item.notes || "" })}>Edit</button>
-                    <button className="copybtn" style={{ color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Delete "${item.title}"?`)) { await deleteKBEntry(item.id); reload(); } }}>Del</button>
+                    <button className="copybtn" style={{ color: "var(--rose)" }} onClick={() => { if (window.confirm(`Delete "${item.title}"?`)) run(() => deleteKBEntry(item.id), reload); }}>Del</button>
                   </>}
                 </div>
               </div>
@@ -183,7 +218,7 @@ function KB({ auth, canMgmt, lore, cmds, reload, initialQ = "" }) {
 
 /* ── Change Log ── */
 function ChangeLog({ auth, rows, reload }) {
-  const isL3 = auth.level >= 3;
+  const canWrite = auth.level >= 3 || auth.isEventTeam; // policy 4: Event Team has full rights on the change log
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState(null);
@@ -195,8 +230,9 @@ function ChangeLog({ auth, rows, reload }) {
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
         <input className="filter-inp" style={{ flex: 1, minWidth: 200 }} placeholder="Search by name or location…" value={search} onChange={e => setSearch(e.target.value)} />
         {[["all", "All"], ["black_market_doctor", "Doctors"], ["drop_location", "Drops"]].map(([v, l]) => <button key={v} className={`pill${filter === v ? " on" : ""}`} onClick={() => setFilter(v)}>{l}</button>)}
-        {isL3 && <button className="btn" onClick={() => setForm({ change_type: "black_market_doctor", name: "", position: "", action: "Added", blocked_off: false, notes: "" })}>+ Entry</button>}
+        {canWrite && <button className="btn" onClick={() => setForm({ change_type: "black_market_doctor", name: "", position: "", action: "Added", blocked_off: false, notes: "" })}>+ Entry</button>}
       </div>
+      {err && !form && <div className="err" style={{ marginBottom: 10 }}>{err}</div>}
       <div className="card">
         {shown.length === 0 ? <div className="empty">No entries.</div> : shown.map(c => (
           <div className="clog" key={c.id}>
@@ -209,9 +245,9 @@ function ChangeLog({ auth, rows, reload }) {
             {c.notes && <span style={{ color: "var(--ink-2)" }}>{c.notes}</span>}
             <span style={{ flex: 1 }} />
             <span style={{ color: "var(--ink-3)", fontSize: 11 }}>{c.created_by}</span>
-            {isL3 && <>
+            {canWrite && <>
               <button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ id: c.id, change_type: c.change_type, name: c.name, position: c.position, action: c.action, blocked_off: !!c.blocked_off, notes: c.notes || "" })}>Edit</button>
-              <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete?")) { await deleteChangeLog(c.id); reload(); } }}>Del</button>
+              <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete?")) run(() => deleteChangeLog(c.id), reload); }}>Del</button>
             </>}
           </div>
         ))}
@@ -230,26 +266,200 @@ function ChangeLog({ auth, rows, reload }) {
   );
 }
 
-/* ── Scene Library (read) ── */
-function Scenes({ rows }) {
-  const [q, setQ] = useState("");
-  const shown = rows.filter(s => !q || [s.title, s.description, s.category, s.tags].some(x => (x || "").toLowerCase().includes(q.toLowerCase())));
+/* ── Scene Library — the idea → review → approved → "log to faction" bridge (port of /fm/storytelling/library) ── */
+const SCENE_SORTS = [["newest", "Newest"], ["oldest", "Oldest"], ["staff_asc", "Staff: Low → High"], ["staff_desc", "Staff: High → Low"], ["az", "A → Z"]];
+const EMPTY_IDEA = { title: "", description: "", staff_required: 1, spawning_required: false, spawning_details: "", ped_required: false, proposed_rewards: "", tags: "" };
+const EMPTY_LOG = { faction: "", cash: "", items: [], otherRewards: "", notes: "", assistants: [] };
+
+function Scenes({ auth, rows, reload, initialQ = "" }) {
+  const level = auth.level || 0;
+  // Policy 3/4: L1+ and Event Team submit ideas and log scenes; L2+, Event
+  // Team and Lead Storytellers approve; L2+ and Event Team edit, delete and review.
+  const canSuggest = level >= 1 || auth.isEventTeam;
+  const canApprove = level >= 2 || auth.isEventTeam || auth.isLeadStoryteller;
+  const canEdit = level >= 2 || auth.isEventTeam;
+  const [q, setQ] = useState(initialQ);
+  useEffect(() => { if (initialQ) setQ(initialQ); }, [initialQ]);
+  const [statusF, setStatusF] = useState("all");
+  const [spawnF, setSpawnF] = useState("all");
+  const [pedF, setPedF] = useState("all");
+  const [staffMax, setStaffMax] = useState(0);
+  const [sort, setSort] = useState("newest");
+  const [expanded, setExpanded] = useState({});
+  const [idea, setIdea] = useState(null);          // {id?, ...EMPTY_IDEA, status?}
+  const [feedback, setFeedback] = useState(null);  // { scene, list, loading, text }
+  const [logFor, setLogFor] = useState(null);      // scene being logged to a faction
+  const [logForm, setLogForm] = useState(EMPTY_LOG);
+  const [logLists, setLogLists] = useState(null);  // { factions, inventory, staff }
+  const [flash, setFlash] = useState("");
+  const { busy, err, setErr, run } = useRun();
+  const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 };
+
+  const shown = useMemo(() => {
+    let out = [...rows];
+    if (statusF !== "all") out = out.filter(s => s.status === statusF);
+    if (spawnF !== "all") out = out.filter(s => !!s.spawning_required === (spawnF === "yes"));
+    if (pedF !== "all") out = out.filter(s => !!s.ped_required === (pedF === "yes"));
+    if (staffMax > 0) out = out.filter(s => (s.staff_required || 1) <= staffMax);
+    const needle = q.trim().toLowerCase();
+    if (needle) out = out.filter(s => [s.title, s.description, s.tags, s.spawning_details, s.created_by].some(x => (x || "").toLowerCase().includes(needle)));
+    const t = (s) => new Date(s.created_at).getTime() || 0;
+    switch (sort) {
+      case "oldest": out.sort((a, b) => t(a) - t(b)); break;
+      case "staff_asc": out.sort((a, b) => (a.staff_required || 0) - (b.staff_required || 0)); break;
+      case "staff_desc": out.sort((a, b) => (b.staff_required || 0) - (a.staff_required || 0)); break;
+      case "az": out.sort((a, b) => (a.title || "").localeCompare(b.title || "")); break;
+      default: out.sort((a, b) => t(b) - t(a));
+    }
+    return out;
+  }, [rows, statusF, spawnF, pedF, staffMax, q, sort]);
+
+  const say = (m) => { setFlash(m); setTimeout(() => setFlash(""), 3000); };
+  const openAdd = () => { setErr(""); setIdea({ ...EMPTY_IDEA }); };
+  const openEdit = (s) => { setErr(""); setIdea({ id: s.id, status: s.status, title: s.title || "", description: s.description || "", staff_required: s.staff_required || 1, spawning_required: !!s.spawning_required, spawning_details: s.spawning_details || "", ped_required: !!s.ped_required, proposed_rewards: s.proposed_rewards || "", tags: s.tags || "" }); };
+  const saveIdea = () => { if (!idea.title.trim()) return; run(() => idea.id ? editSceneLibraryEntry(idea.id, idea) : addSceneLibraryEntry(idea), () => { setIdea(null); say(idea.id ? "Scene updated." : "Idea submitted — reviewers have been pinged."); reload(); }); };
+  const toggleStatus = (s) => run(() => setSceneLibraryStatus(s.id, s.status === "approved" ? "idea" : "approved"), () => reload());
+  const remove = (s) => { if (!window.confirm(`Permanently delete "${s.title}" and its feedback?`)) return; run(() => deleteSceneLibraryEntry(s.id), () => reload()); };
+  const openFeedback = async (s) => {
+    setErr(""); setFeedback({ scene: s, list: [], loading: true, text: "" });
+    try { const list = await getSceneLibraryFeedback(s.id); setFeedback(f => f ? { ...f, list, loading: false } : f); }
+    catch (e) { setFeedback(f => f ? { ...f, loading: false } : f); setErr(e?.message || "Could not load feedback."); }
+  };
+  const sendFeedback = () => { if (!feedback?.text.trim()) return; run(() => addSceneLibraryFeedback(feedback.scene.id, feedback.text), async () => { const list = await getSceneLibraryFeedback(feedback.scene.id); setFeedback(f => f ? { ...f, list, text: "" } : f); }); };
+  const openLog = async (s) => {
+    setErr(""); setLogFor(s); setLogForm({ ...EMPTY_LOG, notes: `[Library: ${s.title}]\n\n` });
+    if (!logLists) {
+      try { const [factions, inventory, staff] = await Promise.all([getSceneFactionNames(), getInventoryForScene(), getStaffForScene()]); setLogLists({ factions: factions || [], inventory: inventory || [], staff: staff || [] }); }
+      catch (e) { setLogLists({ factions: [], inventory: [], staff: [] }); setErr(e?.message || "Could not load factions."); }
+    }
+  };
+  const toggleAssistant = (s) => setLogForm(f => { const has = f.assistants.some(a => a.staff_id === s.discord_id); return { ...f, assistants: has ? f.assistants.filter(a => a.staff_id !== s.discord_id) : [...f.assistants, { staff_id: s.discord_id, staff_name: s.display_name }] }; });
+  const submitLog = () => { if (!logForm.faction) { setErr("Pick a faction."); return; } if (!logForm.notes.trim()) { setErr("Scene notes are required."); return; } run(() => submitScene(logForm), () => { setLogFor(null); setLogForm(EMPTY_LOG); say("Scene logged to Scene Logs."); }); };
+  const chip = (on, label, onClick, tone) => <button key={label} className={`pill${on ? ` on${tone ? ` ${tone}` : ""}` : ""}`} onClick={onClick}>{label}</button>;
+
   return (
     <>
-      <input className="filter-inp" placeholder="Filter scenes…" value={q} onChange={e => setQ(e.target.value)} style={{ marginBottom: 16, maxWidth: 380 }} />
-      <div className="card">
-        <div className="hd"><div className="t">Scene ideas</div><div className="meta">{shown.length}</div></div>
-        {shown.length === 0 ? <div className="empty">No scenes.</div> : shown.map(s => (
-          <div className="note" key={s.id}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-              <span style={{ fontWeight: 700, color: "var(--ink-0)", fontSize: 13 }}>{s.title}</span>
-              {s.status && <span className="chip role">{s.status}</span>}{s.category && <span className="chip role">{s.category}</span>}{s.proposed_rewards && <span className="chip lock">{s.proposed_rewards}</span>}
-            </div>
-            <div style={{ whiteSpace: "pre-wrap", color: "var(--ink-1)" }}>{s.description}</div>
-            {(s.staff_required || s.spawning_required || s.ped_required) && <div className="by">{[s.staff_required && `Staff: ${s.staff_required}`, s.spawning_required && `Spawning: ${s.spawning_required}`, s.ped_required && `Peds: ${s.ped_required}`].filter(Boolean).join(" · ")}</div>}
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <input className="filter-inp" style={{ flex: 1, minWidth: 200, maxWidth: 380 }} placeholder="Search scenes…" value={q} onChange={e => setQ(e.target.value)} />
+        <select className="filter-inp" value={sort} onChange={e => setSort(e.target.value)} style={{ width: "auto" }}>{SCENE_SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>{shown.length} scene{shown.length !== 1 ? "s" : ""}</span>
+        {canSuggest && <button className="btn" onClick={openAdd}>+ Add Scene</button>}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
+        {[["all", "All"], ["idea", "Idea"], ["approved", "Approved"]].map(([v, l]) => chip(statusF === v, l, () => setStatusF(v)))}
+        <span style={{ fontSize: 10, color: "var(--ink-3)", marginLeft: 6 }}>SPAWNING</span>
+        {[["all", "Any"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => chip(spawnF === v, l, () => setSpawnF(v), "amber"))}
+        <span style={{ fontSize: 10, color: "var(--ink-3)", marginLeft: 6 }}>PEDS</span>
+        {[["all", "Any"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => chip(pedF === v, l, () => setPedF(v)))}
+        <span style={{ fontSize: 10, color: "var(--ink-3)", marginLeft: 6 }}>MAX STAFF</span>
+        {[[0, "Any"], [1, "1"], [2, "2"], [3, "3"], [4, "4"], [5, "5+"]].map(([v, l]) => chip(staffMax === v, l, () => setStaffMax(v)))}
+      </div>
+      {flash && <div className="empty" style={{ marginBottom: 12, color: "var(--good)" }}>{flash}</div>}
+      {err && !idea && !feedback && !logFor && <div className="err" style={{ marginBottom: 12 }}>{err}</div>}
+
+      {shown.length === 0 ? <div className="card"><div className="empty">No scenes match your filters.</div></div> : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: 12, alignContent: "start" }}>
+          {shown.map(s => {
+            const approved = s.status === "approved";
+            const tags = (s.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+            const long = s.description && (s.description.length > 220 || s.description.includes("\n"));
+            const isOpen = !!expanded[s.id];
+            return (
+              <div key={s.id} className="card" style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: `3px solid ${approved ? "var(--good)" : "var(--amber)"}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <span className="chip" style={{ background: approved ? "var(--good-bg)" : "var(--amber-bg)", color: approved ? "var(--good)" : "var(--amber)" }}>{approved ? "Approved" : "Idea"}</span>
+                  <span style={{ fontSize: 10.5, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>{s.created_by}{s.created_at ? ` · ${String(s.created_at).slice(0, 10)}` : ""}</span>
+                </div>
+                <div style={{ fontWeight: 700, color: "var(--ink-0)", fontSize: 14, lineHeight: 1.3 }}>{s.title}</div>
+                {s.description && (
+                  <div>
+                    <div style={{ whiteSpace: "pre-wrap", color: "var(--ink-1)", fontSize: 12.5, lineHeight: 1.55, ...(long && !isOpen ? { display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" } : {}) }}>{s.description}</div>
+                    {long && <button className="act" style={{ padding: "1px 6px", fontSize: 11, color: "var(--accent)", marginTop: 4 }} onClick={() => setExpanded(e => ({ ...e, [s.id]: !isOpen }))}>{isOpen ? "↑ Show less" : "↓ Show more"}</button>}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <span className="chip role">Staff {s.staff_required || 1}</span>
+                  <span className="chip" style={s.spawning_required ? { background: "var(--amber-bg)", color: "var(--amber)" } : {}}>Spawning {s.spawning_required ? "Yes" : "No"}</span>
+                  <span className="chip" style={s.ped_required ? { background: "var(--accent-bg)", color: "var(--accent)" } : {}}>Peds {s.ped_required ? "Yes" : "No"}</span>
+                </div>
+                {!!s.spawning_required && s.spawning_details && <div style={{ fontSize: 11.5, color: "var(--ink-2)" }}><b style={{ color: "var(--amber)" }}>Spawn</b> {s.spawning_details}</div>}
+                {s.proposed_rewards && <div style={{ fontSize: 11.5, color: "var(--good)", fontFamily: "var(--v2-mono)" }}><span style={{ color: "var(--ink-3)", fontFamily: "inherit" }}>Rewards</span> {s.proposed_rewards}</div>}
+                {tags.length > 0 && <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{tags.map(t => <span key={t} className="chip lock">{t}</span>)}</div>}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: "auto", paddingTop: 6, borderTop: "1px solid var(--line)" }}>
+                  {canSuggest ? <button className="act primary" style={{ padding: "2px 9px" }} onClick={() => openLog(s)}>+ Add to Faction</button> : <span style={{ fontSize: 10.5, color: "var(--ink-3)", fontStyle: "italic" }}>Read only</span>}
+                  <span style={{ flex: 1 }} />
+                  <button className="act" style={{ padding: "2px 8px" }} onClick={() => openFeedback(s)}>Feedback</button>
+                  {canApprove && <button className="act" style={{ padding: "2px 8px", color: approved ? "var(--amber)" : "var(--good)" }} disabled={busy} onClick={() => toggleStatus(s)}>{approved ? "↩ Idea" : "✓ Approve"}</button>}
+                  {canEdit && <button className="act" style={{ padding: "2px 8px" }} onClick={() => openEdit(s)}>Edit</button>}
+                  {canEdit && <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} disabled={busy} onClick={() => remove(s)}>Del</button>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {idea && <Modal title={idea.id ? "Edit scene" : "New scene idea"} maxWidth={620} onClose={() => { setIdea(null); setErr(""); }} onSave={saveIdea} saveLabel={idea.id ? "Save changes" : "Submit idea"} saveDisabled={busy || !idea.title.trim()} error={err}>
+        <input className="filter-inp" placeholder="Scene title…" value={idea.title} onChange={e => setIdea({ ...idea, title: e.target.value })} />
+        {idea.id && canEdit && (
+          <div><div style={lbl}>Status</div>
+            <select className="filter-inp" value={idea.status} onChange={e => setIdea({ ...idea, status: e.target.value })}><option value="idea">Idea</option><option value="approved">Approved</option></select>
+          </div>
+        )}
+        <div><div style={lbl}>Description</div><textarea className="filter-inp" rows={4} placeholder="Describe the scene concept…" value={idea.description} onChange={e => setIdea({ ...idea, description: e.target.value })} /></div>
+        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 12.5, display: "flex", gap: 8, alignItems: "center", color: "var(--ink-1)" }}>Staff required <input className="filter-inp" type="number" min={1} max={50} style={{ width: 64 }} value={idea.staff_required} onChange={e => setIdea({ ...idea, staff_required: parseInt(e.target.value) || 1 })} /></label>
+          <label style={{ fontSize: 12.5, display: "flex", gap: 8, alignItems: "center", color: "var(--ink-1)" }}><input type="checkbox" checked={idea.spawning_required} onChange={e => setIdea({ ...idea, spawning_required: e.target.checked })} /> Spawning required</label>
+          <label style={{ fontSize: 12.5, display: "flex", gap: 8, alignItems: "center", color: "var(--ink-1)" }}><input type="checkbox" checked={idea.ped_required} onChange={e => setIdea({ ...idea, ped_required: e.target.checked })} /> Ped required</label>
+        </div>
+        {idea.spawning_required && <input className="filter-inp" placeholder="What needs to be spawned? e.g. 2x Insurgent, prop crates, gang NPCs…" value={idea.spawning_details} onChange={e => setIdea({ ...idea, spawning_details: e.target.value })} />}
+        <input className="filter-inp" placeholder="Proposed rewards, e.g. $500, 2x item…" value={idea.proposed_rewards} onChange={e => setIdea({ ...idea, proposed_rewards: e.target.value })} />
+        <input className="filter-inp" placeholder="Tags (comma-separated) e.g. outdoor, night, gang" value={idea.tags} onChange={e => setIdea({ ...idea, tags: e.target.value })} />
+      </Modal>}
+
+      {feedback && <Modal title={`Feedback — ${feedback.scene.title}`} maxWidth={620} onClose={() => { setFeedback(null); setErr(""); }} onSave={canEdit && feedback.scene.status !== "approved" ? sendFeedback : undefined} saveLabel="Send feedback" saveDisabled={busy || !feedback.text.trim()} error={err}>
+        {feedback.loading ? <div className="empty">Loading feedback…</div> : feedback.list.length === 0 ? <div className="empty">No feedback yet.</div> : feedback.list.map(f => (
+          <div key={f.id} className="note">
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}><span style={{ fontWeight: 700, color: "var(--accent)", fontSize: 12 }}>{f.created_by}</span><span style={{ fontSize: 10.5, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>{f.created_at}</span></div>
+            <div style={{ whiteSpace: "pre-wrap", color: "var(--ink-1)", fontSize: 12.5 }}>{f.feedback}</div>
           </div>
         ))}
-      </div>
+        {canEdit && feedback.scene.status !== "approved"
+          ? <textarea className="filter-inp" rows={3} placeholder="Leave feedback for the creator (they get a ping)…" value={feedback.text} onChange={e => setFeedback({ ...feedback, text: e.target.value })} />
+          : <div style={{ fontSize: 11, color: "var(--ink-3)", fontStyle: "italic" }}>{feedback.scene.status === "approved" ? "Approved scenes are no longer under review." : "Reviewers (L2+) can leave feedback here."}</div>}
+      </Modal>}
+
+      {logFor && <Modal title={`Log scene to faction — ${logFor.title}`} maxWidth={720} onClose={() => { setLogFor(null); setErr(""); }} onSave={submitLog} saveLabel="Submit scene" saveDisabled={busy || !logForm.faction} error={err}>
+        <div><div style={lbl}>Target faction</div>
+          <select className="filter-inp" style={{ width: "100%" }} value={logForm.faction} onChange={e => setLogForm({ ...logForm, faction: e.target.value })}>
+            <option value="">{logLists ? "Select…" : "Loading…"}</option>
+            {(logLists?.factions || []).map(f => <option key={f} value={f}>{f}</option>)}
+          </select></div>
+        <div style={{ padding: 12, borderRadius: 10, background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={lbl}>Rewards &amp; inventory</span><button type="button" className="act" style={{ padding: "2px 8px" }} onClick={() => setLogForm({ ...logForm, items: [...logForm.items, { name: "", qty: 1 }] })}>+ Add item</button></div>
+          <div><div style={lbl}>Cash reward ($)</div><input type="number" className="filter-inp" style={{ width: "100%" }} value={logForm.cash} onChange={e => setLogForm({ ...logForm, cash: e.target.value })} /></div>
+          {logForm.items.map((item, idx) => (
+            <div key={idx} style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+              <div style={{ flex: 1 }}><div style={lbl}>Item</div>
+                <input list={`lib-inv-${idx}`} className="filter-inp" style={{ width: "100%" }} placeholder="Type to search…" value={item.name} onChange={e => { const n = [...logForm.items]; n[idx] = { ...n[idx], name: e.target.value }; setLogForm({ ...logForm, items: n }); }} />
+                <datalist id={`lib-inv-${idx}`}>{(logLists?.inventory || []).map((inv, i) => <option key={i} value={inv.name}>{inv.category || ""}</option>)}</datalist>
+              </div>
+              <div style={{ width: 80 }}><div style={lbl}>Qty</div><input type="number" min="1" className="filter-inp" style={{ width: "100%", textAlign: "center" }} value={item.qty} onChange={e => { const n = [...logForm.items]; n[idx] = { ...n[idx], qty: e.target.value }; setLogForm({ ...logForm, items: n }); }} /></div>
+              <button type="button" className="act" style={{ color: "var(--rose)" }} onClick={() => setLogForm({ ...logForm, items: logForm.items.filter((_, i) => i !== idx) })}>✕</button>
+            </div>
+          ))}
+          {logFor.proposed_rewards && <div style={{ fontSize: 11, color: "var(--accent)" }}>Proposed: {logFor.proposed_rewards}</div>}
+          <div><div style={lbl}>Other rewards</div><input className="filter-inp" style={{ width: "100%" }} placeholder="e.g. 1x Declasse Tulip" value={logForm.otherRewards} onChange={e => setLogForm({ ...logForm, otherRewards: e.target.value })} /></div>
+        </div>
+        <div>
+          <div style={{ ...lbl, display: "flex", justifyContent: "space-between" }}><span>Also present (optional)</span>{logForm.assistants.length > 0 && <span style={{ color: "var(--accent)", textTransform: "none", letterSpacing: 0 }}>{logForm.assistants.length} selected</span>}</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--panel-2)", maxHeight: 120, overflowY: "auto" }}>
+            {(logLists?.staff || []).filter(s => s.discord_id !== auth.id).map(s => { const sel = logForm.assistants.some(a => a.staff_id === s.discord_id); return <button key={s.discord_id} type="button" className="pill" style={sel ? { background: "var(--accent-bg)", color: "var(--accent)", borderColor: "var(--accent)" } : {}} onClick={() => toggleAssistant(s)}>{sel ? "✓ " : ""}{s.display_name}</button>; })}
+          </div>
+        </div>
+        <div><div style={lbl}>Scene notes</div><textarea className="filter-inp" rows={5} style={{ width: "100%", minHeight: 110 }} value={logForm.notes} onChange={e => setLogForm({ ...logForm, notes: e.target.value })} /></div>
+      </Modal>}
     </>
   );
 }
@@ -257,8 +467,8 @@ function Scenes({ rows }) {
 const ammoChip = (type) => { const m = { AP: ["var(--rose-bg)", "var(--rose)"], FMJ: ["var(--amber-bg)", "var(--amber)"], HP: ["var(--good-bg)", "var(--good)"] }; return m[type] || ["var(--panel-2)", "var(--ink-2)"]; };
 
 /* ── Arsenal — loadouts (weapon + ammo/attachment CRUD) + spawn commands ── */
-function Arsenal({ canEdit, canMgmt, d, reload }) {
-  const [sub, setSub] = useState("loadouts");
+function Arsenal({ canEdit, canMgmt, canSpawnWrite, d, reload, initialSub = "loadouts" }) {
+  const [sub, setSub] = useState(initialSub);
   const [copied, copy] = useCopy();
   const [q, setQ] = useState("");
   const [cat, setCat] = useState(null);
@@ -287,6 +497,7 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
         <button className={`hub-tab${sub === "loadouts" ? " on" : ""}`} onClick={() => setSub("loadouts")}>Loadouts</button>
         {canMgmt && <button className={`hub-tab${sub === "spawn" ? " on" : ""}`} onClick={() => setSub("spawn")}>Spawn Commands</button>}
       </div>
+      {err && !wForm && !spawnForm && <div className="err" style={{ marginBottom: 10 }}>{err}</div>}
 
       {sub === "loadouts" && <>
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -307,7 +518,7 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
                 <span className="chip due">{(w.ammo || []).length} ammo · {(w.attachments || []).length} att</span>
                 {canEdit && <>
                   <button className="act" style={{ padding: "2px 8px" }} onClick={e => { e.stopPropagation(); setWForm({ id: w.id, name: w.weapon_name, category: w.weapon_category || "", caliber: w.caliber || "" }); }}>Edit</button>
-                  <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={async e => { e.stopPropagation(); if (window.confirm(`Delete ${w.weapon_name}?`)) { await deleteWeapon(w.id); reload(); } }}>Del</button>
+                  <button className="act" style={{ padding: "2px 8px", color: "var(--rose)" }} onClick={e => { e.stopPropagation(); if (window.confirm(`Delete ${w.weapon_name}?`)) run(() => deleteWeapon(w.id), reload); }}>Del</button>
                 </>}
                 <span className="caret">▼</span>
               </div>
@@ -316,29 +527,29 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
                   <div>
                     <div style={{ fontFamily: "var(--v2-mono)", fontSize: 10, color: "var(--amber)", marginBottom: 7, letterSpacing: "0.1em" }}>ATTACHMENTS</div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: canEdit ? 8 : 0 }}>
-                      {(w.attachments || []).map(a => <span key={a.id} className="chip role">{a.attachment_name}{canEdit && <button style={{ marginLeft: 5, color: "var(--rose)", background: "none", border: "none", cursor: "pointer" }} onClick={async () => { if (window.confirm("Remove?")) { await removeAttachmentCompat(a.id); reload(); } }}>✕</button>}</span>)}
+                      {(w.attachments || []).map(a => <span key={a.id} className="chip role">{a.attachment_name}{canEdit && <button style={{ marginLeft: 5, color: "var(--rose)", background: "none", border: "none", cursor: "pointer" }} onClick={() => { if (window.confirm("Remove?")) run(() => removeAttachmentCompat(a.id), reload); }}>✕</button>}</span>)}
                       {!(w.attachments || []).length && <span style={{ color: "var(--ink-3)", fontSize: 12 }}>None</span>}
                     </div>
                     {canEdit && <div style={{ display: "flex", gap: 5 }}>
                       <select className="filter-inp" value={addAtt[w.id] || ""} onChange={e => setAddAtt({ ...addAtt, [w.id]: e.target.value })}>
-                        <option value="">+ attachment…</option>
+                        <option value="">{(d.att || []).length ? "+ attachment…" : "No attachments in the catalogue"}</option>
                         {(d.att || []).filter(a => !(w.attachments || []).some(x => x.attachment_name === a)).map(a => <option key={a} value={a}>{a}</option>)}
                       </select>
-                      <button className="act" disabled={!addAtt[w.id]} onClick={async () => { await addAttachmentCompat(w.id, addAtt[w.id]); setAddAtt({ ...addAtt, [w.id]: "" }); reload(); }}>Add</button>
+                      <button className="act" disabled={!addAtt[w.id]} onClick={() => run(() => addAttachmentCompat(w.id, addAtt[w.id]), () => { setAddAtt({ ...addAtt, [w.id]: "" }); reload(); })}>Add</button>
                     </div>}
                   </div>
                   <div>
                     <div style={{ fontFamily: "var(--v2-mono)", fontSize: 10, color: "var(--ink-2)", marginBottom: 7, letterSpacing: "0.1em" }}>COMPATIBLE AMMO</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: canEdit ? 8 : 0 }}>
-                      {(w.ammo || []).map(a => { const [bg, col] = ammoChip(a.ammo_type); return <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 7 }}><span className="chip" style={{ background: bg, color: col }}>{a.ammo_type}</span><span style={{ fontSize: 12, color: "var(--ink-1)" }}>{a.ammo_name}</span>{canEdit && <button style={{ color: "var(--rose)", background: "none", border: "none", cursor: "pointer", fontSize: 11 }} onClick={async () => { if (window.confirm("Remove?")) { await removeAmmoCompat(a.id); reload(); } }}>✕</button>}</div>; })}
+                      {(w.ammo || []).map(a => { const [bg, col] = ammoChip(a.ammo_type); return <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 7 }}><span className="chip" style={{ background: bg, color: col }}>{a.ammo_type}</span><span style={{ fontSize: 12, color: "var(--ink-1)" }}>{a.ammo_name}</span>{canEdit && <button style={{ color: "var(--rose)", background: "none", border: "none", cursor: "pointer", fontSize: 11 }} onClick={() => { if (window.confirm("Remove?")) run(() => removeAmmoCompat(a.id), reload); }}>✕</button>}</div>; })}
                       {!(w.ammo || []).length && <span style={{ color: "var(--ink-3)", fontSize: 12 }}>None</span>}
                     </div>
                     {canEdit && <div style={{ display: "flex", gap: 5 }}>
                       <select className="filter-inp" value={addAmmo[w.id] || ""} onChange={e => setAddAmmo({ ...addAmmo, [w.id]: e.target.value })}>
-                        <option value="">+ ammo…</option>
+                        <option value="">{(d.ammo || []).length ? "+ ammo…" : "No ammo in the catalogue"}</option>
                         {(d.ammo || []).filter(a => !(w.ammo || []).some(x => x.ammo_name === a)).map(a => <option key={a} value={a}>{a}</option>)}
                       </select>
-                      <button className="act" disabled={!addAmmo[w.id]} onClick={async () => { await addAmmoCompat(w.id, addAmmo[w.id]); setAddAmmo({ ...addAmmo, [w.id]: "" }); reload(); }}>Add</button>
+                      <button className="act" disabled={!addAmmo[w.id]} onClick={() => run(() => addAmmoCompat(w.id, addAmmo[w.id]), () => { setAddAmmo({ ...addAmmo, [w.id]: "" }); reload(); })}>Add</button>
                     </div>}
                   </div>
                 </div>
@@ -359,7 +570,7 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
           <input className="filter-inp" style={{ flex: 1, minWidth: 200 }} placeholder="Search items, categories, game IDs…" value={sSearch} onChange={e => setSSearch(e.target.value)} />
           <span style={{ fontFamily: "var(--v2-mono)", fontSize: 11, color: "var(--ink-3)" }}>QTY</span>
           <input className="filter-inp" type="number" min="1" value={qty} onChange={e => setQty(e.target.value)} style={{ width: 64 }} />
-          <button className="btn" onClick={() => setSpawnForm({ name: "", game_id: "", category: "", item_type: "item" })}>+ Item</button>
+          {canSpawnWrite && <button className="btn" onClick={() => setSpawnForm({ name: "", game_id: "", category: "", item_type: "item" })}>+ Item</button>}
         </div>
         <div className="card">
           <table className="dtable">
@@ -373,8 +584,10 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
                   <td><code style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-1)" }}>{cmd}</code></td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     <button className={`copybtn${ic ? " done" : ""}`} style={{ padding: "3px 9px" }} onClick={() => copy(cmd, `sp-${item.id ?? idx}`)}>{ic ? "✓" : "Copy"}</button>
-                    <button className="act" style={{ padding: "2px 7px", marginLeft: 4 }} onClick={() => setSpawnForm({ id: item.id, name: item.name, game_id: item.game_id, category: item.category, item_type: item.item_type })}>✎</button>
-                    <button className="act" style={{ padding: "2px 7px", marginLeft: 3, color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Delete "${item.name}"?`)) { await deleteSpawnItem(item.id); reload(); } }}>✕</button>
+                    {canSpawnWrite && <>
+                      <button className="act" style={{ padding: "2px 7px", marginLeft: 4 }} onClick={() => setSpawnForm({ id: item.id, name: item.name, game_id: item.game_id, category: item.category, item_type: item.item_type })}>✎</button>
+                      <button className="act" style={{ padding: "2px 7px", marginLeft: 3, color: "var(--rose)" }} onClick={() => { if (window.confirm(`Delete "${item.name}"?`)) run(() => deleteSpawnItem(item.id), reload); }}>✕</button>
+                    </>}
                   </td>
                 </tr>
               ); })}
@@ -386,7 +599,7 @@ function Arsenal({ canEdit, canMgmt, d, reload }) {
           <input className="filter-inp" placeholder="Name" value={spawnForm.name} onChange={e => setSpawnForm({ ...spawnForm, name: e.target.value })} />
           <input className="filter-inp" placeholder="Game ID" value={spawnForm.game_id} onChange={e => setSpawnForm({ ...spawnForm, game_id: e.target.value })} />
           <input className="filter-inp" placeholder="Category" value={spawnForm.category} onChange={e => setSpawnForm({ ...spawnForm, category: e.target.value })} />
-          <select className="filter-inp" value={spawnForm.item_type} onChange={e => setSpawnForm({ ...spawnForm, item_type: e.target.value })}>{["item", "weapon", "ammo", "component"].map(t => <option key={t} value={t}>{t}</option>)}</select>
+          <select className="filter-inp" value={spawnForm.item_type} onChange={e => setSpawnForm({ ...spawnForm, item_type: e.target.value })}>{["item", "weapon", "ammo", "component", "attachment", "vehicle"].map(t => <option key={t} value={t}>{t}</option>)}</select>
         </Modal>}
       </>}
     </>
@@ -409,7 +622,7 @@ function NPCs({ auth, npcs, turfs, reload, initialQ = "" }) {
   const network = useMemo(() => {
     const net = {};
     turfs.forEach(t => { const nm = (t.name || "").trim(); if (!nm || nm === "Neutral" || nm === "Unaffiliated") return; net[nm] = { name: nm, power: t.shipment_power || "", npcs: [] }; });
-    npcs.forEach(n => { let t = (n.turf || "").trim() || "Neutral"; if (t.toLowerCase() === "neutral") t = "Neutral"; if (!net[t]) net[t] = { name: t, power: n.shipment_power || "", npcs: [] }; net[t].npcs.push(n); });
+    npcs.forEach(n => { let t = (n.turf || "").trim() || "Neutral"; if (["neutral", "unaffiliated"].includes(t.toLowerCase())) t = "Neutral"; if (!net[t]) net[t] = { name: t, power: n.shipment_power || "", npcs: [] }; net[t].npcs.push(n); });
     const q = search.toLowerCase();
     return Object.values(net).filter(t => t.name.toLowerCase().includes(q) || t.npcs.some(n => n.name.toLowerCase().includes(q) || (n.npc_type || "").toLowerCase().includes(q))).sort((a, b) => a.name === "Neutral" ? 1 : b.name === "Neutral" ? -1 : a.name.localeCompare(b.name));
   }, [npcs, turfs, search]);
@@ -432,7 +645,7 @@ function NPCs({ auth, npcs, turfs, reload, initialQ = "" }) {
       <button className={`copybtn${ic ? " done" : ""}`} style={{ padding: "3px 9px" }} onClick={() => copy(`/tppos ${n.position}`, `npc-${n.id}`)}>{ic ? "✓" : "TP"}</button>
       {isL3 && <>
         <button className="act" style={{ padding: "2px 7px" }} onClick={() => setNpcForm({ id: n.id, name: n.name, position: n.position, type: n.npc_type, turf: n.turf || "Neutral" })}>✎</button>
-        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Delete "${n.name}"?`)) { await deleteNPC(n.id); reload(); } }}>✕</button>
+        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm(`Delete "${n.name}"?`)) run(() => deleteNPC(n.id), reload); }}>✕</button>
       </>}
     </div>
   ); };
@@ -446,10 +659,11 @@ function NPCs({ auth, npcs, turfs, reload, initialQ = "" }) {
         {isL3 && <button className="btn ghost" onClick={() => setTurfForm({ oldTurf: "", newTurf: "", power: "" })}>+ Turf</button>}
         {isL3 && <button className="btn" onClick={() => setNpcForm({ name: "", position: "", type: "", turf: "Neutral" })}>+ NPC</button>}
       </div>
+      {err && !npcForm && !turfForm && <div className="err" style={{ marginBottom: 10 }}>{err}</div>}
 
       {mapView ? (
         <>
-          <GTAMap npcs={filter ? npcs.filter(n => (n.npc_type || "").trim().toLowerCase() === filter?.toLowerCase()) : npcs} selectedTurf={mapTurf} height={500} onCopyTP={() => {}} />
+          <GTAMap npcs={filter ? npcs.filter(n => (n.npc_type || "").trim().toLowerCase() === filter?.toLowerCase()) : npcs} selectedTurf={mapTurf} height={500} />
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
             <button className={`pill${!mapTurf ? " on" : ""}`} onClick={() => setMapTurf(null)}>All NPCs</button>
             {[...new Set(npcs.map(n => (n.turf || "Neutral").trim()))].sort().map(t => <button key={t} className={`pill${mapTurf === t ? " on" : ""}`} onClick={() => setMapTurf(t)}>{t}</button>)}
@@ -470,7 +684,7 @@ function NPCs({ auth, npcs, turfs, reload, initialQ = "" }) {
                 <span className="meta">{turf.npcs.length}</span>
                 {isL3 && turf.name !== "Neutral" && <>
                   <button className="act" style={{ padding: "2px 7px" }} onClick={() => setTurfForm({ oldTurf: turf.name, newTurf: turf.name, power: turf.power })}>Edit</button>
-                  <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Disband "${turf.name}"?`)) { await disbandTurf(turf.name); reload(); } }}>Disband</button>
+                  <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm(`Disband "${turf.name}"? Its NPCs become Neutral.`)) run(() => disbandTurf(turf.name), reload); }}>Disband</button>
                 </>}
               </div>
             </div>

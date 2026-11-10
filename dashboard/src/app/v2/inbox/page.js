@@ -10,6 +10,7 @@ import {
 } from "../../fm/dashboard/actions.js";
 import { TargetSelect, parseTarget } from "../TargetPicker.js";
 
+const PAGE_SIZE = 50;
 const clean = (s) => (s || "").replace(/<@[!&]?[0-9]+>/g, "@…");
 const when = (t) => (t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
@@ -25,6 +26,7 @@ export default function V2Inbox() {
   const auth = useAuth();
   const level = auth?.level || 0;
   const isL3 = level >= 3;
+  const canWrite = level >= 1;                        // Event Team / Lead Storyteller: read + mark read only
 
   const [mentions, setMentions] = useState([]);
   const [leadership, setLeadership] = useState([]);
@@ -34,6 +36,7 @@ export default function V2Inbox() {
   const [staff, setStaff] = useState([]);
   const [roles, setRoles] = useState({ teams: [] });
   const [tab, setTab] = useState("all");
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
 
   const [replyTo, setReplyTo] = useState(null); // uid
@@ -43,6 +46,7 @@ export default function V2Inbox() {
   const [taskTarget, setTaskTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");       // page-level outcome of read/delete/toggle actions
 
   const load = async () => {
     const [m, w, dt] = await Promise.all([
@@ -59,8 +63,10 @@ export default function V2Inbox() {
   useEffect(() => {
     if (auth?.loading || !auth?.id) return;
     load();
-    getStaffForCreate().then(setStaff).catch(() => {});
-    getRoleTargetsForCreate().then(setRoles).catch(() => {});
+    if (canWrite) {
+      getStaffForCreate().then(setStaff).catch(() => {});
+      getRoleTargetsForCreate().then(setRoles).catch(() => {});
+    }
   }, [auth?.id, auth?.loading]);
 
   // Normalize every stream into one shape.
@@ -82,44 +88,55 @@ export default function V2Inbox() {
     { id: "watch", label: "Server pings", n: counts.watch },
     { id: "dm", label: "Forwarded DMs", n: counts.dm },
   ];
-  const shown = tab === "all" ? items : items.filter(i => i.kind === tab);
+  const filtered = tab === "all" ? items : items.filter(i => i.kind === tab);
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const curPage = Math.min(page, pages - 1);
+  const shown = filtered.slice(curPage * PAGE_SIZE, curPage * PAGE_SIZE + PAGE_SIZE);
 
   if (auth?.loading || loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok) return <div className="view" style={{ color: "var(--ink-3)" }}>Not authorized.</div>;
 
   const closeAll = () => { setReplyTo(null); setReplyText(""); setTaskFor(null); setTaskDesc(""); setTaskTarget(""); setErr(""); };
+  // Every mutation reports back: a refusal is shown, never swallowed.
+  const act = async (fn, after) => {
+    setNotice("");
+    let r;
+    try { r = await fn(); } catch (e) { setNotice(e?.message || "Action failed."); return false; }
+    if (r && r.ok === false) { setNotice(r.error || "Action failed."); return false; }
+    await after?.();
+    return true;
+  };
   const doReply = async (it) => {
     if (!replyText.trim()) return;
     setBusy(true); setErr("");
-    const r = await KIND[it.kind].reply(it.id, replyText).catch(() => ({ ok: false }));
+    let r;
+    try { r = await KIND[it.kind].reply(it.id, replyText); } catch (e) { r = { ok: false, error: e?.message }; }
     setBusy(false);
-    if (r?.ok) {
-      // Replying is the strongest form of "read".
-      if (!it.is_read) await KIND[it.kind].read(it.id).catch(() => {});
-      closeAll(); load();
-    } else setErr(r?.error || "Failed to send.");
+    if (r?.ok) { closeAll(); load(); }               // replying marks it read server-side
+    else setErr(r?.error || "Failed to send.");
   };
-  const doRead = async (it) => { await KIND[it.kind].read(it.id); load(); };
-  const doDeleteDM = async (it) => { await deleteDM(it.id); load(); };
+  const doRead = (it) => act(() => KIND[it.kind].read(it.id), load);
+  const doDeleteDM = (it) => { if (window.confirm("Delete this forwarded DM?")) act(() => deleteDM(it.id), load); };
   const doTask = async () => {
     if (!taskTarget || !taskDesc.trim()) return;
     setBusy(true); setErr("");
     const { targetType, targetId } = parseTarget(taskTarget);
     let r;
     try { r = await createMyTask({ desc: taskDesc.trim(), targetType, targetId, enableDM: false }); }
-    catch { r = { ok: false }; }
+    catch (e) { r = { ok: false, error: e?.message }; }
     setBusy(false);
     if (r && r.ok === false) { setErr(r.error || "Could not create the task."); return; }
+    setNotice("Task created.");
     closeAll();
   };
-  const markAllVisible = async () => {
+  const markAllVisible = () => act(async () => {
     const kinds = tab === "all" ? ["mention", "leadership", "watch", "dm"] : [tab];
     if (kinds.includes("mention")) await markAllMentionsRead();
     if (kinds.includes("leadership") && isL3) await markAllLeadershipMentionsRead();
     if (kinds.includes("watch")) await markAllWatchPingsRead();
     if (kinds.includes("dm") && dmOn) await markAllDMsRead();
-    load();
-  };
+    return { ok: true };
+  }, load);
 
   return (
     <div className="view">
@@ -129,22 +146,24 @@ export default function V2Inbox() {
           <h1>Everything that pinged you</h1>
           <div className="sub">Mentions, {isL3 ? "leadership pings, " : ""}server-role pings and forwarded DMs, in one place.</div>
         </div>
-        {shown.some(i => !i.is_read) && <button className="btn ghost" onClick={markAllVisible}>Mark all read</button>}
+        {filtered.some(i => !i.is_read) && <button className="btn ghost" onClick={markAllVisible}>Mark all read</button>}
       </div>
 
       <div className="hub-tabs">
         {TABS.map(t => (
-          <button key={t.id} className={`hub-tab${tab === t.id ? " on" : ""}`} onClick={() => { setTab(t.id); closeAll(); }}>
+          <button key={t.id} className={`hub-tab${tab === t.id ? " on" : ""}`} onClick={() => { setTab(t.id); setPage(0); closeAll(); }}>
             {t.label}{t.n > 0 && <span className="chip" style={{ background: "var(--rose-bg)", color: "var(--rose)" }}>{t.n}</span>}
           </button>
         ))}
       </div>
 
+      {notice && <div className={notice === "Task created." ? "restricted" : "err"} role="status" style={{ marginBottom: 10 }}>{notice}</div>}
+
       {tab === "dm" && !dmOn && (
         <div className="card">
           <div style={{ padding: "6px 0", fontSize: 13, color: "var(--ink-1)" }}>
             Forward any Discord DM to the <b>Meridian Database bot</b> and it appears here — with a link back and a “make task” button.
-            <div style={{ marginTop: 10 }}><button className="btn" onClick={() => toggleDMTracking(true).then(load)}>Enable DM forwarding</button></div>
+            <div style={{ marginTop: 10 }}><button className="btn" onClick={() => act(() => toggleDMTracking(true), load)}>Enable DM forwarding</button></div>
           </div>
         </div>
       )}
@@ -172,8 +191,8 @@ export default function V2Inbox() {
                 </div>
                 <div style={{ fontSize: 13, color: "var(--ink-1)", lineHeight: 1.5, marginBottom: 8, wordBreak: "break-word" }}>{clean(it.content)}</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                  {k.reply && <button className="act" onClick={() => { closeAll(); setReplyTo(it.uid); }}>↩ Reply</button>}
-                  <button className="act" onClick={() => { closeAll(); setTaskFor(it.uid); setTaskDesc(clean(it.content).slice(0, 200)); }}>＋ Task</button>
+                  {k.reply && canWrite && <button className="act" onClick={() => { closeAll(); setReplyTo(it.uid); }}>↩ Reply</button>}
+                  {canWrite && <button className="act" onClick={() => { closeAll(); setTaskFor(it.uid); setTaskDesc(clean(it.content).slice(0, 200)); }}>＋ Task</button>}
                   {appLink && <a className="act" href={appLink} target="_blank" rel="noreferrer">Open app</a>}
                   <a className="act" href={webLink} target="_blank" rel="noreferrer">{it.kind === "dm" ? "Open DM" : "Web"}</a>
                   {!it.is_read && <button className="act" onClick={() => doRead(it)}>✓ Read</button>}
@@ -182,7 +201,7 @@ export default function V2Inbox() {
 
                 {replyTo === it.uid && (
                   <div className="inline-form" style={{ marginTop: 10 }}>
-                    <div className="lbl">Reply to {it.author} in #{it.channel} — sends as the bot, attributed to you</div>
+                    <div className="lbl">Reply to {it.author} in #{it.channel} — sends as the bot, attributed to you (audited)</div>
                     <textarea className="filter-inp" rows={3} autoFocus value={replyText} onChange={e => setReplyText(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) doReply(it); if (e.key === "Escape") closeAll(); }} />
                     {err && <div className="err">{err}</div>}
@@ -194,7 +213,7 @@ export default function V2Inbox() {
                     <div className="lbl">Create task from this</div>
                     <textarea className="filter-inp" rows={2} value={taskDesc} onChange={e => setTaskDesc(e.target.value)} />
                     <TargetSelect className="filter-inp" value={taskTarget} onChange={setTaskTarget}
-                      roleTargets={roles} staffList={staff} placeholder="Assign to…" />
+                      roleTargets={roles} staffList={staff} level={level} placeholder="Assign to…" />
                     {err && <div className="err">{err}</div>}
                     <div className="row-btns"><button className="act primary" disabled={busy || !taskTarget || !taskDesc.trim()} onClick={doTask}>{busy ? "Creating…" : "Create task"}</button><button className="act" onClick={closeAll}>Cancel</button></div>
                   </div>
@@ -205,9 +224,17 @@ export default function V2Inbox() {
         </div>
       )}
 
+      {filtered.length > PAGE_SIZE && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, fontSize: 12, color: "var(--ink-2)" }}>
+          <button className="act" disabled={curPage === 0} onClick={() => { setPage(curPage - 1); closeAll(); }}>← Prev</button>
+          <span>Page {curPage + 1} of {pages} · {filtered.length} items</span>
+          <button className="act" disabled={curPage >= pages - 1} onClick={() => { setPage(curPage + 1); closeAll(); }}>Next →</button>
+        </div>
+      )}
+
       {tab === "dm" && dmOn && (
         <div style={{ marginTop: 10 }}>
-          <button className="act" style={{ color: "var(--rose)" }} onClick={() => { if (window.confirm("Disable DM forwarding?")) toggleDMTracking(false).then(load); }}>Disable DM forwarding</button>
+          <button className="act" style={{ color: "var(--rose)" }} onClick={() => { if (window.confirm("Disable DM forwarding?")) act(() => toggleDMTracking(false), load); }}>Disable DM forwarding</button>
         </div>
       )}
     </div>

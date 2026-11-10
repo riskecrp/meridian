@@ -15,9 +15,10 @@ export default function VehicleCatalogPage() {
   const auth = useAuth();
   const { showAlert, showConfirm } = useDialog();
 
-  // L2 + Lead Storytellers get read-only access; L3 / Event Team can edit.
+  // L2, Event Team and Lead Storytellers get read-only access; L3 can edit
+  // (policy 4: Event Team is read-only outside scene material).
   const canView = auth.level >= 2 || auth.isEventTeam || auth.isLeadStoryteller;
-  const canEdit = auth.level >= 3 || auth.isEventTeam;
+  const canEdit = auth.level >= 3;
   const [catalog, setCatalog] = useState([]);
   const [factions, setFactions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -33,10 +34,12 @@ export default function VehicleCatalogPage() {
 
   const refresh = async () => {
     setLoading(true);
-    // listFactionsForAdd is an L3/ET-only action used by the add-to-faction flow;
+    // listFactionsForAdd is an L3-only action used by the add-to-faction flow;
     // read-only viewers skip it so they don't trip the clearance check.
-    const [c, f] = await Promise.all([listCatalog(), canEdit ? listFactionsForAdd() : Promise.resolve([])]);
-    setCatalog(c); setFactions(f);
+    try {
+      const [c, f] = await Promise.all([listCatalog(), canEdit ? listFactionsForAdd() : Promise.resolve([])]);
+      setCatalog(c || []); setFactions(f || []);
+    } catch (e) { await showAlert(e?.message || 'Could not load the catalog.'); }
     setLoading(false);
   };
 
@@ -57,16 +60,17 @@ export default function VehicleCatalogPage() {
     setForm({ vehicle_name: r.vehicle_name, spawn_name: r.spawn_name || '', notes: r.notes || '' });
     setShowForm(true);
   };
+  // `{ok:false}` and thrown auth errors both end in an alert, never a silent close.
+  const call = async (fn) => { try { return await fn(); } catch (e) { return { ok: false, error: e?.message || 'Failed' }; } };
   const submit = async () => {
-    const fn = editing ? updateCatalogEntry : createCatalogEntry;
-    const args = editing ? [editing.id, form] : [form];
-    const res = await fn(...args);
+    if (!form.vehicle_name.trim()) { await showAlert('Vehicle name required'); return; }
+    const res = await call(() => editing ? updateCatalogEntry(editing.id, form) : createCatalogEntry(form));
     if (!res.ok) { await showAlert(res.error || 'Failed'); return; }
     setShowForm(false); setEditing(null); setForm(EMPTY); refresh();
   };
   const remove = async (r) => {
     if (await showConfirm(`Delete "${r.vehicle_name}" from the catalog?`)) {
-      const res = await deleteCatalogEntry(r.id);
+      const res = await call(() => deleteCatalogEntry(r.id));
       if (!res.ok) { await showAlert(res.error || 'Failed'); return; }
       refresh();
     }
@@ -74,8 +78,10 @@ export default function VehicleCatalogPage() {
   const openAdd = (r) => { setAddingTo(r); setAddFactionId(''); setAddQty(1); };
   const submitAdd = async () => {
     if (!addFactionId) { await showAlert('Pick a faction'); return; }
+    const qty = parseInt(addQty, 10);
+    if (!Number.isInteger(qty) || qty < 1) { await showAlert('Quantity must be at least 1'); return; }
     setAddSubmitting(true);
-    const res = await addCatalogVehicleToFaction(addingTo.id, parseInt(addFactionId), parseInt(addQty));
+    const res = await call(() => addCatalogVehicleToFaction(addingTo.id, parseInt(addFactionId, 10), qty));
     setAddSubmitting(false);
     if (!res.ok) { await showAlert(res.error || 'Failed'); return; }
     await showAlert(`Added ${res.added}x "${res.vehicle}" to ${res.faction}. New total: ${res.newTotal}/${res.limits.max_total}.`);
@@ -111,7 +117,7 @@ export default function VehicleCatalogPage() {
         <div className="grid items-center text-[10px] font-bold uppercase tracking-widest px-3 py-2" style={{gridTemplateColumns:'1fr 1fr 60px auto', gap:'12px', background:'var(--bg-2)', color:'var(--fg-4)', borderBottom:'1px solid var(--border)'}}>
           <div>Name</div>
           <div>Spawn</div>
-          <div className="text-right">Used</div>
+          <div className="text-right" title="Factions that currently have it in their garage · total vehicles in circulation">In use</div>
           <div></div>
         </div>
         {filtered.length === 0 && <div className="px-3 py-6 text-sm italic text-center" style={{color:'var(--fg-4)'}}>No vehicles match.</div>}
@@ -131,7 +137,7 @@ export default function VehicleCatalogPage() {
             ) : (
               <span className="text-xs font-mono" style={{color:'var(--fg-4)'}}>—</span>
             )}
-            <div className="text-xs text-right font-mono" style={{color: r.use_count > 0 ? 'var(--fg-2)' : 'var(--fg-4)'}}>{r.use_count || 0}</div>
+            <div className="text-xs text-right font-mono" title={`${r.factions_using || 0} faction(s) · ${r.in_circulation || 0} vehicle(s) · added ${r.use_count || 0} time(s) in total`} style={{color: (r.factions_using || 0) > 0 ? 'var(--fg-2)' : 'var(--fg-4)'}}>{r.factions_using || 0}{(r.in_circulation || 0) > 0 ? <span style={{color:'var(--fg-4)'}}> · {r.in_circulation}</span> : null}</div>
             {canEdit && (
             <div className="flex gap-1 justify-end">
               <button onClick={() => openAdd(r)} title="Add to faction" style={{background:'transparent', border:'1px solid var(--border)', color:'var(--accent)', padding:'4px 8px', borderRadius:6, fontSize:10, fontWeight:700, cursor:'pointer', textTransform:'uppercase', whiteSpace:'nowrap'}}>+ Faction</button>

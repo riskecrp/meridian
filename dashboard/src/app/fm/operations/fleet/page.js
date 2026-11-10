@@ -26,10 +26,18 @@ export default function FleetPage() {
 
   const refresh = async () => {
     setLoading(true);
-    const [d, t] = await Promise.all([getFleetOverview(), getFleetTierDefaults()]);
-    setFleetData(d); setFleetTierDefaults(t); setLoading(false);
+    try {
+      const [d, t] = await Promise.all([getFleetOverview(), getFleetTierDefaults()]);
+      setFleetData(d || []); setFleetTierDefaults(t || {});
+    } catch (e) { await showAlert(e?.message || 'Could not load the fleet overview.'); }
+    setLoading(false);
   };
-  const refreshFleet = async () => { setFleetData(await getFleetOverview()); };
+  const refreshFleet = async () => { try { setFleetData((await getFleetOverview()) || []); } catch (e) { await showAlert(e?.message || 'Reload failed.'); } };
+  // Stored coordinates are REAL columns, but guard anyway: a text value here
+  // used to take the whole page down with `toFixed is not a function`.
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  // `{ok:false}` and thrown auth errors both end in an alert, never a silent refresh.
+  const call = async (fn) => { try { return await fn(); } catch (e) { return { ok: false, error: e?.message || 'Failed' }; } };
 
   if (auth.loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
   if (auth.level < 3) return <div className="p-10" style={{color:'var(--red)'}}>Access denied.</div>;
@@ -55,7 +63,7 @@ export default function FleetPage() {
                 <div style={{ color: 'var(--fg-3)' }}>{d.types} types</div>
                 <div style={{ color: 'var(--fg-3)' }}>{d.total} total</div>
                 <div style={{ color: 'var(--fg-3)' }}>{d.garages} garages</div>
-                <div style={{ color: 'var(--fg-4)', fontSize: 9 }}>${d.stipend.toLocaleString()}</div>
+                <div style={{ color: 'var(--fg-4)', fontSize: 9 }}>${num(d.stipend).toLocaleString()}</div>
               </div>
             ))}
           </div>
@@ -88,7 +96,7 @@ export default function FleetPage() {
                         ) : (
                           <div className="flex gap-2">
                             <button style={{ fontSize: 10, color: 'var(--amber)', background: 'none', border: '1px solid var(--amber)', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', fontWeight: 700 }} onClick={() => setFleetEditingOverride({ factionId: f.id, factionName: f.name, maxTypes: f.limits.maxTypes, maxTotal: f.limits.maxTotal, maxGarages: f.limits.maxGarages, reason: f.limits.overrideReason || '' })}>Edit Override</button>
-                            <button style={{ fontSize: 10, color: 'var(--red)', background: 'none', border: '1px solid var(--red)', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', fontWeight: 700 }} onClick={async () => { if (await showConfirm('Revert to tier defaults?')) { await clearFleetOverride(f.id); refreshFleet(); } }}>Clear Override</button>
+                            <button style={{ fontSize: 10, color: 'var(--red)', background: 'none', border: '1px solid var(--red)', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', fontWeight: 700 }} onClick={async () => { if (await showConfirm('Revert to tier defaults?')) { const r = await call(() => clearFleetOverride(f.id)); if (!r.ok) { showAlert(r.error || 'Error'); return; } refreshFleet(); } }}>Clear Override</button>
                           </div>
                         )}
                       </div>
@@ -122,7 +130,7 @@ export default function FleetPage() {
                             </div>
                             <div className="flex gap-1 opacity-0 group-hover:opacity-100">
                               <button style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }} onClick={() => setFleetEditingVehicle({ factionId: f.id, id: v.id, vehicle_name: v.vehicle_name, quantity: v.quantity, notes: v.notes || '' })}>Edit</button>
-                              <button style={{ fontSize: 10, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }} onClick={async () => { if (await showConfirm(`Remove ${v.quantity}x ${v.vehicle_name}?`)) { await deleteFleetVehicle(v.id); refreshFleet(); } }}>Del</button>
+                              <button style={{ fontSize: 10, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }} onClick={async () => { if (await showConfirm(`Remove ${v.quantity}x ${v.vehicle_name}?`)) { const r = await call(() => deleteFleetVehicle(v.id)); if (!r.ok) { showAlert(r.error || 'Error'); return; } refreshFleet(); } }}>Del</button>
                             </div>
                           </div>
                         ))}
@@ -140,14 +148,14 @@ export default function FleetPage() {
                           <div key={g.id} className="flex justify-between items-center rounded p-2 group" style={{ background: 'var(--bg-2)' }}>
                             <div className="flex items-center gap-3 min-w-0">
                               <span className="font-bold text-[12px]">{g.name}</span>
-                              <span className="font-mono text-[10px]" style={{ color: 'var(--fg-4)' }}>{g.x.toFixed(2)}, {g.y.toFixed(2)}, {g.z.toFixed(2)}</span>
+                              <span className="font-mono text-[10px]" style={{ color: 'var(--fg-4)' }}>{num(g.x).toFixed(2)}, {num(g.y).toFixed(2)}, {num(g.z).toFixed(2)}</span>
                               {g.notes && <span className="text-[10px] italic" style={{ color: 'var(--fg-4)' }}>— {g.notes}</span>}
                             </div>
                             <div className="flex gap-1 items-center">
                               <button style={{ fontSize: 10, color: 'var(--green)', background: 'none', border: '1px solid var(--green)', borderRadius: 4, padding: '3px 8px', cursor: 'pointer', fontWeight: 700 }} onClick={() => { navigator.clipboard.writeText(`/tppos ${g.x} ${g.y} ${g.z}`); }}>Copy /tp</button>
                               <div className="flex gap-1 opacity-0 group-hover:opacity-100">
-                                <button style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }} onClick={() => setFleetEditingGarage({ factionId: f.id, id: g.id, name: g.name, x: g.x, y: g.y, z: g.z, notes: g.notes || '' })}>Edit</button>
-                                <button style={{ fontSize: 10, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }} onClick={async () => { if (await showConfirm(`Remove garage "${g.name}"?`)) { await deleteFleetGarage(g.id); refreshFleet(); } }}>Del</button>
+                                <button style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }} onClick={() => setFleetEditingGarage({ factionId: f.id, id: g.id, name: g.name, x: num(g.x), y: num(g.y), z: num(g.z), notes: g.notes || '' })}>Edit</button>
+                                <button style={{ fontSize: 10, color: 'var(--red)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }} onClick={async () => { if (await showConfirm(`Remove garage "${g.name}"?`)) { const r = await call(() => deleteFleetGarage(g.id)); if (!r.ok) { showAlert(r.error || 'Error'); return; } refreshFleet(); } }}>Del</button>
                               </div>
                             </div>
                           </div>
@@ -169,9 +177,11 @@ export default function FleetPage() {
               <div className="space-y-3">
                 <div className="relative">
                   <div style={st.label}>Vehicle Name</div>
-                  <input style={st.input} value={fleetEditingVehicle.vehicle_name} onChange={async e => {
+                  <input style={st.input} value={fleetEditingVehicle.vehicle_name} onChange={e => {
                     const v = e.target.value; setFleetEditingVehicle({ ...fleetEditingVehicle, vehicle_name: v });
-                    if (v.length >= 1) { const s = await getVehicleCatalog(v); setFleetCatalogSuggestions(s); } else { setFleetCatalogSuggestions([]); }
+                    clearTimeout(window.__fleetSuggT);
+                    if (v.trim().length >= 1) window.__fleetSuggT = setTimeout(async () => setFleetCatalogSuggestions(await getVehicleCatalog(v).catch(() => [])), 200);
+                    else setFleetCatalogSuggestions([]);
                   }} placeholder="Start typing..." disabled={!!fleetEditingVehicle.id} />
                   {fleetCatalogSuggestions.length > 0 && fleetEditingVehicle.vehicle_name && !fleetEditingVehicle.id && (
                     <div className="absolute top-full left-0 right-0 mt-1 rounded max-h-[200px] overflow-y-auto z-10" style={{ background: 'var(--bg-2)', border: '1px solid var(--border)' }}>
@@ -189,7 +199,9 @@ export default function FleetPage() {
                 <button style={st.btn} onClick={async () => {
                   const e = fleetEditingVehicle;
                   if (!e.vehicle_name.trim()) { showAlert('Vehicle name required'); return; }
-                  const res = e.id ? await editFleetVehicle(e.id, e.quantity, e.notes) : await addFleetVehicle(e.factionId, e.vehicle_name.trim(), e.quantity, e.notes);
+                  const qty = parseInt(e.quantity, 10);
+                  if (!Number.isInteger(qty) || qty < 1) { showAlert('Quantity must be at least 1'); return; }
+                  const res = await call(() => e.id ? editFleetVehicle(e.id, qty, e.notes) : addFleetVehicle(e.factionId, e.vehicle_name.trim(), qty, e.notes));
                   if (!res.ok) { showAlert(res.error || 'Error'); return; }
                   setFleetEditingVehicle(null); refreshFleet();
                 }}>Save</button>
@@ -220,7 +232,8 @@ export default function FleetPage() {
                 <button style={st.btn} onClick={async () => {
                   const e = fleetEditingGarage;
                   if (!e.name.trim()) { showAlert('Name required'); return; }
-                  const res = e.id ? await editFleetGarage(e.id, e.name.trim(), e.x, e.y, e.z, e.notes) : await addFleetGarage(e.factionId, e.name.trim(), e.x, e.y, e.z, e.notes);
+                  if (![e.x, e.y, e.z].every(n => Number.isFinite(Number(n)))) { showAlert('Paste three numeric coordinates (x, y, z)'); return; }
+                  const res = await call(() => e.id ? editFleetGarage(e.id, e.name.trim(), num(e.x), num(e.y), num(e.z), e.notes) : addFleetGarage(e.factionId, e.name.trim(), num(e.x), num(e.y), num(e.z), e.notes));
                   if (!res.ok) { showAlert(res.error || 'Error'); return; }
                   setFleetEditingGarage(null); refreshFleet();
                 }}>Save</button>
@@ -248,7 +261,9 @@ export default function FleetPage() {
                 <button style={st.btn} onClick={async () => {
                   const o = fleetEditingOverride;
                   if (!o.reason.trim()) { showAlert('Reason required for override'); return; }
-                  const res = await setFleetOverride(o.factionId, o.maxTypes, o.maxTotal, o.maxGarages, o.reason.trim());
+                  const caps = [o.maxTypes, o.maxTotal, o.maxGarages].map(v => parseInt(v, 10));
+                  if (caps.some(n => !Number.isInteger(n) || n < 0)) { showAlert('Limits must be whole numbers of 0 or more'); return; }
+                  const res = await call(() => setFleetOverride(o.factionId, caps[0], caps[1], caps[2], o.reason.trim()));
                   if (!res.ok) { showAlert(res.error || 'Error'); return; }
                   setFleetEditingOverride(null); refreshFleet();
                 }}>Save Override</button>

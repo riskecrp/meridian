@@ -11,7 +11,7 @@ const GTAMap = dynamic(() => import("../../../../lib/GTAMap"), { ssr: false, loa
 
 export default function NetworkPage() {
   const auth = useAuth();
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
 
   const [npcs, setNpcs] = useState([]);
   const [turfs, setTurfs] = useState([]);
@@ -42,14 +42,15 @@ export default function NetworkPage() {
   const handleNPCSubmit = async () => {
     if(!npcForm.name.trim()) return;
     const submitData = {...npcForm, type: npcForm.type === '__new' ? (npcForm.customType||'').trim() : npcForm.type, turf: npcForm.turf || 'Neutral'};
-    if(npcEditId) await editNPC(npcEditId, submitData);
-    else await addNPC(submitData);
+    const r = npcEditId ? await editNPC(npcEditId, submitData) : await addNPC(submitData);
+    if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown'));
     setShowNPCForm(false); setNpcEditId(null); setNpcForm({name:'',position:'',type:'',turf:'Neutral'});
     refresh();
   };
   const handleTurfSubmit = async () => {
     if(!turfForm.newTurf.trim()) return;
-    await updateTurf(turfForm.oldTurf, turfForm.newTurf, turfForm.power);
+    const r = await updateTurf(turfForm.oldTurf, turfForm.newTurf, turfForm.power);
+    if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown'));
     setShowTurfForm(false); refresh();
   };
 
@@ -57,7 +58,7 @@ export default function NetworkPage() {
     const net = {};
     // Seed from the turfs table so turfs with no NPCs yet still show up.
     turfs.forEach(t => { const nm=(t.name||'').trim(); if(!nm||nm==='Neutral'||nm==='Unaffiliated')return; if(!net[nm])net[nm]={name:nm,power:t.shipment_power||'',npcs:[]}; });
-    npcs.forEach(n => { let t=(n.turf||'').trim()||'Neutral'; if(t.toLowerCase()==='neutral')t='Neutral'; if(!net[t])net[t]={name:t,power:n.shipment_power||'',npcs:[]}; net[t].npcs.push(n); });
+    npcs.forEach(n => { let t=(n.turf||'').trim()||'Neutral'; if(['neutral','unaffiliated'].includes(t.toLowerCase()))t='Neutral'; if(!net[t])net[t]={name:t,power:n.shipment_power||'',npcs:[]}; net[t].npcs.push(n); });
     const q = npcSearch.toLowerCase();
     const all = Object.values(net)
       .filter(t=>t.name.toLowerCase().includes(q)||t.npcs.some(n=>n.name.toLowerCase().includes(q)||(n.npc_type||'').toLowerCase().includes(q)))
@@ -92,7 +93,7 @@ export default function NetworkPage() {
           {auth.level >= 3 && (
             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
               <button onClick={() => { setNpcEditId(n.id); setNpcForm({name:n.name,position:n.position,type:n.npc_type,turf:n.turf||'Neutral'}); setShowNPCForm(true); }} style={{...s.btnSm,color:'var(--accent)'}}>Edit</button>
-              <button onClick={async () => { if(await showConfirm(`Delete "${n.name}"?`)){await deleteNPC(n.id);refresh();} }} style={{...s.btnSm,color:'var(--red)'}}>Del</button>
+              <button onClick={async () => { if(await showConfirm(`Delete "${n.name}"?`)){const r=await deleteNPC(n.id);if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();} }} style={{...s.btnSm,color:'var(--red)'}}>Del</button>
             </div>
           )}
         </div>
@@ -125,7 +126,6 @@ export default function NetworkPage() {
               npcs={npcFilter ? npcs.filter(n=>(n.npc_type||'').trim().toLowerCase()===npcFilter?.toLowerCase()) : npcs}
               selectedTurf={mapTurf}
               height={500}
-              onCopyTP={(cmd) => { setCopied('map-tp'); setTimeout(() => setCopied(null), 2000); }}
             />
             <div className="flex flex-wrap gap-1.5 mt-3">
               <button onClick={() => setMapTurf(null)} className="px-2.5 py-1 rounded text-[10px] font-bold" style={{ background: !mapTurf ? 'var(--accent)' : 'var(--bg-1)', color: !mapTurf ? 'white' : 'var(--fg-3)', border:'1px solid var(--border)' }}>All NPCs</button>
@@ -158,7 +158,7 @@ export default function NetworkPage() {
                     {auth.level>=3 && !isNeutral && (
                       <div className="opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
                         <button onClick={() => { setTurfForm({oldTurf:turf.name,newTurf:turf.name,power:turf.power}); setShowTurfForm(true); }} style={{...s.btnSm,color:'var(--fg-3)'}}>Edit</button>
-                        <button onClick={async () => { if(await showConfirm(`Disband "${turf.name}"?`)){await disbandTurf(turf.name);refresh();} }} style={{...s.btnSm,color:'var(--red)'}}>Disband</button>
+                        <button onClick={async () => { if(await showConfirm(`Disband "${turf.name}"? Its NPCs become Neutral.`)){const r=await disbandTurf(turf.name);if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();} }} style={{...s.btnSm,color:'var(--red)'}}>Disband</button>
                       </div>
                     )}
                   </div>
@@ -187,7 +187,7 @@ export default function NetworkPage() {
                 <select style={s.input} value={npcForm.type} onChange={e => setNpcForm({...npcForm, type:e.target.value})}>
                   <option value="">Select type...</option>
                   {[...new Set(npcs.map(n=>(n.npc_type||'').trim()).filter(Boolean))].sort().map(t => <option key={t} value={t}>{t}</option>)}
-                  {auth.level>=3 ? <option value="__new">+ New Type...</option> : null}
+                  <option value="__new">+ New Type...</option>
                 </select>
                 {npcForm.type==='__new' && <input style={{...s.input,marginTop:8}} placeholder="Enter new type name..." onChange={e => setNpcForm({...npcForm, customType:e.target.value})} />}
               </div>

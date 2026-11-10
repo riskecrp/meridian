@@ -10,7 +10,7 @@ const btn = { background:'var(--accent)', color:'white', border:'none', padding:
 
 export default function KnowledgeBasePage() {
   const auth = useAuth();
-  const { showConfirm, showForm: dialogForm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
 
   const [lore, setLore]   = useState([]);
   const [cmds, setCmds]   = useState([]);
@@ -33,7 +33,8 @@ export default function KnowledgeBasePage() {
 
   const refresh = async () => {
     setLoading(true);
-    const [l, c] = await Promise.all([getLoreEntries(), getCommandEntries()]);
+    // Management commands are L3/Event Team content, server-side as well as here.
+    const [l, c] = await Promise.all([getLoreEntries(), (auth.level >= 3 || auth.isEventTeam) ? getCommandEntries() : Promise.resolve([])]);
     setLore(l); setCmds(c); setLoading(false);
   };
 
@@ -90,8 +91,8 @@ export default function KnowledgeBasePage() {
   };
   const handleSubmit = async () => {
     if (!form.title.trim()) return;
-    if (editId) await editKBEntry(editId, form);
-    else await addKBEntry(form, formType);
+    const res = editId ? await editKBEntry(editId, form) : await addKBEntry(form, formType);
+    if (!res?.ok) return showAlert('Error: ' + (res?.error || 'Unknown'));
     setShowForm(false); setEditId(null); refresh();
   };
 
@@ -110,8 +111,8 @@ export default function KnowledgeBasePage() {
       {/* Controls */}
       <div style={{display:'flex', gap:8, marginBottom:10, flexShrink:0, alignItems:'center'}}>
         <input style={{...inp, flex:1}} placeholder="Search by title, content, category or notes…" value={search} onChange={e => setSearch(e.target.value)} />
-        {(auth.level >= 2 || auth.isEventTeam) && <button style={btn} onClick={() => openAdd('lore')}>+ Entry</button>}
-        {(auth.level >= 3 || auth.isEventTeam) && <button style={{...btn, background:'var(--green)'}} onClick={() => openAdd('command')}>+ Management</button>}
+        {auth.level >= 2 && <button style={btn} onClick={() => openAdd('lore')}>+ Entry</button>}
+        {auth.level >= 3 && <button style={{...btn, background:'var(--green)'}} onClick={() => openAdd('command')}>+ Management</button>}
       </div>
 
       {/* Filter pills */}
@@ -221,14 +222,14 @@ export default function KnowledgeBasePage() {
                   >
                     {ic ? '✓ Copied' : 'Copy'}
                   </button>
-                  {(auth.level >= 2 || auth.isEventTeam) && (
+                  {auth.level >= 2 && (
                     <>
                       <button
                         onClick={() => openEdit(item)}
                         style={{padding:'8px 12px', borderRadius:7, cursor:'pointer', border:'1px solid var(--border)', background:'transparent', color:'var(--fg-2)', fontSize:11, fontWeight:600}}
                       >Edit</button>
                       <button
-                        onClick={async () => { if (await showConfirm(`Delete "${item.title}"?`)) { await deleteKBEntry(item.id); refresh(); } }}
+                        onClick={async () => { if (await showConfirm(`Delete "${item.title}"?`)) { const r = await deleteKBEntry(item.id); if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown')); refresh(); } }}
                         style={{padding:'8px 10px', borderRadius:7, cursor:'pointer', border:'1px solid rgba(248,113,113,0.2)', background:'transparent', color:'var(--red)', fontSize:11, fontWeight:600}}
                       >Del</button>
                     </>

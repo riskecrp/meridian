@@ -1,7 +1,10 @@
 import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
 import { query, queryOne, run } from '../lib/db.js';
-import { logAudit, actorOf } from '../lib/audit.js';
+import { logAudit } from '../lib/audit.js';
+import { requireStaff } from '../lib/auth.js';
 
+// setDefaultMemberPermissions only hides the command from the menu; the
+// requireStaff(3) check below is the real gate.
 export default {
   data: new SlashCommandBuilder()
     .setName('autodelete')
@@ -21,17 +24,21 @@ export default {
       .setDescription('List all channels with auto-delete enabled')),
 
   async execute(interaction) {
+    const actor = await requireStaff(interaction, 3);
+    if (!actor) return;
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'set') {
       const channel = interaction.options.getChannel('channel');
-      const delay   = interaction.options.getInteger('delay') ?? 0;
+      const delay   = Math.min(3600, Math.max(0, interaction.options.getInteger('delay') ?? 0));
       run(
-        `INSERT OR REPLACE INTO auto_delete_channels (channel_id, channel_name, delay_seconds, added_by_id, added_by_name, added_at)
-         VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-        [channel.id, channel.name, delay, interaction.user.id, interaction.user.globalName || interaction.user.username]
+        `INSERT INTO auto_delete_channels (channel_id, channel_name, delay_seconds, added_by_id, added_by_name, added_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(channel_id) DO UPDATE SET channel_name = excluded.channel_name, delay_seconds = excluded.delay_seconds,
+           added_by_id = excluded.added_by_id, added_by_name = excluded.added_by_name, added_at = excluded.added_at`,
+        [channel.id, channel.name, delay, actor.id, actor.name]
       );
-      logAudit(interaction.user.id, actorOf(interaction), 'EDIT', 'auto_delete_channel', channel.id, '#' + channel.name, `auto-delete on, delay ${delay}s`);
+      logAudit(actor.id, actor.name, 'EDIT', 'auto_delete_channel', channel.id, '#' + channel.name, `auto-delete on, delay ${delay}s`);
       const label = delay === 0 ? 'immediately' : `after ${delay}s`;
       await interaction.reply({
         content: `✅ Auto-delete enabled in <#${channel.id}> — messages will be deleted **${label}**.`,
@@ -48,7 +55,7 @@ export default {
         return;
       }
       run("DELETE FROM auto_delete_channels WHERE channel_id = ?", [channel.id]);
-      logAudit(interaction.user.id, actorOf(interaction), 'DELETE', 'auto_delete_channel', channel.id, '#' + channel.name, 'auto-delete off');
+      logAudit(actor.id, actor.name, 'DELETE', 'auto_delete_channel', channel.id, '#' + channel.name, 'auto-delete off');
       await interaction.reply({ content: `✅ Auto-delete disabled for <#${channel.id}>.`, ephemeral: true });
       return;
     }
@@ -63,7 +70,7 @@ export default {
         const label = r.delay_seconds === 0 ? 'immediate' : `${r.delay_seconds}s delay`;
         return `• <#${r.channel_id}> (${r.channel_name}) — ${label} — set by ${r.added_by_name}`;
       });
-      await interaction.reply({ content: `**Auto-delete channels:**\n${lines.join('\n')}`, ephemeral: true });
+      await interaction.reply({ content: `**Auto-delete channels:**\n${lines.join('\n')}`.slice(0, 1900), ephemeral: true });
     }
   },
 };

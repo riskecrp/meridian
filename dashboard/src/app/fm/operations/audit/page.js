@@ -6,24 +6,32 @@ import { getAuditLog, deleteAuditLogEntry, getSyncStatus } from "../actions";
 import { st } from "../_shared/styles";
 import OperationsShell from "../_shared/Shell";
 import TableSkeleton from "../../../../lib/TableSkeleton";
+import { isOwner } from "../../../../lib/constants.js";
 
+// Leadership (L3) only. The log carries staff clearance changes, access
+// grants and denial reasons, so Event Team (read-only on scene material,
+// policy 4) does not get it. Pruning is owner-only.
 export default function AuditPage() {
   const auth = useAuth();
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
   const [auditLog, setAuditLog] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [auditSearch, setAuditSearch] = useState('');
   const [jobs, setJobs] = useState([]);
+  const canPrune = isOwner(auth.id) || isOwner(auth._realId);
 
   useEffect(() => {
-    if (auth.loading || (auth.level < 3 && !auth.isEventTeam)) return;
+    if (auth.loading || auth.level < 3) return;
     refresh();
   }, [auth.loading, auth.level]);
 
   const refresh = async () => {
-    setLoading(true);
-    const [log, status] = await Promise.all([getAuditLog(200), getSyncStatus()]);
-    setAuditLog(log); setJobs(status); setLoading(false);
+    setLoading(true); setError('');
+    const [log, status] = await Promise.allSettled([getAuditLog(200), getSyncStatus()]);
+    if (log.status === 'fulfilled') setAuditLog(log.value || []); else setError(log.reason?.message || 'Could not load the audit log.');
+    setJobs(status.status === 'fulfilled' ? (status.value || []) : []);
+    setLoading(false);
   };
 
   // A job is judged against its own cadence: no success in three times the
@@ -40,12 +48,13 @@ export default function AuditPage() {
   };
 
   if (auth.loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
-  if (auth.level < 3 && !auth.isEventTeam) return <div className="p-10" style={{color:'var(--red)'}}>Access denied.</div>;
+  if (auth.level < 3) return <div className="p-10" style={{color:'var(--red)'}}>Leadership (L3) access required.</div>;
   if (loading) return <TableSkeleton cols={['1fr','0.7fr','0.7fr','1.4fr','0.8fr','0.3fr']} rows={8} />;
 
   return (
     <OperationsShell title="Audit Log" docs={[{"title": "Staff Management", "label": "Staff Management Guide", "minLevel": 3}]} authLevel={auth?.level || 3}>
       <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+        {error && <div style={{ color:'var(--red)', fontSize:12 }}>{error}</div>}
         {/* Background job health. Sits above the log because this is the page
             people open when something looks wrong, and a stalled sync is the most
             likely answer. */}
@@ -90,7 +99,7 @@ export default function AuditPage() {
                 <th>Target</th>
                 <th>Details</th>
                 <th>Actor</th>
-                <th></th>
+                {canPrune && <th></th>}
               </tr>
             </thead>
             <tbody>
@@ -116,7 +125,13 @@ export default function AuditPage() {
                         fontFamily:'var(--font-mono)' }} title="Performed through the Discord bot">BOT</span>
                     )}
                   </td>
-                  <td><button onClick={async()=>{if(await showConfirm('Delete this audit entry?')){await deleteAuditLogEntry(log.id);refresh();}}} className="opacity-0 group-hover:opacity-100 transition-opacity" style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10,fontWeight:700}}>Del</button></td>
+                  {/* Pruning is owner-only (deleteAuditLogEntry refuses everyone else). */}
+                  {canPrune && <td><button onClick={async()=>{
+                    if(!(await showConfirm('Delete this audit entry?'))) return;
+                    let r; try { r = await deleteAuditLogEntry(log.id); } catch (e) { await showAlert(e?.message || 'Failed'); return; }
+                    if (r?.ok === false) { await showAlert(r.error || 'Failed'); return; }
+                    refresh();
+                  }} className="opacity-0 group-hover:opacity-100 transition-opacity" style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10,fontWeight:700}}>Del</button></td>}
                 </tr>
               ))}
             </tbody>

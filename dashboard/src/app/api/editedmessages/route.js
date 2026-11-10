@@ -1,5 +1,5 @@
 import { query } from '../../../lib/db.js';
-import { requireLeadership, safeJson } from '../_shared/logsApi.js';
+import { requireLeadership, safeJson } from '../memberlog/gate.js';
 
 export const dynamic = 'force-dynamic';
 

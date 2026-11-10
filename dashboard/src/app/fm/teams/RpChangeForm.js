@@ -22,18 +22,21 @@ export default function RpChangeForm({ contact, onSubmit, onCancel, busy }) {
     <div style={{ padding: '12px', fontSize: 12, color: 'var(--fg-4)', fontStyle: 'italic' }}>Loading form data...</div>
   );
 
-  const { npcs, npcTypes, properties } = formData;
+  const { npcs, npcTypes, properties, scoped } = formData;
+  // The option value is the NPC id, so the server can record exactly which NPC
+  // the request is about (two NPCs of one type on one turf are no longer ambiguous).
+  const npcById = (id) => npcs.find(n => String(n.id) === String(id));
+  const current = npcById(selectedNpc);
 
   const handleNpcSelect = (val) => {
     setSelectedNpc(val);
-    // val format: "npc_type|turf"
-    const [type] = val.split('|');
+    const npc = npcById(val);
     // pre-fill new type to same (user will change it)
-    if (!rpNewType) setRpNewType(type);
+    if (!rpNewType && npc) setRpNewType(npc.npc_type);
   };
 
   const canSubmit = () => {
-    if (rpType === 'NPC') return selectedNpc && rpNewType && rpNewType !== selectedNpc.split('|')[0];
+    if (rpType === 'NPC') return current && rpNewType && rpNewType !== current.npc_type;
     if (rpType === 'HQ') return oldAddr && newAddr.trim();
     return details.trim();
   };
@@ -41,8 +44,7 @@ export default function RpChangeForm({ contact, onSubmit, onCancel, busy }) {
   const handleSubmit = () => {
     let data;
     if (rpType === 'NPC') {
-      const [npcType, turf] = selectedNpc.split('|');
-      data = { type: 'NPC', oldValue: npcType, newValue: rpNewType, turf };
+      data = { type: 'NPC', npcId: current.id, oldValue: current.npc_type, newValue: rpNewType, turf: current.turf };
     } else if (rpType === 'HQ') {
       data = { type: 'HQ', oldValue: oldAddr, newValue: newAddr.trim(), turf: 'N/A' };
     } else {
@@ -72,15 +74,19 @@ export default function RpChangeForm({ contact, onSubmit, onCancel, busy }) {
           <select value={selectedNpc} onChange={e => handleNpcSelect(e.target.value)} style={inp}>
             <option value="">Select NPC...</option>
             {npcs.map(n => (
-              <option key={n.id} value={`${n.npc_type}|${n.turf}`}>
+              <option key={n.id} value={String(n.id)}>
                 {n.name} ({n.npc_type}) — {n.turf}
               </option>
             ))}
           </select>
-          {selectedNpc && (
+          {!scoped && npcs.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--fg-4)', marginTop: 4 }}>No NPC is registered to this faction&apos;s turf — showing every claimable NPC.</div>
+          )}
+          {formData.error && <div style={{ fontSize: 10, color: 'var(--red)', marginTop: 4 }}>{formData.error}</div>}
+          {current && (
             <div style={{ fontSize: 10, color: 'var(--fg-3)', marginTop: 4 }}>
-              Turf: <span style={{ color: 'var(--fg-1)' }}>{selectedNpc.split('|')[1]}</span>
-              {' · '}Current type: <span style={{ color: 'var(--fg-1)' }}>{selectedNpc.split('|')[0]}</span>
+              Turf: <span style={{ color: 'var(--fg-1)' }}>{current.turf}</span>
+              {' · '}Current type: <span style={{ color: 'var(--fg-1)' }}>{current.npc_type}</span>
             </div>
           )}
         </div>

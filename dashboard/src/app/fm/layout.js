@@ -59,17 +59,19 @@ const SECTIONS = [
       { name: "Fleet", href: "/fm/operations/fleet", blurb: "Faction vehicles on the books" },
       { name: "Vehicle Catalog", href: "/fm/operations/vehicles", blurb: "Catalogue of vehicles by tier", eventTeam: true, minView: 2, lst: true },
       { name: "Conversations", href: "/fm/operations/conversations", blurb: "Harvested team channel history" },
-      { name: "Archive", href: "/fm/operations/archive", blurb: "Retired factions and old records" },
+      // Archived factions live under Factions (fm) / Admin › Records (v2); the
+      // old /fm/operations/archive route never existed.
       { name: "Audit Log", href: "/fm/operations/audit", blurb: "Who changed what, site and bot", eventTeam: true },
-      { name: "Recurring Reminders", href: "/fm/operations/reminders", blurb: "Reminders that repeat on a schedule", level: 2 },
+      // Team leads manage their own team's reminders; leadership sees all.
+      { name: "Recurring Reminders", href: "/fm/operations/reminders", blurb: "Reminders that repeat on a schedule", minView: 2 },
       { name: "Important Links", href: "/fm/operations/links", blurb: "Shortcuts staff need often" },
       { name: "Staff", href: "/fm/operations/staff", blurb: "Staff records, ranks and clearance" },
       { name: "Discord & Access", href: "/fm/operations/discord", blurb: "Pings, bot servers and who can log in" },
-      { name: "Member Log",  href: "/fm/operations/memberlog", blurb: "Joins and leaves across the server",  userId: "738214924760907907" },
+      { name: "Member Log",  href: "/fm/operations/memberlog", blurb: "Joins and leaves across the server",  owner: true },
       // FM Hours is where the report is built; the view that gets sent out is a
       // link on that page rather than a second nav entry, since they are two ends
-      // of one job.
-      { name: "FM Hours", href: "/fm/operations/fmhours", blurb: "Build and send the staff activity report", userId: "738214924760907907" },
+      // of one job. Team leads record their own team's hours; leadership posts.
+      { name: "FM Hours", href: "/fm/operations/fmhours", blurb: "Build and send the staff activity report", minView: 2 },
     ],
   },
   {

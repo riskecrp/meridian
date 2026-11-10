@@ -129,7 +129,7 @@ export default function ArsenalPage() {
             {/* Controls row */}
             <div style={{display:'flex', gap:8, flexShrink:0, alignItems:'center', flexWrap:'wrap'}}>
               <input style={{...inp, flex:1, minWidth:200}} placeholder="Search weapons, ammo, or attachments…" value={loadoutSearch} onChange={e => setLoadoutSearch(e.target.value)} />
-              {(auth.level >= 2 || auth.isEventTeam) && (
+              {auth.level >= 2 && (
                 <button style={btn} onClick={async () => {
                   const cats = await getWeaponCategories();
                   const catOpts = cats.map(c => ({label:c, value:c}));
@@ -142,11 +142,12 @@ export default function ArsenalPage() {
                     {name:'customCal',label:'Custom Caliber (if Other)', type:'text'},
                   ]);
                   if (!res?.name) return;
-                  await addWeapon({
+                  const r = await addWeapon({
                     name:     res.name,
                     category: res.category==='__other'    ? res.customCat : res.category||'',
                     caliber:  res.caliber==='__other_cal' ? res.customCal : res.caliber||'',
                   });
+                  if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown'));
                   refresh();
                 }}>+ Weapon</button>
               )}
@@ -175,7 +176,7 @@ export default function ArsenalPage() {
                       <span style={{fontSize:14, fontWeight:600, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{w.weapon_name}</span>
                       {w.caliber && <span style={{fontSize:10, fontWeight:700, padding:'3px 9px', borderRadius:5, background:'var(--accent-bg)', color:'var(--accent)', fontFamily:'var(--font-mono)', flexShrink:0}}>{w.caliber}</span>}
                       <span style={{fontSize:11, color:'var(--fg-3)', fontFamily:'var(--font-mono)', flexShrink:0, whiteSpace:'nowrap'}}>{(w.attachments||[]).length} att · {(w.ammo||[]).length} ammo</span>
-                      {(auth.level >= 2 || auth.isEventTeam) && (
+                      {auth.level >= 2 && (
                         <div className="opacity-0 group-hover:opacity-100 transition-opacity" style={{display:'flex', gap:6}} onClick={e => e.stopPropagation()}>
                           <button onClick={async () => {
                             const calOpts2 = [...new Set(loadouts.map(ww=>ww.caliber).filter(Boolean))].sort().map(c=>({label:c,value:c}));
@@ -188,15 +189,16 @@ export default function ArsenalPage() {
                               {name:'customCal',label:'Custom Caliber', type:'text'},
                             ]);
                             if (res?.name) {
-                              await editWeapon(w.id, {
+                              const r = await editWeapon(w.id, {
                                 name:     res.name,
                                 category: res.category==='__other'    ? res.customCat : res.category||'',
                                 caliber:  res.caliber==='__other_cal' ? res.customCal : res.caliber||'',
                               });
+                              if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown'));
                               refresh();
                             }
                           }} style={{fontSize:10, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', fontWeight:700}}>Edit</button>
-                          <button onClick={async () => { if (await showConfirm('Delete ' + w.weapon_name + '?')) { await deleteWeapon(w.id); refresh(); } }} style={{fontSize:10, color:'var(--red)', background:'none', border:'none', cursor:'pointer', fontWeight:700}}>Del</button>
+                          <button onClick={async () => { if (await showConfirm('Delete ' + w.weapon_name + '?')) { const r = await deleteWeapon(w.id); if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown')); refresh(); } }} style={{fontSize:10, color:'var(--red)', background:'none', border:'none', cursor:'pointer', fontWeight:700}}>Del</button>
                         </div>
                       )}
                       <span style={{fontSize:10, color:'var(--fg-4)', transform:isExp?'rotate(180deg)':'none', transition:'transform 0.15s', flexShrink:0}}>▼</span>
@@ -210,12 +212,12 @@ export default function ArsenalPage() {
                         <div>
                           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:9}}>
                             <span style={{fontSize:9, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.18em', color:'var(--amber)', fontFamily:'var(--font-mono)'}}>Attachments</span>
-                            {(auth.level >= 2 || auth.isEventTeam) && (
+                            {auth.level >= 2 && (
                               <button onClick={async () => {
                                 const opts = attachOptions.filter(a => !(w.attachments||[]).some(x => x.attachment_name===a)).map(a => ({label:a,value:a}));
-                                if (!opts.length) { await showAlert('All attachments already assigned.'); return; }
+                                if (!opts.length) { await showAlert(attachOptions.length ? 'All attachments already assigned.' : 'No attachments in the catalogue yet (spawn items of type component/attachment, or import items in an Attachment category).'); return; }
                                 const res = await showForm("Add Attachment",[{name:'att',label:'Attachment',type:'select',options:opts,placeholder:'Select…'}]);
-                                if (res?.att) { await addAttachmentCompat(w.id, res.att); refresh(); }
+                                if (res?.att) { const r = await addAttachmentCompat(w.id, res.att); if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown')); refresh(); }
                               }} style={{fontSize:9, fontWeight:700, color:'var(--amber)', background:'rgba(251,191,36,0.08)', border:'1px solid rgba(251,191,36,0.2)', borderRadius:5, padding:'2px 9px', cursor:'pointer', letterSpacing:'0.04em'}}>+ Add</button>
                             )}
                           </div>
@@ -223,7 +225,7 @@ export default function ArsenalPage() {
                             {(w.attachments||[]).map(a => (
                               <span key={a.id} className="group/att" style={{display:'inline-flex', alignItems:'center', gap:4, fontSize:11, padding:'4px 9px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.08)', color:'var(--fg-1)'}}>
                                 {a.attachment_name}
-                                {(auth.level >= 2 || auth.isEventTeam) && <button onClick={async()=>{if(await showConfirm('Remove?')){await removeAttachmentCompat(a.id);refresh();}}} className="opacity-0 group-hover/att:opacity-100 transition-opacity" style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10,lineHeight:1}}>✕</button>}
+                                {auth.level >= 2 && <button onClick={async()=>{if(await showConfirm('Remove?')){const r=await removeAttachmentCompat(a.id);if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();}}} className="opacity-0 group-hover/att:opacity-100 transition-opacity" style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10,lineHeight:1}}>✕</button>}
                               </span>
                             ))}
                             {!(w.attachments||[]).length && <span style={{fontSize:11, color:'var(--fg-4)', fontStyle:'italic'}}>None assigned</span>}
@@ -234,12 +236,12 @@ export default function ArsenalPage() {
                         <div>
                           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:9}}>
                             <span style={{fontSize:9, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.18em', color:'var(--fg-3)', fontFamily:'var(--font-mono)'}}>Compatible Ammo</span>
-                            {(auth.level >= 2 || auth.isEventTeam) && (
+                            {auth.level >= 2 && (
                               <button onClick={async () => {
                                 const opts = ammoOptions.filter(a => !(w.ammo||[]).some(x => x.ammo_name===a)).map(a => ({label:a,value:a}));
-                                if (!opts.length) { await showAlert('All ammo types already assigned.'); return; }
+                                if (!opts.length) { await showAlert(ammoOptions.length ? 'All ammo types already assigned.' : 'No ammo in the catalogue yet (spawn items of type ammo, or import items in an Ammo category).'); return; }
                                 const res = await showForm("Add Compatible Ammo",[{name:'ammo',label:'Ammo Type',type:'select',options:opts,placeholder:'Select…'}]);
-                                if (res?.ammo) { await addAmmoCompat(w.id, res.ammo); refresh(); }
+                                if (res?.ammo) { const r = await addAmmoCompat(w.id, res.ammo); if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown')); refresh(); }
                               }} style={{fontSize:9, fontWeight:700, color:'var(--accent)', background:'var(--accent-bg)', border:'1px solid rgba(160,126,245,0.2)', borderRadius:5, padding:'2px 9px', cursor:'pointer', letterSpacing:'0.04em'}}>+ Add</button>
                             )}
                           </div>
@@ -252,7 +254,7 @@ export default function ArsenalPage() {
                                     <span style={{fontSize:8, fontWeight:700, padding:'2px 6px', borderRadius:4, background:bg, color:col, fontFamily:'var(--font-mono)', textTransform:'uppercase', letterSpacing:'0.06em'}}>{a.ammo_type}</span>
                                     <span style={{fontSize:12}}>{a.ammo_name}</span>
                                   </div>
-                                  {(auth.level >= 2 || auth.isEventTeam) && <button onClick={async()=>{if(await showConfirm('Remove this ammo?')){await removeAmmoCompat(a.id);refresh();}}} className="opacity-0 group-hover/ammo:opacity-100 transition-opacity" style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10}}>✕</button>}
+                                  {auth.level >= 2 && <button onClick={async()=>{if(await showConfirm('Remove this ammo?')){const r=await removeAmmoCompat(a.id);if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();}}} className="opacity-0 group-hover/ammo:opacity-100 transition-opacity" style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10}}>✕</button>}
                                 </div>
                               );
                             })}
@@ -288,9 +290,9 @@ export default function ArsenalPage() {
                   {name:'name',     label:'Name',     type:'text'},
                   {name:'gameId',   label:'Game ID',  type:'text'},
                   {name:'category', label:'Category', type:'text'},
-                  {name:'itemType', label:'Type',     type:'select', options:[{label:'Item',value:'item'},{label:'Weapon',value:'weapon'},{label:'Ammo',value:'ammo'},{label:'Component',value:'component'}]},
+                  {name:'itemType', label:'Type',     type:'select', options:[{label:'Item',value:'item'},{label:'Weapon',value:'weapon'},{label:'Ammo',value:'ammo'},{label:'Component',value:'component'},{label:'Attachment',value:'attachment'},{label:'Vehicle',value:'vehicle'}]},
                 ]);
-                if (res?.name) { await addSpawnItem(res); refresh(); }
+                if (res?.name) { const r = await addSpawnItem(res); if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown')); refresh(); }
               }}>+ Item</button>
             </div>
 
@@ -324,8 +326,8 @@ export default function ArsenalPage() {
                               {ic ? '✓' : 'Copy'}
                             </button>
                             <div className="opacity-0 group-hover:opacity-100 transition-opacity" style={{display:'flex', gap:3}}>
-                              <button onClick={async()=>{const res=await showForm("Edit",[{name:'name',label:'Name',type:'text',default:item.name},{name:'gameId',label:'Game ID',type:'text',default:item.game_id},{name:'category',label:'Category',type:'text',default:item.category},{name:'itemType',label:'Type',type:'select',default:item.item_type,options:[{label:'Item',value:'item'},{label:'Weapon',value:'weapon'},{label:'Ammo',value:'ammo'},{label:'Component',value:'component'}]}]);if(res?.name){await editSpawnItem(item.id,res);refresh();}}} style={{fontSize:10,color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>✎</button>
-                              <button onClick={async()=>{if(await showConfirm(`Delete "${item.name}"?`)){await deleteSpawnItem(item.id);refresh();}}} style={{fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>✕</button>
+                              <button onClick={async()=>{const res=await showForm("Edit",[{name:'name',label:'Name',type:'text',default:item.name},{name:'gameId',label:'Game ID',type:'text',default:item.game_id},{name:'category',label:'Category',type:'text',default:item.category},{name:'itemType',label:'Type',type:'select',default:item.item_type,options:[{label:'Item',value:'item'},{label:'Weapon',value:'weapon'},{label:'Ammo',value:'ammo'},{label:'Component',value:'component'},{label:'Attachment',value:'attachment'},{label:'Vehicle',value:'vehicle'}]}]);if(res?.name){const r=await editSpawnItem(item.id,res);if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();}}} style={{fontSize:10,color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>✎</button>
+                              <button onClick={async()=>{if(await showConfirm(`Delete "${item.name}"?`)){const r=await deleteSpawnItem(item.id);if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();}}} style={{fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>✕</button>
                             </div>
                           </div>
                         </td>

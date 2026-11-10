@@ -2,10 +2,14 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../../lib/useAuth";
 import { useDialog } from "../../../lib/useDialog";
-import { getTeams, getTeamTasks, getTeamReminders, getMyTasks, getMyReminders, createTask, claimTask, completeTask, editTask, reassignTask, unclaimTask, requestTaskInfo, createReminder, snoozeReminder, deleteReminder, getStaffList, getRoleTargets, getTeamIcContacts, getTeamIcContactsAll, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact } from "./actions";
+import { getTeams, getTeamTasks, getTeamReminders, getMyTasks, getMyReminders, createTask, claimTask, completeTask, editTask, reassignTask, unclaimTask, requestTaskInfo, createReminder, snoozeReminder, deleteReminder, getStaffList, getRoleTargets, getTeamIcContactsAll, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact } from "./actions";
 import RpChangeForm from "./RpChangeForm";
 import SopLink from "../../../lib/SopLink";
 import { ui } from "../../../lib/ui.js";
+import { FM_GUILD_ID } from "../../../lib/constants.js";
+
+// Every server action answers { ok, error }; a failure is shown, never swallowed.
+const fmtWhen = (v) => { const d = v ? new Date(v) : null; return d && !isNaN(d) ? d.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : (v || ''); };
 
 const st = {
   ...ui,
@@ -23,7 +27,7 @@ function CreateActionForm({ staffList, roleTargets, defaultTargetType, defaultTa
   const [eventType, setEventType] = useState('OOC Meeting');
   const [eventDate, setEventDate] = useState('');
   const [eventNote, setEventNote] = useState('');
-  const [enable30m, setEnable30m] = useState(true);
+  const { showAlert } = useDialog();
 
   const buildRoleOptions = () => {
     const opts = [];
@@ -43,7 +47,7 @@ function CreateActionForm({ staffList, roleTargets, defaultTargetType, defaultTa
       if (!eventDate) return showAlert('Date required.');
       const epochMs = new Date(eventDate).getTime();
       if (isNaN(epochMs)) return showAlert('Invalid date.');
-      onSubmit({ mode: 'event', targetType, targetId, eventType, epochMs, note: eventNote, enable30m });
+      onSubmit({ mode: 'event', targetType, targetId, eventType, epochMs, note: eventNote });
     }
   };
 
@@ -116,10 +120,7 @@ function CreateActionForm({ staffList, roleTargets, defaultTargetType, defaultTa
             <div style={st.label}>Details (optional)</div>
             <input style={st.input} placeholder="Meeting topic, agenda..." value={eventNote} onChange={e => setEventNote(e.target.value)} />
           </div>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={enable30m} onChange={e => setEnable30m(e.target.checked)} />
-            <span className="text-xs" style={{ color:'var(--fg-3)' }}>Send 30-minute warning ping before event</span>
-          </label>
+          <div className="text-[10px]" style={{ color:'var(--fg-4)' }}>The 30-minute warning ping is a global switch on the reminder.warning route (Admin › Pings).</div>
         </div>
       )}
 
@@ -135,7 +136,6 @@ function CreateActionForm({ staffList, roleTargets, defaultTargetType, defaultTa
 // ── Task Card ──
 function TaskCard({ t, auth, staffList, onRefresh }) {
   const [claiming, setClaiming] = useState(false);
-  const [claimId, setClaimId] = useState("");
   const [claimDM, setClaimDM] = useState(false);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
@@ -152,15 +152,22 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
   const canRequestInfo = t.created_by_id && t.created_by_id !== auth.id;
   const doComplete = async () => {
     setCompleteSubmitting(true);
-    await completeTask(t.task_uid, completeNote.trim() || undefined);
+    const res = await completeTask(t.task_uid, completeNote.trim() || undefined);
     setCompleteSubmitting(false);
+    if (!res?.ok) { await showAlert(res?.error || 'Could not complete the task.'); return; }
     setCompleteOpen(false); setCompleteNote(''); onRefresh();
   };
   const doUnclaim = async () => {
     setUnclaimSubmitting(true);
-    await unclaimTask(t.task_uid, unclaimNote.trim() || undefined);
+    const res = await unclaimTask(t.task_uid, unclaimNote.trim() || undefined);
     setUnclaimSubmitting(false);
+    if (!res?.ok) { await showAlert(res?.error || 'Could not release the task.'); return; }
     setUnclaimOpen(false); setUnclaimNote(''); onRefresh();
+  };
+  const doClaim = async () => {
+    const res = await claimTask(t.task_uid, { enableDM: claimDM });
+    if (!res?.ok) { await showAlert(res?.error || 'Could not claim the task.'); return; }
+    setClaiming(false); setClaimDM(false); onRefresh();
   };
   const doRequestInfo = async () => {
     setRiErr('');
@@ -176,15 +183,20 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
   const [raRoles, setRaRoles] = useState({ leadershipId:'', leadId:'', allFmId:'', teams:[] });
   const [raSubmitting, setRaSubmitting] = useState(false);
   const [raErr, setRaErr] = useState('');
-  const isAssignedToMe = t.target_type === 'User' && t.target_id === auth.id;
+  const isClaimed = !!t.claimed_by && t.claimed_by !== 'None';
   const canReassign = auth.level >= 2;
-  const canUnclaim = (t.claimed_by && t.claimed_by !== 'None') && (t.claimed_by === auth.id || auth.level >= 3);
+  const canUnclaim = isClaimed && (t.claimed_by === auth.id || auth.level >= 3);
   const isL2 = auth.level < 3;
   // Lazy-load roles when reassigning opens
-  useEffect(() => { if (reassignOpen && !raRoles.leadId && !raRoles.allFmId) { getRoleTargets().then(setRaRoles); } }, [reassignOpen]);
-  const filteredStaff = isL2
-    ? staffList.filter(s => { const r=(s.rank||'').toLowerCase(); return !r.includes('leadership') && !r.includes('management') && !r.includes('game affairs'); })
-    : staffList;
+  useEffect(() => { if (reassignOpen && !raRoles.leadId && !raRoles.allFmId) { getRoleTargets().then(setRaRoles).catch(() => {}); } }, [reassignOpen]);
+  // Team leads cannot hand tasks to leadership (staff.clearance is the truth, not the rank text).
+  const filteredStaff = isL2 ? staffList.filter(s => Number(s.clearance || 0) < 3) : staffList;
+  const raRoleOptions = [
+    ...(!isL2 && raRoles.leadershipId ? [{ label: 'FM Leadership', value: raRoles.leadershipId }] : []),
+    ...(raRoles.leadId ? [{ label: 'FM Team Leads', value: raRoles.leadId }] : []),
+    ...(raRoles.allFmId ? [{ label: 'All Faction Management', value: raRoles.allFmId }] : []),
+    ...(raRoles.teams || []).map(tm => ({ label: tm.team_name, value: tm.team_id })),
+  ];
   const doReassign = async () => {
     setRaErr('');
     if (!raTid) { setRaErr('Pick a target.'); return; }
@@ -194,15 +206,15 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
     if (!res.ok) { setRaErr(res.error || 'Failed'); return; }
     setReassignOpen(false); setRaTid(''); onRefresh();
   };
-  const canEdit = t.created_by_id === auth.id;
-  const { showConfirm, showPrompt, showAlert } = useDialog();
+  const canEdit = t.created_by_id === auth.id || auth.level >= 2;
+  const { showPrompt, showAlert } = useDialog();
 
   return (
     <div className="p-4 rounded-lg" style={{ background:'var(--bg-1)', border:'1px solid var(--border)' }}>
       <div className="flex justify-between items-start mb-2">
-        <span className="text-[10px] font-mono" style={{ color:'var(--fg-4)' }}>{t.created_at}</span>
-        <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: t.claimed_by === 'None' ? 'var(--amber-bg)' : 'var(--green-bg)', color: t.claimed_by === 'None' ? 'var(--amber)' : 'var(--green)' }}>
-          {t.claimed_by === 'None' ? 'Unclaimed' : t.claimerName}
+        <span className="text-[10px] font-mono" style={{ color:'var(--fg-4)' }}>{fmtWhen(t.created_at)}{t.targetLabel ? ` · ${t.targetLabel}` : ''}</span>
+        <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: !isClaimed ? 'var(--amber-bg)' : 'var(--green-bg)', color: !isClaimed ? 'var(--amber)' : 'var(--green)' }}>
+          {!isClaimed ? 'Unclaimed' : t.claimerName}
         </span>
       </div>
       {t.next_reminder && <div className="text-[9px] mb-1 flex items-center gap-1" style={{ color:'var(--accent)' }}>🔔 Daily DM active</div>}
@@ -210,22 +222,40 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
       <div className="flex flex-wrap gap-2 pt-2" style={{ borderTop:'1px solid var(--border)' }}>
         {claiming ? (
           <div className="flex items-center gap-2 w-full p-2 rounded" style={{ background:'var(--bg-2)' }}>
-            <select style={{ ...st.input, width:'auto', flex:1 }} value={claimId} onChange={e => setClaimId(e.target.value)}>
-              <option value="">Select staff...</option>
-              {staffList.map(s => <option key={s.discord_id} value={s.discord_id}>{s.display_name}</option>)}
-            </select>
+            <span className="text-xs flex-1" style={{ color:'var(--fg-2)' }}>Claim this task as <b>{auth.name}</b>?</span>
             <label className="text-[9px] flex items-center gap-1 whitespace-nowrap" style={{ color:'var(--fg-3)' }}><input type="checkbox" checked={claimDM} onChange={e => setClaimDM(e.target.checked)} /> 24h DM</label>
-            <button style={st.btn} onClick={async () => { if (claimId) { await claimTask(t.task_uid, claimId, staffList.find(s=>s.discord_id===claimId)?.display_name||claimId, claimDM); setClaiming(false); onRefresh(); } }}>Confirm</button>
+            <button style={st.btn} onClick={doClaim}>Confirm</button>
             <button style={st.btnGhost} onClick={() => setClaiming(false)}>Cancel</button>
+          </div>
+        ) : reassignOpen ? (
+          <div className="w-full p-2 rounded space-y-2" style={{ background:'var(--bg-2)' }}>
+            <div className="flex gap-2">
+              <select style={{ ...st.input, width:'auto' }} value={raType} onChange={e => { setRaType(e.target.value); setRaTid(''); }}>
+                <option value="User">Member</option>
+                <option value="Role">Team / Role</option>
+              </select>
+              <select style={{ ...st.input, flex:1 }} value={raTid} onChange={e => setRaTid(e.target.value)}>
+                <option value="">{raType === 'User' ? 'Select staff member...' : 'Select team or role...'}</option>
+                {raType === 'User'
+                  ? filteredStaff.map(s => <option key={s.discord_id} value={s.discord_id}>{s.display_name}{s.team_name ? ` (${s.team_name})` : ''}</option>)
+                  : raRoleOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <input style={st.input} placeholder="Note for the new assignee (optional)" value={reassignNote} onChange={e => setReassignNote(e.target.value)} />
+            {raErr && <div className="text-xs" style={{ color:'var(--red)' }}>{raErr}</div>}
+            <div className="flex gap-2">
+              <button style={st.btn} disabled={raSubmitting} onClick={doReassign}>{raSubmitting ? 'Reassigning...' : 'Confirm'}</button>
+              <button style={st.btnGhost} onClick={() => { setReassignOpen(false); setRaErr(''); }}>Cancel</button>
+            </div>
           </div>
         ) : (
           <>
-            <button style={st.btnGhost} onClick={() => setClaiming(true)}>Claim</button>
-            {canEdit && <button style={{ ...st.btnGhost, color:'var(--accent)' }} onClick={async () => { const v = await showPrompt("Edit task:", t.description); if (v) { await editTask(t.task_uid, v); onRefresh(); } }}>Edit</button>}
+            {!isClaimed && <button style={st.btnGhost} onClick={() => setClaiming(true)}>Claim</button>}
+            {canEdit && <button style={{ ...st.btnGhost, color:'var(--accent)' }} onClick={async () => { const v = await showPrompt("Edit task:", t.description); if (v) { const res = await editTask(t.task_uid, v); if (!res?.ok) await showAlert(res?.error || 'Could not edit the task.'); onRefresh(); } }}>Edit</button>}
             {canReassign && <button style={{ ...st.btnGhost, color:'var(--amber)' }} onClick={() => setReassignOpen(true)}>Reassign</button>}
             {canRequestInfo && <button style={{ ...st.btnGhost, color:'var(--accent)' }} onClick={() => setRiOpen(true)}>Request Info</button>}
             {canUnclaim && <button style={{ ...st.btnGhost, color:'var(--fg-3)' }} onClick={() => setUnclaimOpen(true)}>Unclaim</button>}
-            {(canEdit || auth.level >= 3) && <button style={st.btnDanger} onClick={() => setCompleteOpen(true)}>Complete</button>}
+            <button style={st.btnDanger} onClick={() => setCompleteOpen(true)}>Complete</button>
           </>
         )}
       </div>
@@ -303,9 +333,10 @@ function TaskCard({ t, auth, staffList, onRefresh }) {
 
 // ── Reminder Card ──
 function ReminderCard({ r, auth, onRefresh }) {
-  const canEdit = r.author_id === auth.id;
-  const { showConfirm, showPrompt, showAlert } = useDialog();
+  const canEdit = r.author_id === auth.id || auth.level >= 2;
+  const { showConfirm, showAlert } = useDialog();
   const timeStr = new Date(r.epochMs).toLocaleString([], { dateStyle:'short', timeStyle:'short' });
+  const act = async (fn, msg) => { const res = await fn(); if (!res?.ok) await showAlert(res?.error || msg); onRefresh(); };
 
   return (
     <div className="p-4 rounded-lg" style={{ background:'var(--bg-1)', border:'1px solid var(--border)' }}>
@@ -315,8 +346,8 @@ function ReminderCard({ r, auth, onRefresh }) {
       </div>
       <p className="text-sm leading-relaxed mb-3" style={{ color:'var(--fg-1)' }}>{r.message}</p>
       <div className="flex gap-2 pt-2" style={{ borderTop:'1px solid var(--border)' }}>
-        <button style={st.btnGhost} onClick={async () => { await snoozeReminder(r.uuid); onRefresh(); }}>Snooze +1h</button>
-        {(canEdit || auth.level >= 3) && <button style={st.btnDanger} onClick={async () => { if (await showConfirm("Delete this event?")) { await deleteReminder(r.uuid); onRefresh(); } }}>Delete</button>}
+        {canEdit && <button style={st.btnGhost} onClick={() => act(() => snoozeReminder(r.uuid), 'Could not snooze the event.')}>Snooze +1h</button>}
+        {canEdit && <button style={st.btnDanger} onClick={async () => { if (await showConfirm("Delete this event?")) act(() => deleteReminder(r.uuid), 'Could not delete the event.'); }}>Delete</button>}
       </div>
     </div>
   );
@@ -336,27 +367,29 @@ function IcContactCard({ contact, auth, staffList, onRefresh }) {
   const [busy, setBusy]           = useState(false);
   const meta = STATUS_META[contact.status] || STATUS_META.pending_discussion;
   const canStage = auth.level >= 2;
+  const { showAlert } = useDialog();
+  const check = async (res) => { if (!res?.ok) { await showAlert(res?.error || 'Action failed.'); return false; } return true; };
 
   const doAssign = async () => {
     if (!assignId) return;
     setBusy(true);
-    const member = staffList.find(s => s.discord_id === assignId);
-    await assignIcContact(contact.id, assignId, member?.display_name || assignId);
-    setAssigning(false); setAssignId(''); setBusy(false); onRefresh();
+    const ok = await check(await assignIcContact(contact.id, assignId));
+    setBusy(false);
+    if (ok) { setAssigning(false); setAssignId(''); onRefresh(); }
   };
 
   const doStatusChange = async (newStatus) => {
     setBusy(true);
-    if (newStatus === 'completed') await completeIcContact(contact.id);
-    else await setIcContactStatus(contact.id, newStatus);
-    setBusy(false); onRefresh();
+    const res = newStatus === 'completed' ? await completeIcContact(contact.id) : await setIcContactStatus(contact.id, newStatus);
+    setBusy(false);
+    await check(res); onRefresh();
   };
 
   const doStage = async (rpData) => {
     setBusy(true);
-    await stageRoleplay(contact.id, rpData);
-    setStagingRP(false);
-    setBusy(false); onRefresh();
+    const ok = await check(await stageRoleplay(contact.id, rpData));
+    setBusy(false);
+    if (ok) { setStagingRP(false); onRefresh(); }
   };
 
   return (
@@ -370,7 +403,7 @@ function IcContactCard({ contact, auth, staffList, onRefresh }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
           {contact.thread_id && (
-            <a href={`https://discord.com/channels/@me/${contact.thread_id}`} target="_blank" rel="noreferrer"
+            <a href={`https://discord.com/channels/${FM_GUILD_ID}/${contact.thread_id}`} target="_blank" rel="noreferrer"
               style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 5, background: 'rgba(88,101,242,0.12)', color: '#818cf8', textDecoration: 'none' }}>Thread ↗</a>
           )}
           <select
@@ -401,7 +434,7 @@ function IcContactCard({ contact, auth, staffList, onRefresh }) {
         {/* Assign form */}
         {assigning && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-            <select value={assignId} onChange={e => setAssignId(e.target.value)} style={{ ...inp, flex: 1 }}>
+            <select value={assignId} onChange={e => setAssignId(e.target.value)} style={{ ...st.input, width: 'auto', flex: 1, padding: '6px 10px', fontSize: 12 }}>
               <option value="">Select member...</option>
               {staffList.map(s => <option key={s.discord_id} value={s.discord_id}>{s.display_name}</option>)}
             </select>
@@ -448,13 +481,14 @@ export default function TeamsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [roleTargets, setRoleTargets] = useState({ teams: [] });
 
-  const { showConfirm, showPrompt, showAlert } = useDialog();
+  const { showAlert } = useDialog();
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
     if (!auth.loading) {
       Promise.all([getTeams(), getStaffList(), getRoleTargets()]).then(([t, s, r]) => {
         setTeams(t); setStaffList(s); setRoleTargets(r); setLoading(false);
-      });
+      }).catch(e => { setLoadError(e?.message || 'Could not load teams.'); setLoading(false); });
     }
   }, [auth.loading]);
 
@@ -483,17 +517,17 @@ export default function TeamsPage() {
   };
 
   const handleFormSubmit = async (data) => {
-    if (data.mode === 'task') {
-      await createTask({ desc: data.desc, targetId: data.targetId, targetType: data.targetType, enableDM: data.enableDM });
-    } else {
-      await createReminder({ message: `[${data.eventType}] ${data.note || ''}`.trim(), epochMs: data.epochMs, eventType: data.eventType, note: data.note, targetType: data.targetType, targetId: data.targetId, enable30m: data.enable30m });
-    }
+    const res = data.mode === 'task'
+      ? await createTask({ desc: data.desc, targetId: data.targetId, targetType: data.targetType, enableDM: data.enableDM })
+      : await createReminder({ message: `[${data.eventType}] ${data.note || ''}`.trim(), epochMs: data.epochMs, eventType: data.eventType, note: data.note, targetType: data.targetType, targetId: data.targetId });
+    if (!res?.ok) { await showAlert(res?.error || 'Could not create that.'); return; }
     setShowCreateForm(false);
     if (workspace) refreshWorkspace();
     if (showPersonal) refreshPersonal();
   };
 
   if (auth.loading || loading) return <div className="p-10 text-sm animate-pulse" style={{ color:'var(--accent)' }}>Loading teams...</div>;
+  if (loadError) return <div className="p-10 text-sm" style={{ color:'var(--red)' }}>{loadError}</div>;
 
   return (
     <div className="w-full max-w-[1400px] mx-auto p-6 lg:p-10 space-y-8">

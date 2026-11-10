@@ -9,10 +9,15 @@ function syncChannels() {
 
 const RETENTION_DAYS = 90;
 
+let running = false;
+
 export async function syncConversations(client) {
+  if (running) { console.warn('[CONVO_SYNC] previous run still in progress — skipped'); return; }
+  running = true;
   try {
     let totalNew = 0;
     let totalBatches = 0;
+    const unreachable = [];
 
     const channels = syncChannels();
     for (const chan of channels) {
@@ -21,7 +26,7 @@ export async function syncConversations(client) {
           console.error(`[CONVO_SYNC] Cannot fetch ${chan.name}:`, e.message);
           return null;
         });
-        if (!channel) continue;
+        if (!channel) { unreachable.push(chan.name || chan.id); continue; }
 
         // Get last synced message ID for this channel
         const state = queryOne("SELECT last_message_id FROM channel_sync_state WHERE channel_id = ?", [chan.id]);
@@ -74,7 +79,8 @@ export async function syncConversations(client) {
           }
 
           if (syncedCount > 0 || !targetState) {
-            run(`INSERT OR REPLACE INTO channel_sync_state (channel_id, channel_name, last_message_id, last_synced_at) VALUES (?, ?, ?, ?)`,
+            run(`INSERT INTO channel_sync_state (channel_id, channel_name, last_message_id, last_synced_at) VALUES (?, ?, ?, ?)
+                 ON CONFLICT(channel_id) DO UPDATE SET channel_name = excluded.channel_name, last_message_id = excluded.last_message_id, last_synced_at = excluded.last_synced_at`,
               [syncKey, displayName, newestId, new Date().toISOString()]);
           }
 
@@ -110,6 +116,7 @@ export async function syncConversations(client) {
         console.log(`[CONVO_SYNC] ${chan.name}: synced ${syncedCount} new messages (channel + threads)`);
       } catch (e) {
         console.error(`[CONVO_SYNC] Error on ${chan.name}:`, e.message);
+        unreachable.push(`${chan.name || chan.id} (${e.message})`);
       }
     }
 
@@ -124,9 +131,12 @@ export async function syncConversations(client) {
     run("DELETE FROM conversation_summaries WHERE created_at < datetime('now', '-7 days')");
 
     console.log(`[CONVO_SYNC] Complete: ${totalNew} new messages across ${channels.length} channels, ${totalBatches} API calls`);
-    recordSyncOk('conversation_sync', `${totalNew} new messages across ${channels.length} channels`);
+    // A channel that cannot be read is a fault worth showing (BOT-18), not a
+    // quiet success with a smaller number.
+    if (unreachable.length) recordSyncFail('conversation_sync', `unreachable: ${unreachable.join(', ')} (${totalNew} new messages elsewhere)`);
+    else recordSyncOk('conversation_sync', `${totalNew} new messages across ${channels.length} channels`);
   } catch (e) {
     console.error('[CONVO_SYNC] Fatal error:', e.message);
     recordSyncFail('conversation_sync', e);
-  }
+  } finally { running = false; }
 }

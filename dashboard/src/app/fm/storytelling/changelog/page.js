@@ -8,7 +8,9 @@ import StorytellingShell from "../_shared/Shell";
 
 export default function ChangeLogPage() {
   const auth = useAuth();
-  const { showConfirm, showForm } = useDialog();
+  const { showConfirm, showForm, showAlert } = useDialog();
+  // Policy 4: Event Team has full rights on the change log (server-side too).
+  const canWrite = auth.level >= 3 || auth.isEventTeam;
   const [changeLogs, setChangeLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [clFilter, setClFilter] = useState('all');
@@ -35,7 +37,7 @@ export default function ChangeLogPage() {
               </button>
             ))}
           </div>
-          {auth.level >= 3 && (
+          {canWrite && (
             <button style={s.btn} onClick={async () => {
               const typeRes = await showForm("New Entry", [
                 {name:'changeType',label:'Type',type:'select',options:[{label:'Black Market Doctor',value:'black_market_doctor'},{label:'Drop Location',value:'drop_location'}]}
@@ -56,7 +58,7 @@ export default function ChangeLogPage() {
                   {name:'position',label:'/tppos Location',type:'text'}
                 ]);
               }
-              if (res && res.name) { await addChangeLog({...res, changeType: typeRes.changeType}); refresh(); }
+              if (res && res.name) { const r = await addChangeLog({...res, changeType: typeRes.changeType}); if (!r?.ok) return showAlert('Error: ' + (r?.error || 'Unknown')); refresh(); }
             }}>+ Entry</button>
           )}
         </div>
@@ -81,17 +83,17 @@ export default function ChangeLogPage() {
                   {cl.notes&&<span className="truncate" style={{color:'var(--fg-3)'}}>{cl.notes}</span>}
                   <span className="flex-1" />
                   <span className="min-w-[70px] text-right shrink-0" style={{color:'var(--fg-4)'}}>{cl.created_by}</span>
-                  {auth.level>=3&&(
+                  {canWrite&&(
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                      <button onClick={async()=>{let res;if(cl.change_type==='black_market_doctor'){res=await showForm("Edit Doctor",[{name:'name',label:'Name',type:'text',default:cl.name},{name:'position',label:'/tppos Location',type:'text',default:cl.position},{name:'action',label:'Action',type:'select',options:[{label:'Added',value:'Added'},{label:'Moved',value:'Moved'},{label:'Removed',value:'Removed'}],default:cl.action},{name:'blockedOff',label:'Blocked off?',type:'checkbox',default:!!cl.blocked_off},{name:'notes',label:'Notes',type:'text',default:cl.notes}]);}else{res=await showForm("Edit Drop",[{name:'name',label:'Name',type:'text',default:cl.name},{name:'position',label:'/tppos Location',type:'text',default:cl.position}]);}if(res&&res.name){await editChangeLog(cl.id,{...res,changeType:cl.change_type});refresh();}}} style={{color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontSize:10,fontWeight:700}}>Edit</button>
-                      <button onClick={async()=>{if(await showConfirm('Delete?')){await deleteChangeLog(cl.id);refresh();}}} style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10,fontWeight:700}}>Del</button>
+                      <button onClick={async()=>{let res;if(cl.change_type==='black_market_doctor'){res=await showForm("Edit Doctor",[{name:'name',label:'Name',type:'text',default:cl.name},{name:'position',label:'/tppos Location',type:'text',default:cl.position},{name:'action',label:'Action',type:'select',options:[{label:'Added',value:'Added'},{label:'Moved',value:'Moved'},{label:'Removed',value:'Removed'}],default:cl.action},{name:'blockedOff',label:'Blocked off?',type:'checkbox',default:!!cl.blocked_off},{name:'notes',label:'Notes',type:'text',default:cl.notes}]);}else{res=await showForm("Edit Drop",[{name:'name',label:'Name',type:'text',default:cl.name},{name:'position',label:'/tppos Location',type:'text',default:cl.position}]);}if(res&&res.name){const r=await editChangeLog(cl.id,{...res,changeType:cl.change_type});if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();}}} style={{color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontSize:10,fontWeight:700}}>Edit</button>
+                      <button onClick={async()=>{if(await showConfirm('Delete?')){const r=await deleteChangeLog(cl.id);if(!r?.ok)return showAlert('Error: '+(r?.error||'Unknown'));refresh();}}} style={{color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontSize:10,fontWeight:700}}>Del</button>
                     </div>
                   )}
                 </div>
               ))
             }
             {changeLogs.length===0&&<div className="text-center py-10 text-sm" style={{color:'var(--fg-4)'}}>No change log entries yet.</div>}
-            {changeLogs.length>0&&changeLogs.filter(cl=>clFilter==='all'||cl.change_type===clFilter).filter(cl=>!clSearch||cl.name.toLowerCase().includes(clSearch.toLowerCase())).length===0&&(
+            {changeLogs.length>0&&changeLogs.filter(cl=>clFilter==='all'||cl.change_type===clFilter).filter(cl=>{if(!clSearch)return true;const q=clSearch.toLowerCase();return cl.name.toLowerCase().includes(q)||(cl.position||'').toLowerCase().includes(q)||(cl.notes||'').toLowerCase().includes(q);}).length===0&&(
               <div className="text-center py-10 text-sm" style={{color:'var(--fg-4)'}}>No entries match your filter.</div>
             )}
           </div>

@@ -28,9 +28,9 @@ export const ui = {
   // real controls around them.
   btnSm: { background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 700, padding: '2px 5px' },
 
-  input: { width: '100%', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--fg-0)', outline: 'none' },
+  input: { width: '100%', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--fg-0)', outline: 'none' },
   label: { fontSize: 10, fontWeight: 700, color: 'var(--fg-4)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 4 },
 
   modal: { position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  modalBg: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)' },
+  modalBg: { position: 'fixed', inset: 0, background: 'rgba(5,5,10,0.75)', backdropFilter: 'blur(32px) saturate(180%)' },
 };

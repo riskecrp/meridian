@@ -8,12 +8,13 @@ import OperationsShell from "../_shared/Shell";
 
 export default function AnalyticsPage() {
   const auth = useAuth();
-  const { showConfirm, showForm, showPrompt } = useDialog();
+  const { showConfirm, showForm, showPrompt, showAlert } = useDialog();
 
   const [analytics, setAnalytics] = useState({});
   const [deletions, setDeletions] = useState([]);
   const [executions, setExecutions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (auth.loading || auth.level < 3) return;
@@ -21,9 +22,19 @@ export default function AnalyticsPage() {
   }, [auth.loading, auth.level]);
 
   const refresh = async () => {
-    setLoading(true);
-    const [a, d, e] = await Promise.all([getAnalytics(), getPendingDeletions(), getPendingExecutions()]);
-    setAnalytics(a); setDeletions(d); setExecutions(e); setLoading(false);
+    setLoading(true); setError('');
+    try {
+      const [a, d, e] = await Promise.all([getAnalytics(), getPendingDeletions(), getPendingExecutions()]);
+      setAnalytics(a || {}); setDeletions(d || []); setExecutions(e || []);
+    } catch (e) { setError(e?.message || 'Could not load analytics.'); }
+    setLoading(false);
+  };
+  // Approve / deny / execute / resolve: `{ok:false}` (state-machine refusals,
+  // unknown ids) and thrown auth errors are shown, never swallowed by a refresh.
+  const act = async (fn) => {
+    let r; try { r = await fn(); } catch (e) { await showAlert(e?.message || 'Failed'); return false; }
+    if (r && r.ok === false) { await showAlert(r.error || 'Failed'); return false; }
+    return true;
   };
 
   if (auth.loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
@@ -33,6 +44,7 @@ export default function AnalyticsPage() {
   return (
     <OperationsShell title="Analytics">
       <div className="space-y-6">
+        {error && <div style={{ color:'var(--red)', fontSize:12 }}>{error}</div>}
         {executions.length > 0 && (
           <div className="p-6 rounded-xl" style={{ background: 'var(--accent-bg)', border: '1px solid var(--accent-bg)' }}>
             <div className="text-[12px] font-black uppercase tracking-widest mb-4 flex items-center gap-2" style={{ color: 'var(--accent)' }}>
@@ -60,17 +72,19 @@ export default function AnalyticsPage() {
                   <div className="text-[10px] font-bold mb-2" style={{color: ex.status==='RP_DONE'?'var(--green)':ex.status==='APPROVED'?'var(--accent)':'var(--amber)'}}>{ex.status}</div>
                   <div className="flex gap-2 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
                     {ex.status === 'PENDING' && <>
-                      <button style={st.btnGhost} onClick={async () => { const r = await showPrompt('Denial reason:',''); if (r?.trim()) { await denyRPChange(ex.id, r.trim()); refresh(); } }}>Deny</button>
-                      <button style={{ ...st.btn, flex: 1, background:'var(--green)' }} onClick={async () => { await approveRPChange(ex.id); refresh(); }}>Approve</button>
+                      <button style={st.btnGhost} onClick={async () => { const r = await showPrompt('Denial reason:',''); if (r?.trim()) { if (await act(() => denyRPChange(ex.id, r.trim()))) refresh(); } }}>Deny</button>
+                      <button style={{ ...st.btn, flex: 1, background:'var(--green)' }} onClick={async () => { if (await act(() => approveRPChange(ex.id))) refresh(); }}>Approve</button>
                     </>}
                     {ex.status === 'APPROVED' && <span style={{fontSize:11,color:'var(--fg-4)',fontStyle:'italic'}}>Awaiting RP confirmation from team lead.</span>}
                     {ex.status === 'RP_DONE' && (
                       <button style={{ ...st.btn, flex: 1 }} onClick={async () => {
                         if (ex.type === 'NPC') {
                           const res = await showForm("Execute NPC Swap", [{ name: 'npcName', label: 'Final NPC Name', type: 'text' }, { name: 'npcPos', label: 'TP Position', type: 'text' }]);
-                          if (res && res.npcName) { await executeRPChange(ex.id, res); refresh(); }
+                          if (!res) return;
+                          if (!res.npcName?.trim() || !res.npcPos?.trim()) { await showAlert('Final NPC name and TP position are both required.'); return; }
+                          if (await act(() => executeRPChange(ex.id, { npcName: res.npcName.trim(), npcPos: res.npcPos.trim() }))) refresh();
                         } else {
-                          if (await showConfirm('Execute this change?')) { await executeRPChange(ex.id, {}); refresh(); }
+                          if (await showConfirm('Execute this change?')) { if (await act(() => executeRPChange(ex.id, {}))) refresh(); }
                         }
                       }}>Execute</button>
                     )}
@@ -94,8 +108,8 @@ export default function AnalyticsPage() {
                   <div className="text-sm mb-2" style={{ color: 'var(--fg-3)' }}>By: <span style={{ color: 'var(--red)' }}>{req.requested_by}</span></div>
                   <p className="text-sm italic p-3 rounded mb-3" style={{ background: 'var(--bg-2)', color: 'var(--fg-2)', borderLeft: '3px solid var(--red)' }}>{req.original_text?.substring(0, 150)}</p>
                   <div className="flex gap-2 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
-                    <button style={st.btnGhost} onClick={async () => { await resolveDeletion(req.id, false); refresh(); }}>Reject</button>
-                    <button style={{ ...st.btnDanger, flex: 1 }} onClick={async () => { await resolveDeletion(req.id, true); refresh(); }}>Approve Delete</button>
+                    <button style={st.btnGhost} onClick={async () => { if (await act(() => resolveDeletion(req.id, false))) refresh(); }}>Reject</button>
+                    <button style={{ ...st.btnDanger, flex: 1 }} onClick={async () => { if (await showConfirm(`Permanently delete this ${req.content_type}?`)) { if (await act(() => resolveDeletion(req.id, true))) refresh(); } }}>Approve Delete</button>
                   </div>
                 </div>
               ))}

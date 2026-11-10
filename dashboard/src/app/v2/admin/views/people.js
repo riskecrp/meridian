@@ -6,6 +6,15 @@ import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, add
 import { getFMStaffWithLinks, setCharacterLink, getFMHoursForPeriod, saveFMHours, getFMScenesForPeriod, getFMMeetingsForPeriod, postFMReport } from "../../../fm/operations/fmhours/actions.js";
 import { FormModal } from "../../Modal.js";
 
+// Run an action; `{ok:false}` or a throw becomes an alert instead of a silent refresh.
+async function act(fn) {
+  try {
+    const r = await fn();
+    if (r && r.ok === false) { window.alert(r.error || "Action failed."); return false; }
+    return true;
+  } catch (e) { window.alert(e?.message || "Action failed."); return false; }
+}
+
 /* ── Staff & Teams (L3): kanban board, drag to reassign, COI, promote/retire, dashboard access ── */
 function StaffTeams() {
   const [staff, setStaff] = useState([]);
@@ -30,18 +39,22 @@ function StaffTeams() {
   const [addingStaff, setAddingStaff] = useState(false);
   const [creatingTeam, setCreatingTeam] = useState(false);
   const [editMember, setEditMember] = useState(null);
+  const [loadErr, setLoadErr] = useState("");
 
   const refresh = async () => {
-    const [st, ac, te, fa, coi, mf, al] = await Promise.all([
-      getStaffList(), getStaffActivity(), getTeamList(), getFactionAssignments(),
-      getAllStaffCOI(), getMeridianFactions(), getDashboardAccessList(),
-    ]);
-    setStaff(st); setActivity(ac); setTeams(te); setFactions(fa);
-    setCoiEntries(coi); setMeridianFactions(mf); setAccessList(al);
-    setStaffMoves([]); setFactionMoves([]); setLoading(false);
+    try {
+      const [st, ac, te, fa, coi, mf, al] = await Promise.all([
+        getStaffList(), getStaffActivity(), getTeamList(), getFactionAssignments(),
+        getAllStaffCOI(), getMeridianFactions(), getDashboardAccessList(),
+      ]);
+      setStaff(st || []); setActivity(ac || []); setTeams(te || []); setFactions(fa || []);
+      setCoiEntries(coi || []); setMeridianFactions(mf || []); setAccessList(al || []);
+      setStaffMoves([]); setFactionMoves([]); setLoadErr("");
+    } catch (e) { setLoadErr(e?.message || "Could not load the staff board."); }
+    setLoading(false);
   };
   useEffect(() => { refresh(); }, []);
-  const refreshCOI = async () => setCoiEntries(await getAllStaffCOI());
+  const refreshCOI = async () => { try { setCoiEntries((await getAllStaffCOI()) || []); } catch (e) { window.alert(e?.message || "Could not reload COI."); } };
 
   const coiMap = useMemo(() => {
     const m = {};
@@ -127,13 +140,17 @@ function StaffTeams() {
     if (factionMoves.length) lines.push(`${factionMoves.length} faction reassignment(s)`);
     if (!window.confirm(`Commit ${lines.join(" + ")}?\n\nDiscord roles will sync automatically.`)) return;
     setCommitting(true);
-    const result = await commitAllChanges(staffMoves, factionMoves);
+    let result;
+    try { result = await commitAllChanges(staffMoves, factionMoves); }
+    catch (e) { setCommitting(false); window.alert(e?.message || "Commit failed."); return; }
     setCommitting(false);
+    if (result?.ok === false) { window.alert(result.error || "Commit failed."); return; }
     window.alert(`Done!\nStaff moved: ${result.staffMoves}\nFactions reassigned: ${result.factionMoves}\nRoles synced: ${result.rolesSynced} | Failed: ${result.rolesFailed}`);
     refresh();
   };
 
   if (loading) return <div className="empty">Loading…</div>;
+  if (loadErr) return <div className="empty" style={{ color: "var(--rose)" }}>{loadErr}</div>;
   const micro = { padding: "1px 5px", fontSize: 9 };
   return (
     <>
@@ -172,8 +189,8 @@ function StaffTeams() {
                 </div>
                 {col.id && (
                   <div style={{ display: "flex", gap: 2 }}>
-                    <button className="act" style={micro} onClick={async () => { const n = window.prompt("Rename:", col.name); if (n && n !== col.name) { await renameTeam(col.id, n); refresh(); } }}>Ren</button>
-                    <button className="act" style={{ ...micro, color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Dissolve "${col.name}"?`)) { await deleteTeam(col.id, col.name); refresh(); } }}>Del</button>
+                    <button className="act" style={micro} onClick={async () => { const n = window.prompt("Rename:", col.name); if (n && n !== col.name) { if (await act(() => renameTeam(col.id, n))) refresh(); } }}>Ren</button>
+                    <button className="act" style={{ ...micro, color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Dissolve "${col.name}"? Its staff and factions become unassigned.`)) { if (await act(() => deleteTeam(col.id, col.name))) refresh(); } }}>Del</button>
                   </div>
                 )}
               </div>
@@ -252,7 +269,7 @@ function StaffTeams() {
             </div>
             <button className="act" style={{ color: "var(--rose)" }} onClick={async () => {
               if (!window.confirm(`Revoke dashboard access for ${entry.display_name}? They will be logged out immediately.`)) return;
-              await revokeDashboardAccess(entry.discord_id);
+              if (!(await act(() => revokeDashboardAccess(entry.discord_id)))) return;
               setAccessList(al => al.filter(e => e.discord_id !== entry.discord_id));
             }}>Revoke</button>
           </div>
@@ -283,30 +300,29 @@ function StaffTeams() {
         if (!v.name?.trim()) { window.alert("Display name is required."); return; }
         if (!v.discordId?.trim()) { window.alert("Discord ID is required. Right-click the user in Discord → Copy User ID."); return; }
         const tname = teams.find(t => t.id === v.teamId)?.name || "";
-        await addStaff({ discordId: v.discordId.trim(), name: v.name.trim(), teamId: v.teamId || "", teamName: tname, rank: v.rank || "Guide" });
-        setAddingStaff(false); refresh();
+        if (await act(() => addStaff({ discordId: v.discordId.trim(), name: v.name.trim(), teamId: v.teamId || "", teamName: tname, rank: v.rank || "Guide" }))) { setAddingStaff(false); refresh(); }
       }} />}
       {creatingTeam && <FormModal title="Create team" fields={[
         { name: "teamId", label: "Discord Role ID", type: "text" },
         { name: "teamName", label: "Team Name", type: "text" },
         { name: "channelId", label: "Team Channel ID", type: "text" },
       ]} onCancel={() => setCreatingTeam(false)} onSubmit={async (v) => {
-        if (v.teamId && v.teamName) { await createTeam(v.teamId, v.teamName, v.channelId || ""); refresh(); }
-        setCreatingTeam(false);
+        if (!v.teamId?.trim() || !v.teamName?.trim()) { window.alert("Role ID and team name are required."); return; }
+        if (await act(() => createTeam(v.teamId.trim(), v.teamName.trim(), v.channelId || ""))) { setCreatingTeam(false); refresh(); }
       }} />}
       {editMember && <FormModal title={`Edit: ${editMember.display_name}`} fields={[
         { name: "name", label: "Name", type: "text", default: editMember.display_name },
         { name: "rank", label: "Rank", type: "select", options: [{ label: "Guide", value: "Guide" }, { label: "Team Lead", value: "Team Lead" }, { label: "Management", value: "Management" }], default: editMember.rank },
         { name: "lst", label: "Lead Storyteller (full access to all factions)", type: "checkbox", default: !!editMember.lead_storyteller },
       ]} onCancel={() => setEditMember(null)} onSubmit={async (v) => {
-        if (v.name !== editMember.display_name) await updateStaff(editMember.id, "display_name", v.name);
-        if (v.rank !== editMember.rank) await updateStaff(editMember.id, "rank", v.rank);
-        if (!!v.lst !== !!editMember.lead_storyteller) await updateStaff(editMember.id, "lead_storyteller", v.lst ? 1 : 0);
+        if (v.name !== editMember.display_name && !(await act(() => updateStaff(editMember.id, "display_name", v.name)))) return;
+        if (v.rank !== editMember.rank && !(await act(() => updateStaff(editMember.id, "rank", v.rank)))) return;
+        if (!!v.lst !== !!editMember.lead_storyteller && !(await act(() => updateStaff(editMember.id, "lead_storyteller", v.lst ? 1 : 0)))) return;
         setEditMember(null); refresh();
       }} />}
       {retireMember && <RetireModal member={retireMember} allStaff={staff}
         onConfirm={async (reassignments) => {
-          await retireStaff(retireMember.id, retireMember.display_name, retireMember.discord_id, reassignments);
+          if (!(await act(() => retireStaff(retireMember.id, retireMember.display_name, retireMember.discord_id, reassignments)))) return;
           const nm = retireMember.display_name;
           setRetireMember(null);
           window.alert(`${nm} has been retired. All historical data is preserved.`);
@@ -315,14 +331,17 @@ function StaffTeams() {
         onClose={() => setRetireMember(null)} />}
       {promoteMember && <PromoteModal member={promoteMember} teams={teams} staff={staff}
         onConfirm={async (newTeamName) => {
-          await promoteToLead(promoteMember.id, promoteMember.display_name, promoteMember.team_id, newTeamName);
+          if (!(await act(() => promoteToLead(promoteMember.id, promoteMember.display_name, promoteMember.team_id, newTeamName)))) return;
           const cap = promoteMember;
           setPromoteMember(null);
           window.alert(`${cap.display_name} promoted to Team Lead.${newTeamName !== cap.team_name ? `\nTeam renamed to "${newTeamName}".` : ""}`);
           refresh();
         }}
         onTakeover={async ({ existingTeamId, oldLeadStaffId, oldLeadDiscordId, oldLeadStaffName, disposition, newTeamName }) => {
-          const result = await takeoverTeam(promoteMember.id, promoteMember.display_name, existingTeamId, oldLeadStaffId, oldLeadDiscordId, oldLeadStaffName, disposition, newTeamName);
+          let result;
+          try { result = await takeoverTeam(promoteMember.id, promoteMember.display_name, existingTeamId, oldLeadStaffId, oldLeadDiscordId, oldLeadStaffName, disposition, newTeamName); }
+          catch (e) { window.alert(e?.message || "Takeover failed."); return; }
+          if (!result || result.ok === false) { window.alert(result?.error || "Takeover failed."); return; }
           const cap = promoteMember;
           setPromoteMember(null);
           window.alert([
@@ -356,7 +375,7 @@ function StaffTeams() {
                       {sCOI.map(e => (
                         <span key={e.id} className="chip" style={{ background: "var(--amber-bg)", color: "var(--amber)", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}>
                           {e.faction_name}
-                          <button style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0 }} onClick={async () => { await removeStaffCOI(e.id); await refreshCOI(); }}>×</button>
+                          <button style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0 }} onClick={async () => { if (await act(() => removeStaffCOI(e.id))) await refreshCOI(); }}>×</button>
                         </span>
                       ))}
                     </div>
@@ -369,8 +388,8 @@ function StaffTeams() {
         </div>
       )}
       {coiModalStaff && <COIModal staff={coiModalStaff} coiEntries={coiEntries} meridianFactions={meridianFactions}
-        onAdd={async (discordId, name, source) => { await addStaffCOI(discordId, name, source); await refreshCOI(); }}
-        onRemove={async (id) => { await removeStaffCOI(id); await refreshCOI(); }}
+        onAdd={async (discordId, name, source) => { if (await act(() => addStaffCOI(discordId, name, source))) await refreshCOI(); }}
+        onRemove={async (id) => { if (await act(() => removeStaffCOI(id))) await refreshCOI(); }}
         onClose={() => setCoiModalStaff(null)} />}
     </>
   );
@@ -602,9 +621,11 @@ function FMHours() {
   const [tab, setTab] = useState("links");
   const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
-  const loadStaff = async () => { setStaff(await getFMStaffWithLinks()); setLoading(false); };
+  const [loadErr, setLoadErr] = useState("");
+  const loadStaff = async () => { try { setStaff((await getFMStaffWithLinks()) || []); } catch (e) { setLoadErr(e?.message || "Could not load FM staff."); } setLoading(false); };
   useEffect(() => { loadStaff(); }, []);
   if (loading) return <div className="empty">Loading…</div>;
+  if (loadErr) return <div className="empty" style={{ color: "var(--rose)" }}>{loadErr}</div>;
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
@@ -635,9 +656,9 @@ function CharacterLinks({ staff, onSaved }) {
   const save = async (m) => {
     if (!isDirty(m)) return;
     setSaving(p => ({ ...p, [m.discord_id]: true }));
-    await setCharacterLink(m.discord_id, get(m.discord_id, "character_name", m.character_name), get(m.discord_id, "category", m.category));
+    const ok = await act(() => setCharacterLink(m.discord_id, get(m.discord_id, "character_name", m.character_name), get(m.discord_id, "category", m.category)));
     setSaving(p => ({ ...p, [m.discord_id]: false }));
-    onSaved();
+    if (ok) onSaved();
   };
   return (
     <>
@@ -757,7 +778,13 @@ function PostReport({ staff }) {
     setHours(hm); setScenes(sc); setMeetings(mt);
     setLoading(false);
   };
-  const handlePost = async () => { setPosting(true); setResult(null); const res = await postFMReport({ period, testMode }); setPosting(false); setResult(res); };
+  const handlePost = async () => {
+    if (!testMode && !window.confirm(`Post the ${period} FM hours report LIVE to the production server? This is visible to the whole FM team.`)) return;
+    setPosting(true); setResult(null);
+    let res;
+    try { res = await postFMReport({ period, testMode }); } catch (e) { res = { ok: false, error: e?.message || "Post failed." }; }
+    setPosting(false); setResult(res);
+  };
   const monthName = period ? new Date(+period.split("-")[0], +period.split("-")[1] - 1, 1).toLocaleString("en-GB", { month: "long", year: "numeric" }) : "";
   const hasData = Object.keys(hours).length > 0 || Object.keys(scenes).length > 0;
   const Section = ({ title, color, list }) => (

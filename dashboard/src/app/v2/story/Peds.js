@@ -4,64 +4,73 @@
 // faction dossier: search by look ("airport", "biker"), copy the model name or
 // the hash, done.
 //
-// Data: peds table, seeded from migrations/011_peds.sql. 246 of the 1,106 have
-// no preview image (post-2019 DLC models — no reachable source publishes one),
-// so tiles fall back to a name plate rather than pretending.
-import { useEffect, useMemo, useState } from "react";
-import { getPeds, updatePedTags } from "./actions.js";
+// Data: peds table, seeded from migrations/011_peds.sql. A handful of models
+// (17 of 1,106 after migration 013) have no preview image, so those tiles fall
+// back to a name plate rather than pretending.
+//
+// The catalogue is paged on the server (getPedsPage, 48 per page, filters in
+// SQL) so a tab open costs one page, not the whole 1,100-row catalogue;
+// images are lazy-loaded.
+import { useEffect, useRef, useState } from "react";
+import { getPedsPage, updatePedTags } from "./actions.js";
 import { useCopy, useRun } from "../hooks.js";
 
-const PAGE = 96;
+const PAGE = 48;
 
 export default function Peds({ auth, initialQ = "" }) {
-  const canEdit = auth.level >= 2 || auth.isEventTeam;
-  const [rows, setRows] = useState([]);
+  const canEdit = auth.level >= 2;
+  const [data, setData] = useState(null);       // last page payload from the server
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
   const [q, setQ] = useState(initialQ);
   const [picked, setPicked] = useState([]);      // tag filter, AND-ed
   const [category, setCategory] = useState("");
   const [imageOnly, setImageOnly] = useState(false);
   const [allTags, setAllTags] = useState(false);
   const [view, setView] = useState("grid");
-  const [limit, setLimit] = useState(PAGE);
+  const [page, setPage] = useState(1);
   const [open, setOpen] = useState(null);        // ped in the detail panel
   const [copied, copy] = useCopy();
+  const reqRef = useRef(0);
 
-  useEffect(() => { getPeds().then(r => { setRows(r || []); setLoading(false); }).catch(() => setLoading(false)); }, []);
   useEffect(() => { if (initialQ) setQ(initialQ); }, [initialQ]);
-  useEffect(() => { setLimit(PAGE); }, [q, picked, category, imageOnly]);
+  // Any filter change goes back to page 1.
+  useEffect(() => { setPage(1); }, [q, picked, category, imageOnly]);
 
-  const categories = useMemo(() => [...new Set(rows.map(r => r.category).filter(Boolean))].sort(), [rows]);
-  const tagCounts = useMemo(() => {
-    const c = new Map();
-    rows.forEach(r => r.tags.forEach(t => c.set(t, (c.get(t) || 0) + 1)));
-    return [...c.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  }, [rows]);
+  // Fetch one page whenever the filters or page change (search is debounced).
+  useEffect(() => {
+    const id = ++reqRef.current;
+    setLoading(true);
+    const t = setTimeout(() => {
+      getPedsPage({ q, category, tags: picked, imageOnly, page, per: PAGE })
+        .then(r => { if (id === reqRef.current) { setData(r); setErr(""); setLoading(false); } })
+        .catch(e => { if (id === reqRef.current) { setErr(e?.message || "Could not load peds."); setLoading(false); } });
+    }, q ? 250 : 0);
+    return () => clearTimeout(t);
+  }, [q, picked, category, imageOnly, page]);
 
-  const shown = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return rows.filter(r => {
-      if (category && r.category !== category) return false;
-      if (imageOnly && !r.image) return false;
-      if (picked.length && !picked.every(t => r.tags.includes(t))) return false;
-      if (!needle) return true;
-      return r.model_name.includes(needle)
-        || (r.display_name || "").toLowerCase().includes(needle)
-        || String(r.hash) === needle
-        || (r.hash_hex || "").toLowerCase() === needle
-        || r.tags.some(t => t.includes(needle))
-        || (r.category || "").toLowerCase().includes(needle)
-        || (r.notes || "").toLowerCase().includes(needle);
-    });
-  }, [rows, q, picked, category, imageOnly]);
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const matched = data?.matched || 0;
+  const pages = data?.pages || 1;
+  const categories = data?.categories || [];
+  const tagCounts = data?.tagCounts || [];
 
-  if (loading) return <div className="empty">Loading peds…</div>;
-  if (!rows.length) return <div className="empty">The ped catalogue is empty — run <code>scripts/build-peds.mjs</code> and apply the migration.</div>;
+  if (!data && loading) return <div className="empty">Loading peds…</div>;
+  if (!data && err) return <div className="err">{err}</div>;
+  if (data && total === 0) return <div className="empty">The ped catalogue is empty — run <code>scripts/build-peds.mjs</code> and apply the migration.</div>;
 
   const toggleTag = (t) => setPicked(p => p.includes(t) ? p.filter(x => x !== t) : [...p, t]);
   const tagsToShow = allTags ? tagCounts : tagCounts.slice(0, 20);
   const clear = () => { setPicked([]); setCategory(""); setQ(""); setImageOnly(false); };
   const filtering = picked.length || category || q || imageOnly;
+  const pager = pages > 1 && (
+    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 10, marginTop: 14 }}>
+      <button className="act" disabled={page <= 1 || loading} onClick={() => setPage(p => Math.max(1, p - 1))}>← Prev</button>
+      <span style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>Page {page} of {pages}</span>
+      <button className="act" disabled={page >= pages || loading} onClick={() => setPage(p => Math.min(pages, p + 1))}>Next →</button>
+    </div>
+  );
 
   return (
     <>
@@ -75,7 +84,7 @@ export default function Peds({ auth, initialQ = "" }) {
           <input type="checkbox" checked={imageOnly} onChange={e => setImageOnly(e.target.checked)} /> With preview only
         </label>
         <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>{shown.length} of {rows.length}</span>
+        <span style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>{loading ? "…" : `${matched} of ${total}`}</span>
         <div className="sub-tabs" style={{ padding: 0 }}>
           <button className={`tab${view === "grid" ? " on" : ""}`} onClick={() => setView("grid")}>Grid</button>
           <button className={`tab${view === "table" ? " on" : ""}`} onClick={() => setView("table")}>Table</button>
@@ -100,16 +109,17 @@ export default function Peds({ auth, initialQ = "" }) {
         {filtering ? <button className="act" style={{ padding: "2px 8px", fontSize: 11, color: "var(--rose)" }} onClick={clear}>Clear</button> : null}
       </div>
 
-      {shown.length === 0 && <div className="empty">No peds match.</div>}
+      {err && <div className="err" style={{ marginBottom: 10 }}>{err}</div>}
+      {!loading && rows.length === 0 && <div className="empty">No peds match.</div>}
 
       {view === "grid" ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(132px,1fr))", gap: 10 }}>
-          {shown.slice(0, limit).map(p => (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(132px,1fr))", gap: 10, opacity: loading ? 0.6 : 1 }}>
+          {rows.map(p => (
             <button key={p.id} onClick={() => setOpen(p)} title={p.display_name || p.model_name}
               style={{ textAlign: "left", padding: 0, cursor: "pointer", background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 10, overflow: "hidden", fontFamily: "inherit" }}>
               <div style={{ aspectRatio: "1/1", background: "var(--panel-2)", display: "grid", placeItems: "center", overflow: "hidden" }}>
                 {p.image
-                  ? <img src={`/peds/${p.image}`} alt={p.model_name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ? <img src={`/peds/${p.image}`} alt={p.model_name} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   : <span style={{ fontSize: 10, color: "var(--ink-3)", fontFamily: "var(--v2-mono)", padding: 8, textAlign: "center", wordBreak: "break-all" }}>{p.model_name}</span>}
               </div>
               <div style={{ padding: "6px 8px 8px" }}>
@@ -120,13 +130,13 @@ export default function Peds({ auth, initialQ = "" }) {
           ))}
         </div>
       ) : (
-        <div className="card"><div style={{ overflowX: "auto" }}>
+        <div className="card" style={{ opacity: loading ? 0.6 : 1 }}><div style={{ overflowX: "auto" }}>
           <table className="dtable" style={{ minWidth: 720 }}>
             <thead><tr><th></th><th>Model</th><th>Name</th><th>Hash</th><th>Category</th><th>Tags</th></tr></thead>
             <tbody>
-              {shown.slice(0, limit).map(p => (
+              {rows.map(p => (
                 <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => setOpen(p)}>
-                  <td style={{ width: 40 }}>{p.image ? <img src={`/peds/${p.image}`} alt="" loading="lazy" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 5 }} /> : <div style={{ width: 32, height: 32, borderRadius: 5, background: "var(--panel-2)" }} />}</td>
+                  <td style={{ width: 40 }}>{p.image ? <img src={`/peds/${p.image}`} alt="" loading="lazy" decoding="async" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 5 }} /> : <div style={{ width: 32, height: 32, borderRadius: 5, background: "var(--panel-2)" }} />}</td>
                   <td style={{ fontFamily: "var(--v2-mono)", fontSize: 11 }}>{p.model_name}</td>
                   <td>{p.display_name || <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
                   <td style={{ fontFamily: "var(--v2-mono)", fontSize: 11, color: "var(--ink-2)" }}>{p.hash_hex}</td>
@@ -139,11 +149,7 @@ export default function Peds({ auth, initialQ = "" }) {
         </div></div>
       )}
 
-      {shown.length > limit && (
-        <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>
-          <button className="btn" onClick={() => setLimit(l => l + PAGE)}>Show {Math.min(PAGE, shown.length - limit)} more</button>
-        </div>
-      )}
+      {pager}
 
       {open && (
         <PedDetail
@@ -154,7 +160,7 @@ export default function Peds({ auth, initialQ = "" }) {
           onTag={(t) => { setOpen(null); setPicked(p => p.includes(t) ? p : [...p, t]); }}
           onClose={() => setOpen(null)}
           onSaved={(updated) => {
-            setRows(rs => rs.map(r => r.id === updated.id ? updated : r));
+            setData(d => d ? { ...d, rows: d.rows.map(r => r.id === updated.id ? updated : r) } : d);
             setOpen(updated);
           }}
         />

@@ -1,22 +1,26 @@
 "use server";
-// v2 aggregation endpoints. These compose the existing guarded /fm actions
-// (each does its own requireActor) plus a few narrow read queries; nothing
-// here widens access beyond what the underlying surfaces already allow.
-import { query, queryOne, run } from "../../lib/db.js";
-import { requireActor } from "../../lib/requireActor.js";
-import { logAudit } from "../../lib/audit.js";
-import { getMyTasks, getMyMentions, getLeadershipMentions, getTeamWatchPings, getDMTrackingStatus, getForwardedDMs } from "../fm/dashboard/actions.js";
+// v2 aggregation endpoints. These compose the guarded /fm actions (each does
+// its own requireActor) plus a few narrow read queries; nothing here widens
+// access beyond what the underlying surfaces already allow.
+import { query, queryOne } from "../../lib/db.js";
+import { requireActor, getActor } from "../../lib/requireActor.js";
+import { getEffectiveLimits } from "../../lib/fleet.js";
+import {
+  getMyTasks, getMyMentions, getLeadershipMentions, getTeamWatchPings, getDMTrackingStatus, getForwardedDMs,
+  getMyRecurringInstances, completeMyRecurringInstance,
+} from "../fm/dashboard/actions.js";
 import { getPendingQueue } from "../fm/leadership/actions.js";
 import { getTeamIcContacts } from "../fm/teams/actions.js";
-import { getFleetTierDefaults } from "../fm/operations/actions.js";
+import { fail } from "../../../../shared/validate.js";
 
 const unreadCount = (arr) => (arr || []).filter(x => !x.is_read).length;
 
-// One call that answers "what needs me?" — feeds the Home queue and the bell.
+// One call that answers "what needs me?" — feeds the Home queue.
 export async function getMyAttention() {
   const actor = await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
+  // The ET boost raises actor.level here; the composed reads keep their own real-level gates.
   const isLeader = actor.level >= 2 || actor.isLeadStoryteller;
-  const isL3 = actor.level >= 3;
+  const isL3 = actor.level >= 3 && !actor.isEventTeam;
 
   // Inbox unread, mirroring exactly what /v2/inbox shows.
   const [mentions, watch, dmStatus] = await Promise.all([
@@ -53,14 +57,10 @@ export async function getMyAttention() {
     reviewsDue = isL3 ? rows : rows.filter(r => r.team_id && r.team_id === actor.teamId);
   }
 
-  // My open recurring-reminder instances for the current (UTC) month.
-  const now = new Date();
-  const reminderInstances = query(`
-    SELECT i.id, i.reminder_id, r.title, r.due_day
-    FROM recurring_reminder_instances i
-    JOIN recurring_reminders r ON r.id = i.reminder_id
-    WHERE i.recipient_id = ? AND i.completed_at IS NULL AND i.year = ? AND i.month = ?
-    ORDER BY r.due_day`, [actor.id, now.getUTCFullYear(), now.getUTCMonth() + 1]);
+  // My open recurring-reminder instances — every open one, not just this month's
+  // (an instance left open last month still needs doing). Same scope as /fm.
+  const reminderInstances = (await getMyRecurringInstances().catch(() => []))
+    .map(i => ({ id: i.id, reminder_id: i.reminder_id, title: i.title, due_day: i.due_day, year: i.year, month: i.month }));
 
   // Active IC contacts in my scope (count only; triage lives in the hub / Leadership).
   let icActive = 0;
@@ -87,24 +87,21 @@ export async function getMyAttention() {
 
 // Read-only fleet standing for one faction — counts + effective (possibly
 // overridden) limits. Caps are faction-facing capability info, so all staff
-// may read them; editing stays L3 in the hub Assets tab. Mirrors
-// getEffectiveLimits() in fm/operations/actions.js.
+// (Event Team and Lead Storytellers included) may read them; editing stays L3.
 export async function getFactionFleetSummary(factionId) {
   await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
-  const f = queryOne("SELECT id, tier FROM factions WHERE id = ?", [factionId]);
+  const id = Number(factionId);
+  const f = Number.isInteger(id) ? queryOne("SELECT id, tier FROM factions WHERE id = ?", [id]) : null;
   if (!f) return null;
-  const defaults = (await getFleetTierDefaults())[f.tier] || { types: 0, total: 0, garages: 1, stipend: 0 };
-  const override = queryOne("SELECT max_types, max_total, max_garages FROM faction_fleet_config WHERE faction_id = ?", [factionId]);
-  const veh = queryOne("SELECT COUNT(*) types, COALESCE(SUM(quantity),0) total FROM faction_fleet_vehicles WHERE faction_id = ?", [factionId]);
-  const gar = queryOne("SELECT COUNT(*) c FROM faction_fleet_garages WHERE faction_id = ?", [factionId]);
+  const limits = getEffectiveLimits(f.id, f.tier);
+  const veh = queryOne("SELECT COUNT(*) types, COALESCE(SUM(quantity),0) total FROM faction_fleet_vehicles WHERE faction_id = ?", [f.id]);
+  const gar = queryOne("SELECT COUNT(*) c FROM faction_fleet_garages WHERE faction_id = ?", [f.id]);
   return {
     typeCount: veh?.types || 0,
     totalQuantity: veh?.total || 0,
     garageCount: gar?.c || 0,
-    limits: override
-      ? { maxTypes: override.max_types ?? defaults.types, maxTotal: override.max_total ?? defaults.total, maxGarages: override.max_garages ?? defaults.garages, isOverridden: true }
-      : { maxTypes: defaults.types, maxTotal: defaults.total, maxGarages: defaults.garages, isOverridden: false },
-    stipend: defaults.stipend ?? 0,
+    limits: { maxTypes: limits.maxTypes, maxTotal: limits.maxTotal, maxGarages: limits.maxGarages, isOverridden: limits.isOverridden },
+    stipend: limits.stipend ?? 0,
   };
 }
 
@@ -115,10 +112,14 @@ export async function getFactionFleetSummary(factionId) {
 // 2026-08-04, restored from backup).
 export async function getRPExecuteTarget(execId) {
   await requireActor(3);
-  const exec = queryOne("SELECT pe.*, f.name AS faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id = f.id WHERE pe.id = ?", [execId]);
-  if (!exec) return { ok: false, error: "Request not found" };
+  const id = Number(execId);
+  const exec = Number.isInteger(id) ? queryOne("SELECT pe.*, f.name AS faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id = f.id WHERE pe.id = ?", [id]) : null;
+  if (!exec) return fail("Request not found");
   if (exec.execution_type === "NPC") {
-    const npc = queryOne("SELECT id, name, npc_type, turf, position FROM npcs WHERE turf = ? AND npc_type = ?", [exec.turf, exec.old_value]);
+    // The request may name the NPC itself or its type; match either, on the turf.
+    const npc = exec.npc_id
+      ? queryOne("SELECT id, name, npc_type, turf, position FROM npcs WHERE id = ?", [exec.npc_id])
+      : queryOne("SELECT id, name, npc_type, turf, position FROM npcs WHERE turf = ? AND (name = ? OR npc_type = ?)", [exec.turf, exec.old_value, exec.old_value]);
     return { ok: true, type: "NPC", turf: exec.turf, oldValue: exec.old_value, newValue: exec.new_value, target: npc || null };
   }
   if (exec.execution_type === "HQ") {
@@ -126,15 +127,19 @@ export async function getRPExecuteTarget(execId) {
     const newP = queryOne("SELECT id, address FROM properties WHERE faction_id = ? AND address = ?", [exec.faction_id, exec.new_value]);
     return { ok: true, type: "HQ", oldValue: exec.old_value, newValue: exec.new_value, oldFound: !!oldP, newExists: !!newP };
   }
-  return { ok: true, type: "Other", oldValue: exec.old_value, newValue: exec.new_value };
+  return { ok: true, type: exec.execution_type || "Other", oldValue: exec.old_value, newValue: exec.new_value };
 }
 
-// Every document, for the Library. The old level_required gate was relevance
-// filtering, not confidentiality (owner ruling 2026-08-03): everyone sees the
-// whole catalog; level_required becomes the "audience" tag the UI groups by.
-export async function getAllDocuments() {
+// Documents for the Library and the ⌘K palette. level_required is a GATE
+// (policy 5): the server returns only what the actor's level may read. Event
+// Team and Lead Storytellers (clearance 0) read guide-level material.
+// `titlesOnly` skips the HTML content (the palette only indexes titles).
+export async function getAllDocuments({ titlesOnly = false } = {}) {
   await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
-  return query("SELECT * FROM documents ORDER BY level_required ASC, category, title");
+  const real = await getActor();                    // real level: the ET boost must not unlock L3 documents
+  const level = Math.max(real?.level || 0, (real?.isEventTeam || real?.isLeadStoryteller) ? 1 : 0);
+  const cols = titlesOnly ? "id, title, category, level_required, updated_at" : "*";
+  return query(`SELECT ${cols} FROM documents WHERE COALESCE(level_required, 1) <= ? ORDER BY level_required ASC, category, title`, [level]);
 }
 
 // Per-faction cycle state that getReviewData can't answer: who got their
@@ -160,20 +165,12 @@ export async function getFeedbackSentThisMonth(factionName) {
   const row = queryOne(`SELECT actor_name, timestamp FROM site_audit_log
     WHERE target_type = 'feedback_sent' AND target_label = ?
       AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')
-    ORDER BY timestamp DESC LIMIT 1`, [factionName]);
+    ORDER BY timestamp DESC LIMIT 1`, [String(factionName || "")]);
   return row ? { sent: true, by: row.actor_name, at: row.timestamp } : { sent: false };
 }
 
-// Complete one of MY recurring-reminder instances (L3 may complete anyone's,
-// same as the admin Progress modal).
+// Complete one of MY recurring-reminder instances. One implementation for both
+// shells: this is the fm action (recipient, or L3 for anyone; audited).
 export async function completeMyReminderInstance(instanceId) {
-  const actor = await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
-  const inst = queryOne("SELECT id, recipient_id, completed_at FROM recurring_reminder_instances WHERE id = ?", [instanceId]);
-  if (!inst) return { ok: false, error: "Instance not found" };
-  if (inst.recipient_id !== actor.id && actor.level < 3) return { ok: false, error: "Not yours to complete" };
-  if (inst.completed_at) return { ok: true };
-  run("UPDATE recurring_reminder_instances SET completed_at = datetime('now'), completed_by_id = ?, completed_by_name = ? WHERE id = ? AND completed_at IS NULL",
-    [actor.id, actor.name, instanceId]);
-  logAudit(actor.id, actor.name, "EDIT", "recurring_reminder_instance", instanceId, "", inst.recipient_id === actor.id ? "Self completed" : "Completed");
-  return { ok: true };
+  return completeMyRecurringInstance(instanceId);
 }
