@@ -694,8 +694,9 @@ export default function DashboardPage() {
               </div>
             ))}
             {queue.promos.map(p => {
+              // pending_promo is either a JSON blob with .tier or a bare tier number ('4').
               let displayTier = p.target_tier;
-              try { displayTier = JSON.parse(p.target_tier).tier; } catch {}
+              try { const j = JSON.parse(p.target_tier); displayTier = (j && typeof j === 'object') ? (j.tier ?? p.target_tier) : j; } catch {}
               return (
                 <div key={p.faction_id} style={{padding:'10px 12px', borderRadius:8, background:'var(--green-bg)', border:'1px solid rgba(74,222,128,0.2)', flex:'1 1 240px', minWidth:0, display:'flex', flexDirection:'column', gap:6}}>
                   <div>
