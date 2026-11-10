@@ -2,8 +2,8 @@
 import { cookies } from 'next/headers';
 import { query } from '../../lib/db.js';
 import { validateVerifySession, VERIFY_COOKIE } from '../../lib/verifySession.js';
-import { monthKey } from '../../../shared/dates.js';
-import { toInt } from '../../../shared/validate.js';
+import { monthKey } from '../../../../shared/dates.js';
+import { toInt } from '../../../../shared/validate.js';
 
 // The activity-verification portal: an external audience (the management
 // server's verifiers) checks that FM staff were active in a month. It shows

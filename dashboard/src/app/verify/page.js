@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from 'react';
-import { getVerifySession, getVerifyActivity, getVerifyNotes, getVerifyScenes } from './actions';
+import { getVerifySession, getVerifyActivity, getVerifyScenes, getVerifyMeetings } from './actions';
 
 const now = new Date();
 const DEFAULT_PERIOD = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -15,15 +15,6 @@ function Tag({ children, color = 'var(--accent)', bg = 'rgba(160,126,245,0.13)' 
   );
 }
 
-function Stat({ label, value }) {
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--fg-0)', lineHeight: 1 }}>{value}</div>
-      <div style={{ fontSize: 11, color: 'var(--fg-4)', marginTop: 3 }}>{label}</div>
-    </div>
-  );
-}
-
 function People({ label, names }) {
   if (!names?.length) return null;
   return (
@@ -35,14 +26,14 @@ function People({ label, names }) {
 }
 
 /* ── tabs ────────────────────────────────────────────── */
-const TABS = [['activity', 'Staff Activity'], ['notes', 'Meeting Notes'], ['scenes', 'Scenes']];
+const TABS = [['activity', 'Staff Activity'], ['scenes', 'Scenes'], ['meetings', 'Meetings']];
 
 /* ── activity tab ────────────────────────────────────── */
 function ActivityTab({ staff }) {
   const support  = staff.filter(m => m.category !== 'moderator');
   const mods     = staff.filter(m => m.category === 'moderator');
 
-  const Section = ({ title, rows, accent, bg }) => (
+  const Section = ({ title, rows, accent }) => (
     <div style={{ marginBottom: 32 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
         <div style={{ width: 4, height: 18, borderRadius: 2, background: accent }} />
@@ -80,36 +71,27 @@ function ActivityTab({ staff }) {
 
   return (
     <div>
-      <Section title="Support" rows={support} accent="var(--accent)" bg="rgba(160,126,245,0.08)" />
-      <Section title="Moderator+" rows={mods} accent="#22c55e" bg="rgba(34,197,94,0.08)" />
+      <Section title="Support" rows={support} accent="var(--accent)" />
+      <Section title="Moderator+" rows={mods} accent="#22c55e" />
     </div>
   );
 }
 
-/* ── notes tab ───────────────────────────────────────── */
-function NotesTab({ notes }) {
-  const [expanded, setExpanded] = useState(null);
-  if (notes.length === 0) return <Empty text="No meeting notes for this period." />;
+/* ── meetings tab: when, who, which faction — the minutes stay internal ── */
+function MeetingsTab({ meetings }) {
+  if (meetings.length === 0) return <Empty text="No meetings for this period." />;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {notes.map(n => (
-        <div key={n.id} style={{ border: `1px solid ${expanded === n.id ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 14, overflow: 'hidden', background: 'var(--bg-1)', transition: 'border-color 0.15s' }}>
-          <div style={{ padding: '16px 20px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: 16 }}
-            onClick={() => setExpanded(expanded === n.id ? null : n.id)}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg-0)' }}>{n.faction_name}</span>
-                <Tag>{n.date}</Tag>
-              </div>
-              <People label="Author"  names={[n.author]} />
-              <People label="Present" names={n.present} />
-            </div>
-            <span style={{ color: 'var(--fg-4)', fontSize: 12, transform: expanded === n.id ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0, marginTop: 3 }}>▼</span>
+      {meetings.map(n => (
+        <div key={n.id} style={{ border: '1px solid var(--border)', borderRadius: 14, background: 'var(--bg-1)', padding: '16px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg-0)' }}>{n.label}</span>
+            <Tag>{n.date}</Tag>
+            {n.meeting_type && <Tag bg="var(--bg-3)" color="var(--fg-3)">{n.meeting_type}</Tag>}
+            {n.duration_hours ? <span style={{ fontSize: 11, color: 'var(--fg-4)' }}>{n.duration_hours}h</span> : null}
           </div>
-          {expanded === n.id && (
-            <div className="quill-content" style={{ padding: '0 20px 20px', borderTop: '1px solid var(--border)', paddingTop: 16, fontSize: 13, lineHeight: 1.7, color: 'var(--fg-1)' }}
-              dangerouslySetInnerHTML={{ __html: n.content || '<em style="color:var(--fg-4)">No content</em>' }} />
-          )}
+          <People label="Author"  names={[n.author]} />
+          <People label="Present" names={n.present} />
         </div>
       ))}
     </div>
@@ -139,7 +121,8 @@ function ScenesTab({ scenes }) {
             )}
           </div>
           {expanded === sc.id && sc.notes && (
-            <div style={{ padding: '0 20px 16px', borderTop: '1px solid var(--border)', paddingTop: 14, fontSize: 13, color: 'var(--fg-2)', lineHeight: 1.6 }}>
+            // Plain text, never HTML: JSX escapes whatever a staff member typed.
+            <div style={{ padding: '0 20px 16px', borderTop: '1px solid var(--border)', paddingTop: 14, fontSize: 13, color: 'var(--fg-2)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
               {sc.notes}
             </div>
           )}
@@ -157,32 +140,42 @@ function Loading() {
   return <div style={{ padding: '60px 0', textAlign: 'center', fontSize: 13, color: 'var(--accent)', animation: 'pulse 1.5s infinite' }}>Loading…</div>;
 }
 
+const toLogin = () => { if (typeof window !== 'undefined') window.location.href = '/api/auth/verify-logout'; };
+
 /* ── main page ───────────────────────────────────────── */
 export default function VerifyPage() {
   const [session, setSession] = useState(null);
   const [period,  setPeriod]  = useState(DEFAULT_PERIOD);
   const [tab,     setTab]     = useState('activity');
   const [staff,   setStaff]   = useState([]);
-  const [notes,   setNotes]   = useState([]);
   const [scenes,  setScenes]  = useState([]);
+  const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
 
-  useEffect(() => { getVerifySession().then(setSession); }, []);
+  // An absent, tampered, expired or revoked cookie passes the middleware (it
+  // only checks presence); the first server call tells us, and we go to login.
+  useEffect(() => {
+    getVerifySession().then(s => { if (!s) toLogin(); else setSession(s); }).catch(toLogin);
+  }, []);
 
   useEffect(() => {
     const [y, m] = period.split('-').map(Number);
-    setLoading(true);
-    Promise.all([getVerifyActivity(y, m), getVerifyNotes(y, m), getVerifyScenes(y, m)])
-      .then(([a, n, sc]) => { setStaff(a); setNotes(n); setScenes(sc); setLoading(false); })
-      .catch(() => setLoading(false));
+    setLoading(true); setError('');
+    Promise.all([getVerifyActivity(y, m), getVerifyScenes(y, m), getVerifyMeetings(y, m)])
+      .then(([a, sc, mt]) => { setStaff(a); setScenes(sc); setMeetings(mt); setLoading(false); })
+      .catch((e) => {
+        if (/Not authenticated/i.test(e?.message || '')) { toLogin(); return; }
+        setError('Could not load this period.'); setLoading(false);
+      });
   }, [period]);
 
   const [py, pm] = period.split('-').map(Number);
   const periodLabel = `${MONTH_NAMES[pm - 1]} ${py}`;
 
   const totalHours    = staff.reduce((s, m) => s + m.hours, 0).toFixed(1);
-  const totalScenes   = staff.reduce((s, m) => s + m.scenes, 0);
-  const totalMeetings = notes.length;
+  const totalScenes   = scenes.length;
+  const totalMeetings = meetings.length;
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-0)', fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
@@ -239,18 +232,19 @@ export default function VerifyPage() {
               color: tab === id ? 'var(--accent)' : 'var(--fg-3)', transition: 'all 0.15s',
             }}>
               {label}
-              {id === 'notes'    && !loading && <span style={{ marginLeft: 6, fontSize: 10, background: 'var(--bg-3)', padding: '1px 6px', borderRadius: 99, color: 'var(--fg-4)' }}>{notes.length}</span>}
               {id === 'scenes'   && !loading && <span style={{ marginLeft: 6, fontSize: 10, background: 'var(--bg-3)', padding: '1px 6px', borderRadius: 99, color: 'var(--fg-4)' }}>{scenes.length}</span>}
+              {id === 'meetings' && !loading && <span style={{ marginLeft: 6, fontSize: 10, background: 'var(--bg-3)', padding: '1px 6px', borderRadius: 99, color: 'var(--fg-4)' }}>{meetings.length}</span>}
             </button>
           ))}
         </div>
 
         {/* ── content ── */}
+        {error && <div style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', border: '1px solid var(--red)', color: 'var(--red)', fontSize: 12, marginBottom: 16 }}>{error}</div>}
         {loading ? <Loading /> : (
           <>
             {tab === 'activity' && <ActivityTab staff={staff} />}
-            {tab === 'notes'    && <NotesTab    notes={notes} />}
             {tab === 'scenes'   && <ScenesTab   scenes={scenes} />}
+            {tab === 'meetings' && <MeetingsTab meetings={meetings} />}
           </>
         )}
       </div>

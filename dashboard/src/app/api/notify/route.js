@@ -1,17 +1,12 @@
 import { NextResponse } from 'next/server';
 import { getRole } from '../../../lib/discord.js';
 import { sendPing, pingMentions } from '../../../lib/pings.js';
-import { run } from '../../../lib/db.js';
+import { createTask } from '../../../../../shared/tasks.js';
+import { str } from '../../../../../shared/validate.js';
 
-function _createLeadershipTask(description) {
-  const leadershipRoleId = getRole('fm_leadership');
-  const uid = Date.now().toString();
-  const dt = new Date().toISOString();
-  run(
-    "INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, created_at, notify_creator) VALUES (?, ?, ?, 'Role', 'None', '', 'System', ?, 0)",
-    [uid, description, leadershipRoleId, dt]
-  );
-}
+// Inbound form notifications (Google Apps Script on form submit). Every call
+// must carry the shared secret in x-notify-secret; a deployment without
+// NOTIFY_SECRET accepts nothing.
 
 // Forms the bot now takes in itself, by polling their response sheets and opening
 // a thread per submission (bot/formSubmissions.js).
@@ -36,6 +31,14 @@ const FEEDBACK_DEPT_MAP = {
   'Criminal Faction Management (FM)': { route: 'form.faction_feedback.fm',  color: 15158332 },
 };
 
+// The response sheet the feedback embed links to. Overridable so a copy of the
+// dashboard pointed at another form does not advertise the production sheet.
+const FEEDBACK_SHEET_URL = process.env.NOTIFY_FEEDBACK_SHEET_URL
+  || 'https://docs.google.com/spreadsheets/d/1T6d-I_P1Gvr1nyJctk0-LM3xlXEBUNCi3CMM2MWrUoQ/edit?gid=1222111670#gid=1222111670';
+
+// The actor the shared task lifecycle records for tasks raised by an inbound form.
+const SYSTEM_ACTOR = { id: '', name: 'System', level: 3, rank: 'System', teamId: '', teamName: '', isEventTeam: false, isLeadStoryteller: false, isOwner: false, source: 'site' };
+
 // A form raises a Leadership task only when FM Leadership is actually among the
 // roles the route pings — so retargeting a form's mention retargets its follow-up.
 function _pingsLeadership(route) {
@@ -45,8 +48,9 @@ function _pingsLeadership(route) {
 }
 
 export async function POST(req) {
+  const expected = process.env.NOTIFY_SECRET;
   const secret = req.headers.get('x-notify-secret');
-  if (!secret || secret !== process.env.NOTIFY_SECRET) {
+  if (!expected || !secret || secret !== expected) {
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   }
 
@@ -56,27 +60,31 @@ export async function POST(req) {
   } catch {
     return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 });
   }
+  if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 });
 
-  const { formType } = body;
+  const formType = str(body.formType, { max: 60 });
 
   // Faction Feedback — conditional role based on department
   if (formType === 'faction_feedback') {
-    const { department, entryName } = body;
+    const department = str(body.department, { max: 80 });
+    const entryName = str(body.entryName, { max: 120 });
     const mapping = FEEDBACK_DEPT_MAP[department];
-    if (!mapping) {
-      return NextResponse.json({ error: 'Unknown department.' }, { status: 400 });
-    }
+    if (!mapping) return NextResponse.json({ error: 'Unknown department.' }, { status: 400 });
+    if (!entryName) return NextResponse.json({ error: 'entryName is required.' }, { status: 400 });
     const embed = {
       title: 'New Faction Feedback Form Received',
-      description: `You've received a new submission for **${entryName}**.\n[View the response sheet here](https://docs.google.com/spreadsheets/d/1T6d-I_P1Gvr1nyJctk0-LM3xlXEBUNCi3CMM2MWrUoQ/edit?gid=1222111670#gid=1222111670)`,
+      description: `You've received a new submission for **${entryName}**.\n[View the response sheet here](${FEEDBACK_SHEET_URL})`,
       color: mapping.color,
       timestamp: new Date().toISOString(),
     };
     await sendPing(mapping.route, null, { embeds: [embed] });
+    let task = null;
     if (_pingsLeadership(mapping.route)) {
-      _createLeadershipTask(`Faction Feedback — ${entryName}`);
+      // Through the shared lifecycle: a real uid, ISO date, audit row, Claim/Done buttons.
+      const r = await createTask(SYSTEM_ACTOR, { desc: `Faction Feedback — ${entryName}`, targetType: 'Role', targetId: getRole('fm_leadership') }, { via: 'api/notify' });
+      if (r.ok) task = r.uid; else console.error('[notify] leadership task not created:', r.error);
     }
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, ...(task ? { task } : {}) });
   }
 
   // Taken in by the bot from the response sheet instead — nothing to do here.

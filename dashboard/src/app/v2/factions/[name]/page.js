@@ -380,7 +380,7 @@ function FactionHub() {
       {/* ── Comms: portal messages + incoming contacts ── */}
       {tab === "comms" && (
         <div className="stack">
-          <div className="card">
+          {canWrite && <div className="card">
             <div className="hd"><div className="t">Post to faction page</div></div>
             <textarea className="filter-inp" rows={3} placeholder="Write a message for the faction's public page…" value={portalText} onChange={e => setPortalText(e.target.value)} style={{ marginTop: 6 }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
@@ -388,13 +388,13 @@ function FactionHub() {
               <button className="act primary" disabled={busy || !portalText.trim()} onClick={async () => { const ok = await run(() => postPortalMessage(detail.id, detail.name, portalText, portalPin)); if (ok) { setPortalText(""); setPortalPin(false); } }}>Post message</button>
             </div>
             {err && tab === "comms" && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
-          </div>
+          </div>}
           {portal.length > 0 && <div className="card"><div className="hd"><div className="t">Posted messages</div></div>
             {portal.map(m => (
               <div className="note" key={m.id}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}><span style={{ fontWeight: 700, color: "var(--accent)", fontSize: 12 }}>{m.author_name}</span>{m.is_pinned === 1 && <span className="chip" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>PINNED</span>}<span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{m.created_at?.slice(0, 16)}</span><span style={{ flex: 1 }} />
-                  <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { await togglePortalMessagePin(m.id); getFactionPortalMessages(detail.id).then(setPortal); }}>{m.is_pinned ? "Unpin" : "Pin"}</button>
-                  <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete message?")) { await deletePortalMessage(m.id); getFactionPortalMessages(detail.id).then(setPortal); } }}>Del</button>
+                  {canWrite && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { const r = await togglePortalMessagePin(m.id).catch(e => ({ ok: false, error: e.message })); if (r?.ok === false) setErr(r.error || "Failed."); getFactionPortalMessages(detail.id).then(setPortal); }}>{m.is_pinned ? "Unpin" : "Pin"}</button>}
+                  {(m.author_id === auth.id || isL3) && !archived && <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete message?")) { const r = await deletePortalMessage(m.id).catch(e => ({ ok: false, error: e.message })); if (r?.ok === false) setErr(r.error || "Failed."); getFactionPortalMessages(detail.id).then(setPortal); } }}>Del</button>}
                 </div>
                 <div style={{ color: "var(--ink-1)", whiteSpace: "pre-wrap" }}>{m.message}</div>
               </div>
@@ -410,7 +410,7 @@ function FactionHub() {
                   <div className="ch">
                     <span className="from">{c.sender_name}</span>
                     {c.contact_type && <span className="chip" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>{c.contact_type}</span>}
-                    {isLeader
+                    {level >= 2 && canWrite
                       ? <select disabled={busy} value={c.status || "pending_discussion"}
                         onChange={async e => { const v = e.target.value; if (v === "completed") { if (!window.confirm("Complete and archive this contact?")) return; await completeIcContact(c.id); } else await setIcContactStatus(c.id, v); refreshContacts(); }}
                         style={{ fontSize: 9.5, fontWeight: 700, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--line)", cursor: "pointer", outline: "none", fontFamily: "var(--v2-mono)", textTransform: "uppercase", background: "var(--panel-2)", color: "var(--ink-1)" }}>
@@ -422,10 +422,10 @@ function FactionHub() {
                     {!c.is_read && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }} />}
                     <span style={{ flex: 1 }} />
                     <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, color: "var(--ink-3)" }}>{c.submitted_at?.slice(0, 16)}</span>
-                    {!c.is_read && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { await markContactRead(c.id); refreshContacts(); }}>Mark read</button>}
+                    {!c.is_read && canWrite && <button className="act" style={{ padding: "2px 7px" }} onClick={async () => { await markContactRead(c.id).catch(() => {}); refreshContacts(); }}>Mark read</button>}
                   </div>
                   <div className="msg">{c.message}</div>
-                  {isLeader && (
+                  {level >= 2 && canWrite && (
                     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 8 }}>
                       <span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{c.assigned_name ? <><span style={{ color: "var(--accent)" }}>{c.assigned_name}</span> assigned</> : "Unassigned"}</span>
                       <span style={{ flex: 1 }} />
@@ -452,7 +452,7 @@ function FactionHub() {
       )}
 
       {/* ── Review (L2+): the monthly cycle as a guided checklist ── */}
-      {tab === "review" && isLeader && <Review {...{ detail, summary, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, fbMsg, setFbMsg, fbSent, imports, isL3, busy, err, run, form, setForm, promo }} />}
+      {tab === "review" && isLeader && <Review {...{ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, noteStatusLs, setNoteStatusLs, fbMsg, setFbMsg, fbSent, imports, isL3, canWrite, busy, err, setErr, run, form, setForm, promo, authId: auth.id }} />}
 
       {/* ── Admin (L2+) ── */}
       {tab === "admin" && isLeader && (
@@ -463,30 +463,33 @@ function FactionHub() {
                 <span style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)", minWidth: 130 }}>{h.created_at}</span>
                 <span className="chip" style={{ background: h.action_type.includes("PROMO") ? "var(--good-bg)" : "var(--accent-bg)", color: h.action_type.includes("PROMO") ? "var(--good)" : "var(--accent)" }}>{h.action_type}</span>
                 <span style={{ color: "var(--ink-1)" }}>{h.details}</span><span style={{ flex: 1 }} /><span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{h.authorized_by}</span>
-                {isL3 && <><button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ kind: "auditEdit", id: h.id, value: h.details || "" })}>Edit</button><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this audit entry?")) run(() => deleteAuditEntry(h.id)); }}>Del</button></>}
+                {isL3 && !archived && <><button className="act" style={{ padding: "2px 7px" }} onClick={() => { setErr(""); setForm({ kind: "auditEdit", id: h.id, value: h.details || "" }); }}>Edit</button><button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => { if (window.confirm("Delete this audit entry?")) run(() => deleteAuditEntry(h.id)); }}>Del</button></>}
               </div>
             ))}
           </div>
-          {isL3 && <div className="card"><div className="hd"><div className="t">Configuration</div></div>
-            <div className="clog"><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, textTransform: "uppercase", color: "var(--ink-3)", width: 60 }}>Thread</span><span style={{ fontFamily: "var(--v2-mono)", fontSize: 12, color: detail.threadId ? "var(--accent)" : "var(--ink-3)" }}>{detail.threadId || "—"}</span><span style={{ flex: 1 }} /><button className="act" style={{ padding: "2px 8px" }} onClick={() => setForm({ kind: "link", field: "thread", value: detail.threadId || "" })}>Edit</button></div>
+          {isL3 && !archived && <div className="card"><div className="hd"><div className="t">Configuration</div></div>
+            <div className="clog"><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, textTransform: "uppercase", color: "var(--ink-3)", width: 60 }}>Thread</span><span style={{ fontFamily: "var(--v2-mono)", fontSize: 12, color: detail.threadId ? "var(--accent)" : "var(--ink-3)" }}>{detail.threadId || "—"}</span><span style={{ flex: 1 }} /><button className="act" style={{ padding: "2px 8px" }} onClick={() => { setErr(""); setForm({ kind: "link", field: "thread", value: detail.threadId || "" }); }}>Edit</button></div>
           </div>}
           {isL3 && <div className="card"><div className="hd"><div className="t" style={{ color: "var(--rose)" }}>Danger zone</div></div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0" }}><span style={{ fontSize: 12, color: "var(--ink-2)" }}>Archive removes the faction from active lists — restorable from Admin › Archive.</span><button className="act" style={{ color: "var(--rose)", borderColor: "color-mix(in srgb,var(--rose) 35%,transparent)" }} onClick={async () => { if (window.confirm(`Archive ${detail.name}?`)) { await deleteFaction(detail.id, detail.name); router.push("/v2/factions"); } }}>Archive faction</button></div>
+            {archived
+              ? <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0" }}><span style={{ fontSize: 12, color: "var(--ink-2)" }}>Archived{detail.archivedAt ? ` on ${String(detail.archivedAt).slice(0, 10)}` : ""}. Restoring puts it back on every list and re-enables writes.</span><button className="act" disabled={busy} onClick={() => { if (window.confirm(`Restore ${detail.name}?`)) run(() => restoreFaction(detail.id)); }}>Restore faction</button></div>
+              : <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0" }}><span style={{ fontSize: 12, color: "var(--ink-2)" }}>Archive removes the faction from active lists, clears any staged promotion and denies its open RP requests — restorable from here or Admin › Archive.</span><button className="act" disabled={busy} style={{ color: "var(--rose)", borderColor: "color-mix(in srgb,var(--rose) 35%,transparent)" }} onClick={async () => { if (window.confirm(`Archive ${detail.name}?`)) { const ok = await run(() => deleteFaction(detail.id)); if (ok) router.push("/v2/factions"); } }}>Archive faction</button></div>}
+            {err && tab === "admin" && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
           </div>}
         </div>
       )}
 
       {/* ── Modals ── */}
-      {form?.kind === "member" && <Modal title={`${form.id ? "Edit" : "Add"} member`} onClose={() => setForm(null)} onSave={() => run(() => form.id ? updateMember(form.id, form) : addMember(detail.id, detail.name, form))} saveDisabled={!form.name.trim()}>
+      {form?.kind === "member" && <Modal title={`${form.id ? "Edit" : "Add"} member`} onClose={() => setForm(null)} onSave={() => run(() => form.id ? updateMember(form.id, form) : addMember(detail.id, detail.name, form))} saveDisabled={busy || !form.name.trim()} error={err}>
         <input className="filter-inp" placeholder="Character name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
         <input className="filter-inp" placeholder="Phone" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} />
         <input className="filter-inp" placeholder="Residence" value={form.residence} onChange={e => setForm({ ...form, residence: e.target.value })} />
         <select className="filter-inp" value={form.role} onChange={e => setForm({ ...form, role: parseInt(e.target.value) })}><option value={0}>Member</option><option value={1}>Command</option><option value={2}>Leader</option></select>
       </Modal>}
-      {form?.kind === "prop" && <Modal title={`${form.id ? "Edit" : "Add"} property`} onClose={() => setForm(null)} onSave={() => run(() => form.id ? editFactionProperty(form.id, { address: form.address, type: form.type, isHQ: form.isHQ }) : addFactionProperty(detail.id, detail.name, { address: form.address, type: form.type, isHQ: form.isHQ }))} saveDisabled={!form.address.trim()}>
+      {form?.kind === "prop" && <Modal title={`${form.id ? "Edit" : "Add"} property`} onClose={() => setForm(null)} onSave={() => run(() => form.id ? editFactionProperty(form.id, { address: form.address, type: form.type, isHQ: form.isHQ }) : addFactionProperty(detail.id, detail.name, { address: form.address, type: form.type, isHQ: form.isHQ }))} saveDisabled={busy || !form.address.trim()} error={err}>
         <input className="filter-inp" placeholder="Address" value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} />
-        <input className="filter-inp" placeholder="Type (HQ, Warehouse, Property…)" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} />
-        <label style={{ fontSize: 12.5, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={form.isHQ} onChange={e => setForm({ ...form, isHQ: e.target.checked })} /> Mark as HQ</label>
+        <select className="filter-inp" value={PROPERTY_TYPES.includes(form.type) ? form.type : "Property"} onChange={e => setForm({ ...form, type: e.target.value, isHQ: e.target.value === "HQ" ? true : form.isHQ })}>{PROPERTY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
+        <label style={{ fontSize: 12.5, color: "var(--ink-1)", display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={form.isHQ} onChange={e => setForm({ ...form, isHQ: e.target.checked })} /> Mark as HQ (replaces the current HQ)</label>
       </Modal>}
       {form?.kind === "link" && <Modal title={`Edit ${form.field}`} onClose={() => setForm(null)} onSave={() => run(() => updateFactionLinks(detail.id, form.field, form.value))} error={err}>
         <input className="filter-inp" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
@@ -508,7 +511,7 @@ function FactionHub() {
         onSave={() => run(() => editAuditEntry(form.id, form.value))}>
         <textarea className="filter-inp" rows={3} autoFocus value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
       </Modal>}
-      {form?.kind === "ooc" && <Modal maxWidth={860} title={`OOC meeting: ${detail.name}`} onClose={() => setForm(null)} onSave={submitOOC} saveDisabled={busy || !form.text.trim()}>
+      {form?.kind === "ooc" && <Modal maxWidth={860} title={`OOC meeting: ${detail.name}`} onClose={() => setForm(null)} onSave={submitOOC} saveDisabled={busy || !form.text.trim()} error={err}>
         <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16 }}>
           <div><div className="lbl" style={{ fontSize: 9, fontFamily: "var(--v2-mono)", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 6 }}>Attendance</div>
             <div style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5 }}>
@@ -522,27 +525,31 @@ function FactionHub() {
           <div><div className="lbl" style={{ fontSize: 9, fontFamily: "var(--v2-mono)", textTransform: "uppercase", color: "var(--ink-3)", marginBottom: 6 }}>Meeting notes</div><QuillEditor value={form.text} onChange={t => setForm({ ...form, text: t })} placeholder="Meeting notes…" /></div>
         </div>
       </Modal>}
-      {form?.kind === "rp" && <Modal title="Stage RP change" onClose={() => setForm(null)} onSave={form.type ? submitRP : null} saveDisabled={busy || !form.type || !form.newVal.trim()}>
-        <select className="filter-inp" value={form.type} onChange={e => setForm({ ...form, type: e.target.value, oldVal: "", newVal: "" })}>
-          <option value="">Select change type…</option><option value="NPC">NPC change</option><option value="HQ">HQ relocation</option><option value="Other">Other</option>
+      {form?.kind === "rp" && <Modal title={form.contactId ? "Stage RP change for this contact" : "Stage RP change"} onClose={() => setForm(null)} onSave={form.type ? submitRP : null} saveDisabled={busy || !form.type || !form.newVal.trim() || (form.type === "NPC" && !form.oldVal)} error={err}>
+        <select className="filter-inp" value={form.type} onChange={e => setForm({ ...form, type: e.target.value, oldVal: "", newVal: "", turf: "" })}>
+          <option value="">Select change type…</option><option value="NPC">NPC change</option><option value="HQ">HQ relocation</option><option value="TURF">Turf change</option><option value="Other">Other</option>
         </select>
         {form.type === "NPC" && <>
-          <select className="filter-inp" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })}><option value="">Current NPC…</option>{form.npcs.map(n => <option key={n.name} value={`${n.name}|${n.npc_type}|${n.turf}`}>{n.name} ({n.npc_type}) — {n.turf}</option>)}</select>
+          <select className="filter-inp" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })}><option value="">Current NPC…</option>{form.npcs.map(n => <option key={n.id} value={String(n.id)}>{n.name} ({n.npc_type}) — {n.turf}</option>)}</select>
           <select className="filter-inp" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })}><option value="">New NPC type…</option>{[...new Set(form.npcs.map(n => n.npc_type))].sort().map(t => <option key={t} value={t}>{t}</option>)}</select>
         </>}
         {form.type === "HQ" && <>
           <select className="filter-inp" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })}><option value="">Current address…</option>{form.props.map(p => <option key={p.id} value={p.address}>{p.is_hq ? "HQ: " : ""}{p.address}</option>)}</select>
           <input className="filter-inp" placeholder="New HQ address" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} />
         </>}
+        {form.type === "TURF" && <>
+          <select className="filter-inp" value={form.turf} onChange={e => setForm({ ...form, turf: e.target.value })}><option value="">Turf…</option>{[...new Set(form.npcs.map(n => n.turf))].sort().map(t => <option key={t} value={t}>{t}</option>)}</select>
+          <input className="filter-inp" placeholder="Current state (e.g. unclaimed / held by X)" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })} />
+          <input className="filter-inp" placeholder="Requested change" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} />
+        </>}
         {form.type === "Other" && <><input className="filter-inp" placeholder="Current state" value={form.oldVal} onChange={e => setForm({ ...form, oldVal: e.target.value })} /><input className="filter-inp" placeholder="New state" value={form.newVal} onChange={e => setForm({ ...form, newVal: e.target.value })} /></>}
-        {err && <div className="err">{err}</div>}
       </Modal>}
     </div>
   );
 }
 
 /* Fleet card (Assets) */
-function FleetCard({ fleet, fleetSum, td, tier, isL3, busy, run, setForm, form, money, CapBar, factionId }) {
+function FleetCard({ fleet, fleetSum, td, tier, isL3, busy, run, setForm, form, setErr, err, money, CapBar, factionId }) {
   return (
     <div className="card">
       <div className="hd"><div className="t">Fleet</div><div className="meta">Tier {tier} allowance</div></div>
@@ -589,28 +596,37 @@ function StepHead({ n, title, done, meta }) {
   );
 }
 
-function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, fbMsg, setFbMsg, fbSent, imports, isL3, busy, err, run, form, setForm, promo }) {
+function Review({ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary, noteTextLs, setNoteTextLs, noteStatusLs, setNoteStatusLs, fbMsg, setFbMsg, fbSent, imports, isL3, canWrite, busy, err, setErr, run, form, setForm, promo, authId }) {
   const cur = reviewInfo?.currentReview;
   const REC = [{ v: "Promote", cls: "good" }, { v: "Hold", cls: "" }, { v: "Demote", cls: "warn" }, { v: "Remove", cls: "warn" }];
-  const canReview = reviewInfo?.mine || isL3;
+  // Team lead of the owning team (or L3) edits the recommendation; the server
+  // enforces the same rule, `canWrite` is its answer.
+  const canReview = canWrite && !detail.archived;
   const staged = promo;
   const [adjText, setAdjText] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiErr, setAiErr] = useState("");
 
-  const outcomeConfirmed = !!cur?.status?.startsWith("Confirmed");
-  const outcome = outcomeConfirmed ? cur.status.replace("Confirmed ", "") : null;
+  // Derived from the L3 votes (policy 7): a strict majority of the
+  // "Confirmed …" votes confirms the outcome, anything else is still pending.
+  const tally = leadSummary.tally || reviewInfo?.tally || { counts: {}, confirmed: 0 };
+  const derived = leadSummary.status || tally.derived || cur?.status || "Pending Discussion";
+  const outcomeConfirmed = derived.startsWith("Confirmed");
+  const outcome = outcomeConfirmed ? derived.replace("Confirmed ", "") : null;
+  const myVote = (leadSummary.notes || []).find(n => n.author_id === authId) || null;
   const notesDone = (leadSummary.notes || []).length > 0 && (leadSummary.pending || []).length === 0;
+  const voteLabel = (s) => s.replace("Confirmed ", "");
+  const tallyText = Object.entries(tally.counts || {}).filter(([s]) => s).map(([s, c]) => `${voteLabel(s)} ×${c}`).join(" · ");
 
   const genDraft = async () => {
     setAiBusy(true); setAiErr("");
-    const r = await generateFeedbackDraft(detail.id).catch(() => ({ ok: false }));
+    const r = await generateFeedbackDraft(detail.id).catch(e => ({ ok: false, error: e?.message }));
     setAiBusy(false);
     if (r.ok) setFbMsg(r.draft || r.message || ""); else setAiErr(r.error || "Draft failed.");
   };
   const adjDraft = async () => {
     setAiBusy(true); setAiErr("");
-    const r = await adjustFeedbackDraft(detail.id, fbMsg, adjText).catch(() => ({ ok: false }));
+    const r = await adjustFeedbackDraft(detail.id, fbMsg, adjText).catch(e => ({ ok: false, error: e?.message }));
     setAiBusy(false);
     if (r.ok) { setFbMsg(r.draft || r.message || ""); setAdjText(""); } else setAiErr(r.error || "Adjust failed.");
   };
@@ -620,36 +636,46 @@ function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, lea
   return (
     <div className="hub-body">
       <div className="stack">
+        {err && !form && <div className="err">{err}</div>}
         <div className="card">
           <StepHead n={++n} title="Evidence" done meta="auto" />
           <div className="metrics" style={{ marginBottom: 0, borderBottom: "none", gap: 26, paddingTop: 6 }}>
-            <div className="metric"><div className="l">Scenes · this mo</div><div className="v">{reviewInfo?.scenes30 ?? summary?.scenes30d ?? 0}</div></div>
+            <div className="metric"><div className="l">Scenes · this mo</div><div className="v">{reviewInfo?.scenes30 ?? detail.scenes30d ?? 0}</div></div>
             <div className="metric"><div className="l">Prev mo</div><div className="v">{reviewInfo?.scenes60 ?? 0}</div></div>
             <div className="metric"><div className="l">2 mo ago</div><div className="v">{reviewInfo?.scenes90 ?? 0}</div></div>
-            <div className="metric"><div className="l">Forum · 30d</div><div className="v">{reviewInfo?.forumPosts ?? summary?.forumPosts ?? 0}</div></div>
+            <div className="metric"><div className="l">Forum · 30d</div><div className="v">{reviewInfo?.forumPosts ?? detail.forumPosts ?? 0}</div></div>
           </div>
         </div>
 
         <div className="card">
-          <StepHead n={++n} title="Recommendation" done={!!cur} meta={cur ? (cur.status || "Pending Discussion") : "not started"} />
+          <StepHead n={++n} title="Recommendation" done={!!cur} meta={cur ? `${cur.recommendation} · by ${cur.reviewer_name || cur.submitted_by || "—"}` : "not started"} />
           <div className="restricted">Confidential to Leadership · shared with the team lead for the 15th message</div>
-          {!canReview ? <div className="empty">Only {reviewInfo?.teamName || "the owning team"}’s leads (or L3) edit this review.</div> : <div style={{ paddingTop: 6 }}>
+          {!canReview ? (
+            <div style={{ paddingTop: 6 }}>
+              {cur ? <div style={{ fontSize: 12.5, color: "var(--ink-1)", whiteSpace: "pre-wrap" }}><b>{cur.recommendation}</b> — {cur.feedback}</div> : <div className="empty">No recommendation yet.</div>}
+              <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>Only {reviewInfo?.teamName || "the owning team"}’s leads (or L3) edit this review.</div>
+            </div>
+          ) : <div style={{ paddingTop: 6 }}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>{REC.map(r => <button key={r.v} className={`act${recForm.recommendation === r.v ? " primary" : ` ${r.cls}`}`} onClick={() => setRecForm({ ...recForm, recommendation: r.v })}>{r.v}</button>)}</div>
             <textarea className="filter-inp" rows={5} placeholder="Written feedback…" value={recForm.feedback} onChange={e => setRecForm({ ...recForm, feedback: e.target.value })} style={{ marginBottom: 8 }} />
-            <button className="act primary" disabled={busy || !recForm.recommendation || !recForm.feedback.trim()} onClick={() => run(() => submitReview({ factionId: detail.id, factionName: detail.name, recommendation: recForm.recommendation, feedback: recForm.feedback }))}>{cur ? "Update review" : "Submit review"}</button>
+            <button className="act primary" disabled={busy || !recForm.recommendation || !recForm.feedback.trim()} onClick={() => run(() => submitReview({ factionId: detail.id, recommendation: recForm.recommendation, feedback: recForm.feedback }))}>{cur ? "Update review" : "Submit review"}</button>
           </div>}
         </div>
 
-        {/* Leadership's notes on the faction are what the lead acts on for the
-            15th message, so every viewer of this tab reads them. Only L3 writes one. */}
+        {/* Leadership votes: one note per L3 per month, its status is the vote.
+            Every viewer of this tab reads them; only L3 writes one. */}
         <div className="card">
-          <StepHead n={++n} title="Leadership notes" done={notesDone} meta={`${(leadSummary.notes || []).length} recorded · ${(leadSummary.pending || []).length} pending`} />
-          {isL3 && <>
-            <textarea className="filter-inp" rows={3} placeholder="Private note this month…" value={noteTextLs} onChange={e => setNoteTextLs(e.target.value)} style={{ margin: "6px 0" }} />
-            <button className="act primary" disabled={busy || !noteTextLs.trim()} onClick={async () => { const ok = await run(() => submitPersonalNote(detail.id, detail.name, noteTextLs, recForm.recommendation || "Hold")); if (ok) setNoteTextLs(""); }}>Save note</button>
-          </>}
+          <StepHead n={++n} title="Leadership notes & votes" done={notesDone} meta={`${(leadSummary.notes || []).length} of ${(leadSummary.notes || []).length + (leadSummary.pending || []).length} voted${tallyText ? ` · ${tallyText}` : ""}`} />
+          {isL3 && !detail.archived && <div style={{ padding: "6px 0 2px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 4 }}>{myVote ? "Your vote this month (saving again updates it)" : "Your vote this month"}</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+              {REVIEW_STATUSES.map(st => <button key={st} className={`act${noteStatusLs === st ? " primary" : st === "Confirmed Promote" ? " good" : (st === "Confirmed Demote" || st === "Confirmed Remove") ? " warn" : ""}`} onClick={() => setNoteStatusLs(noteStatusLs === st ? "" : st)}>{st === "Pending Discussion" ? "Discuss" : voteLabel(st)}</button>)}
+            </div>
+            <textarea className="filter-inp" rows={3} placeholder="Private note this month…" value={noteTextLs} onChange={e => setNoteTextLs(e.target.value)} style={{ margin: "0 0 6px" }} />
+            <button className="act primary" disabled={busy || !noteTextLs.trim()} onClick={() => run(() => submitPersonalNote(detail.id, detail.name, noteTextLs, noteStatusLs))}>{myVote ? "Update note & vote" : "Save note & vote"}</button>
+          </div>}
           <div style={{ marginTop: 10 }}>
-            {(leadSummary.notes || []).length === 0 ? <div className="empty">No notes yet.</div> : (leadSummary.notes || []).map((note, i) => <div className="note" key={i}>{note.note}{note.status ? <span className="chip role" style={{ marginLeft: 6 }}>{note.status}</span> : null}<div className="by">— {note.author_name || note.author_id}</div></div>)}
+            {(leadSummary.notes || []).length === 0 ? <div className="empty">No notes yet.</div> : (leadSummary.notes || []).map((note, i) => <div className="note" key={note.id || i}>{note.note}{note.status ? <span className={`chip ${note.status === "Confirmed Promote" ? "role" : "lock"}`} style={{ marginLeft: 6 }}>{voteLabel(note.status)}</span> : null}<div className="by">— {note.author_name || note.author_id}</div></div>)}
             {(leadSummary.pending || []).length > 0 && <div style={{ paddingTop: 8, fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>Awaiting: {(leadSummary.pending || []).map(p => p.display_name).join(", ")}</div>}
           </div>
         </div>
@@ -658,63 +684,75 @@ function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, lea
           <StepHead n={++n} title="Feedback to the faction" done={!!fbSent?.sent} meta={fbSent?.sent ? `sent by ${fbSent.by}` : "the 15th message"} />
           <div style={{ paddingTop: 6 }}>
             {fbSent?.sent && <div style={{ fontSize: 12, color: "var(--good)", marginBottom: 8 }}>✓ Delivered this month by {fbSent.by} ({(fbSent.at || "").slice(0, 10)}).</div>}
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              <button className="act" disabled={aiBusy || busy} onClick={genDraft}>{aiBusy ? "Working…" : "✦ Generate draft"}</button>
-            </div>
-            <textarea className="filter-inp" rows={5} placeholder="Message sent to the faction." value={fbMsg} onChange={e => setFbMsg(e.target.value)} style={{ margin: "8px 0" }} />
-            {fbMsg.trim() && (
-              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-                <input className="filter-inp" style={{ flex: 1 }} placeholder="Adjust the draft — e.g. “warmer tone, mention the new HQ”" value={adjText} onChange={e => setAdjText(e.target.value)} onKeyDown={e => e.key === "Enter" && adjText.trim() && adjDraft()} />
-                <button className="act" disabled={aiBusy || !adjText.trim()} onClick={adjDraft}>Adjust ↺</button>
+            {!canReview ? <div className="empty">{reviewInfo?.teamName || "The owning team"}’s lead sends the feedback.</div> : <>
+              {!cur && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8 }}>Submit the recommendation first — the feedback is recorded against it.</div>}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button className="act" disabled={aiBusy || busy} onClick={genDraft}>{aiBusy ? "Working…" : "✦ Generate draft"}</button>
               </div>
-            )}
-            {aiErr && <div className="err" style={{ marginBottom: 8 }}>{aiErr}</div>}
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="act primary" disabled={busy || !fbMsg.trim()} onClick={() => { if (window.confirm(`Send this feedback to ${detail.name}'s Command channel?`)) run(() => sendFeedbackToFaction(detail.id, fbMsg)); }}>Send to faction</button>
-              <button className="act" disabled={busy} onClick={() => run(() => markFeedbackSent(detail.id))}>Mark sent manually</button>
-            </div>
+              <textarea className="filter-inp" rows={5} placeholder="Message sent to the faction." value={fbMsg} onChange={e => setFbMsg(e.target.value)} style={{ margin: "8px 0" }} />
+              {fbMsg.trim() && (
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  <input className="filter-inp" style={{ flex: 1 }} placeholder="Adjust the draft — e.g. “warmer tone, mention the new HQ”" value={adjText} onChange={e => setAdjText(e.target.value)} onKeyDown={e => e.key === "Enter" && adjText.trim() && adjDraft()} />
+                  <button className="act" disabled={aiBusy || !adjText.trim()} onClick={adjDraft}>Adjust ↺</button>
+                </div>
+              )}
+              {aiErr && <div className="err" style={{ marginBottom: 8 }}>{aiErr}</div>}
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="act primary" disabled={busy || !fbMsg.trim() || !cur} onClick={() => { if (window.confirm(`Send this feedback to ${detail.name}'s Command channel?`)) run(() => sendFeedbackToFaction(detail.id, fbMsg)).then(ok => ok && setFbMsg("")); }}>Send to faction</button>
+                <button className="act" disabled={busy || !cur || !!fbSent?.sent} onClick={() => run(() => markFeedbackSent(detail.id))}>Mark sent manually</button>
+              </div>
+            </>}
           </div>
         </div>
 
         <div className="card">
-          <StepHead n={++n} title="Confirm outcome" done={outcomeConfirmed} meta={outcomeConfirmed ? cur.status : cur ? "after discussion" : "needs a review first"} />
-          {!cur ? <div className="empty">Submit the recommendation first.</div> : (
-            <div style={{ paddingTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {["Confirmed Promote", "Confirmed Hold", "Confirmed Demote", "Confirmed Remove"].map(st => <button key={st} className={`act${cur.status === st ? " primary" : ""}`} disabled={busy} onClick={() => run(() => setReviewStatus(cur.id, st))}>{st.replace("Confirmed ", "")}</button>)}
+          <StepHead n={++n} title="Confirm outcome" done={outcomeConfirmed} meta={outcomeConfirmed ? derived : tally.confirmed ? "no majority yet" : cur ? "awaiting leadership votes" : "needs a review first"} />
+          <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-2)" }}>
+            The outcome is the majority of leadership votes{tallyText ? ` — ${tallyText}` : ""}. {outcomeConfirmed ? <b style={{ color: "var(--good)" }}>{derived}.</b> : <span>Still <b>Pending Discussion</b>.</span>}
+            {outcomeConfirmed && (outcome === "Demote" || outcome === "Remove") && <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--ink-3)" }}>A leadership task was raised to apply the {outcome.toLowerCase()}.</div>}
+          </div>
+          {isL3 && !detail.archived && (
+            <div style={{ paddingTop: 8, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 10.5, color: "var(--ink-3)", fontFamily: "var(--v2-mono)" }}>Your vote:</span>
+              {!cur ? <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>vote from the notes step above once the review is in</span>
+                : ["Confirmed Promote", "Confirmed Hold", "Confirmed Demote", "Confirmed Remove"].map(st => <button key={st} className={`act${myVote?.status === st ? " primary" : ""}`} disabled={busy} onClick={() => run(() => setReviewStatus(cur.id, st))}>{voteLabel(st)}</button>)}
             </div>
           )}
         </div>
 
         <div className="card">
           <StepHead n={++n} title="Apply" done={false} meta={`Tier ${detail.tier}`} />
-          {staged ? (
+          {detail.archived ? (
+            <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-3)" }}>Archived — nothing to apply.</div>
+          ) : staged ? (
             <div style={{ paddingTop: 6 }}>
-              <div className="alert promo" style={{ marginBottom: 10 }}>📋 Staged → Tier {staged.tier}</div>
+              <div className="alert promo" style={{ marginBottom: 10 }}>📋 Staged → Tier {staged.tier}{staged.imports?.length ? ` · ${staged.imports.length} imports` : ""}</div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button className="act good" disabled={busy} onClick={() => { if (window.confirm(`Complete promotion for ${detail.name}?`)) run(() => completePromotion(detail.id, detail.name)); }}>Complete promotion</button>
-                {isL3 && <button className="act warn" disabled={busy} onClick={() => { if (window.confirm("Cancel this staged promotion?")) run(() => cancelPromotion(detail.id, detail.name)); }}>Cancel</button>}
+                {canReview && <button className="act good" disabled={busy} onClick={() => { if (window.confirm(`Complete promotion for ${detail.name}? Do this after the RP has run.`)) run(() => completePromotion(detail.id)); }}>Complete promotion</button>}
+                {(isL3 || canReview) && <button className="act warn" disabled={busy} onClick={() => { if (window.confirm("Cancel this staged promotion?")) run(() => cancelPromotion(detail.id)); }}>Cancel</button>}
+                {!canReview && !isL3 && <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>The owning team lead completes it after the RP.</span>}
               </div>
             </div>
           ) : !outcomeConfirmed ? (
-            <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-3)" }}>🔒 Confirm the outcome above — the tier &amp; import controls unlock here.</div>
+            <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-3)" }}>🔒 Waiting for a confirmed outcome — the tier &amp; import controls unlock here.</div>
           ) : !isL3 ? (
             <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-3)" }}>Outcome confirmed — an L3 applies the {outcome.toLowerCase()} from here.</div>
           ) : outcome === "Promote" ? (
             <div style={{ paddingTop: 6 }}>
-              {form?.kind !== "promote" && <button className="act primary" onClick={() => setForm({ kind: "promote", tier: String(Math.min(9, detail.tier + 1)), picks: new Set(imports.filter(i => i.permitted).map(i => i.name)) })}>Stage promotion ↑</button>}
+              {form?.kind !== "promote" && <button className="act primary" onClick={() => { setErr(""); setForm({ kind: "promote", tier: String(Math.min(9, detail.tier + 1)), picks: new Set(imports.filter(i => i.permitted).map(i => i.name)) }); }}>Stage promotion ↑</button>}
               {form?.kind === "promote" && <div className="inline-form">
                 <div className="lbl">Promote to tier</div>
-                <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(9)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}</select>
-                <div className="lbl" style={{ marginTop: 4 }}>Imports granted ({form.picks.size})</div>
-                <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px" }}>{imports.map(i => <div className="imp-row" key={i.id}><span className="nm">{i.name} <span style={{ color: "var(--ink-3)", fontSize: 10 }}>T{i.tier}</span></span><button className={`tg${form.picks.has(i.name) ? " on" : ""}`} onClick={() => { const p = new Set(form.picks); p.has(i.name) ? p.delete(i.name) : p.add(i.name); setForm({ ...form, picks: p }); }}>{form.picks.has(i.name) ? "Granted" : "Off"}</button></div>)}</div>
+                <select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(9)].map((_, i) => i + 1).filter(t => t > detail.tier).map(t => <option key={t} value={t}>Tier {t}</option>)}</select>
+                <div className="lbl" style={{ marginTop: 4 }}>Imports after promotion ({form.picks.size}) — items above the target tier cannot be granted</div>
+                <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: "0 10px" }}>{imports.map(i => { const over = parseInt(i.tier || "1") > parseInt(form.tier); return <div className="imp-row" key={i.id} style={{ opacity: over ? 0.45 : 1 }}><span className="nm">{i.name} <span style={{ color: "var(--ink-3)", fontSize: 10 }}>T{i.tier}</span>{i.permitted && <span style={{ color: "var(--ink-3)", fontSize: 10, marginLeft: 4 }}>current</span>}</span><button className={`tg${form.picks.has(i.name) && !over ? " on" : ""}`} disabled={over} onClick={() => { const p = new Set(form.picks); p.has(i.name) ? p.delete(i.name) : p.add(i.name); setForm({ ...form, picks: p }); }}>{over ? "Above tier" : form.picks.has(i.name) ? "Granted" : "Off"}</button></div>; })}</div>
                 {err && <div className="err">{err}</div>}
-                <div className="row-btns"><button className="act primary" disabled={busy} onClick={() => run(() => stagePromotion(detail.id, detail.name, parseInt(form.tier), [...form.picks]))}>Stage</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div>
+                <div className="row-btns"><button className="act primary" disabled={busy} onClick={() => run(() => stagePromotion(detail.id, detail.name, parseInt(form.tier), [...form.picks].filter(nm => { const it = imports.find(i => i.name === nm); return it && parseInt(it.tier || "1") <= parseInt(form.tier); })))}>Stage</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div>
               </div>}
             </div>
           ) : outcome === "Demote" ? (
             <div style={{ paddingTop: 6 }}>
-              {form?.kind !== "demote" && <button className="act warn" onClick={() => setForm({ kind: "demote", tier: String(Math.max(1, detail.tier - 1)) })}>Demote ↓</button>}
-              {form?.kind === "demote" && <div className="inline-form"><div className="lbl">Demote to tier</div><select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(detail.tier)].map((_, i) => <option key={i + 1} value={i + 1}>Tier {i + 1}</option>)}</select>{err && <div className="err">{err}</div>}<div className="row-btns"><button className="act warn" disabled={busy} onClick={() => { if (window.confirm(`Demote ${detail.name} to Tier ${form.tier}?`)) run(() => demoteFaction(detail.id, detail.name, parseInt(form.tier))); }}>Confirm demotion</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div></div>}
+              {form?.kind !== "demote" && <button className="act warn" onClick={() => { setErr(""); setForm({ kind: "demote", tier: String(Math.max(0, detail.tier - 1)) }); }}>Demote ↓</button>}
+              {form?.kind === "demote" && <div className="inline-form"><div className="lbl">Demote to tier (imports above it are revoked)</div><select value={form.tier} onChange={e => setForm({ ...form, tier: e.target.value })}>{[...Array(detail.tier)].map((_, i) => <option key={i} value={i}>Tier {i}</option>)}</select>{err && <div className="err">{err}</div>}<div className="row-btns"><button className="act warn" disabled={busy} onClick={() => { if (window.confirm(`Demote ${detail.name} to Tier ${form.tier}?`)) run(() => demoteFaction(detail.id, detail.name, parseInt(form.tier))); }}>Confirm demotion</button><button className="act" onClick={() => setForm(null)}>Cancel</button></div></div>}
             </div>
           ) : outcome === "Remove" ? (
             <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-2)" }}>Removal confirmed — archive the faction from the <b>Admin tab → Danger zone</b> when ready.</div>
@@ -726,7 +764,7 @@ function Review({ detail, summary, reviewInfo, recForm, setRecForm, reviews, lea
 
       <div className="stack">
         <div className="card"><div className="hd"><div className="t">Review history</div><div className="meta">{reviews.length}</div></div>
-          {reviews.length === 0 ? <div className="empty">No reviews.</div> : <table className="dtable"><thead><tr><th>Month</th><th>Rec</th></tr></thead><tbody>{reviews.map((r, i) => <tr key={i}><td><b>{r.review_month}</b></td><td>{r.recommendation || r.status || "—"}</td></tr>)}</tbody></table>}
+          {reviews.length === 0 ? <div className="empty">No reviews.</div> : <table className="dtable"><thead><tr><th>Month</th><th>Rec</th><th>Outcome</th><th>Sent</th></tr></thead><tbody>{reviews.map((r, i) => <tr key={r.id || i}><td><b>{r.review_month}</b></td><td>{r.recommendation || "—"}</td><td style={{ color: "var(--ink-2)" }}>{(r.status || "").replace("Confirmed ", "") || "—"}</td><td style={{ color: "var(--ink-3)", fontSize: 11 }}>{r.feedback_sent_at ? `✓ ${r.feedback_sent_by}` : "—"}</td></tr>)}</tbody></table>}
         </div>
       </div>
     </div>

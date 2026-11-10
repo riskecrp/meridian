@@ -4,14 +4,13 @@ import Link from "next/link";
 import { useAuth } from "../../../lib/useAuth";
 import { getFeedbackList, getFeedbackFailures } from "./actions";
 import { ui } from "../../../lib/ui.js";
+import { FM_GUILD_ID as GUILD_ID } from "../../../lib/constants.js";
 
 // Player feedback about FM factions, taken from the roleplay feedback form. The
 // bot opens a thread per submission in #fm-feedback and the outcome is worked
 // there; this page is the record of what came in and where each item ended up.
-//
-// Read-only by design — see actions.js.
-
-const GUILD_ID = "1457188814916423855";
+// The state changes (acknowledge / complete / cancel / snooze / reopen) live on
+// the /v2/feedback page and the thread buttons; this legacy list stays read-only.
 
 const STATUS_META = {
   new:       { label: "Pending Acknowledgement", color: "var(--accent)", dot: "●" },
@@ -108,7 +107,7 @@ export default function FeedbackPage() {
                 <th>Faction</th>
                 <th>Character</th>
                 <th>Discord</th>
-                <th>Received</th>
+                <th title="When the player submitted the form">Received</th>
                 <th>Status</th>
                 <th>Handled by</th>
                 <th></th>
@@ -129,7 +128,7 @@ export default function FeedbackPage() {
                     <td style={{ fontWeight:700 }}>{r.faction}</td>
                     <td>{r.character_name}</td>
                     <td style={{ fontSize:12, color:'var(--fg-3)' }}>{r.discord_username}</td>
-                    <td style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'var(--fg-4)', whiteSpace:'nowrap' }}>{r.created_at}</td>
+                    <td style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'var(--fg-4)', whiteSpace:'nowrap' }} title={`Logged ${r.created_at}`}>{r.received || r.submitted_at || r.created_at}</td>
                     <td style={{ color:meta.color, fontSize:12, whiteSpace:'nowrap' }}>{meta.dot} {meta.label}</td>
                     <td style={{ fontSize:12, color:'var(--fg-3)' }}>
                       {r.concluded_by_name || r.claimed_by_name || <span style={{ color:'var(--fg-4)' }}>—</span>}

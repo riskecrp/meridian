@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { Suspense, useState, useEffect } from "react";
 import { useAuth } from "../../lib/useAuth";
 import { DialogProvider } from "../../lib/useDialog";
@@ -85,19 +85,18 @@ const SECTIONS = [
 
 function SidebarInner({ mobile, setMobile, theme, toggleTheme, auth }) {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const currentTab = searchParams?.get("tab") || "";
 
+  // Active = the current path is this item or lives under it. Routes are plain
+  // pages now (no tab query strings), and the longest matching href wins so a
+  // parent entry never lights up for a child page's own entry.
   const isActive = (item) => {
-    if (item.href === "/fm/operations" && pathname?.startsWith("/fm/operations/staff")) return false;
-    if (item.href === "/fm/operations/staff") return pathname?.startsWith("/fm/operations/staff");
-    if (!pathname?.startsWith(item.href)) return false;
-    if (!item.tabId) return true;
-    if (currentTab) return currentTab === item.tabId;
-    return !!item.default;
+    if (item.external || !pathname) return false;
+    if (pathname !== item.href && !pathname.startsWith(item.href + "/")) return false;
+    const longer = SECTIONS.flatMap(s => s.items).some(o => !o.external && o.href !== item.href && o.href.startsWith(item.href + "/") && (pathname === o.href || pathname.startsWith(o.href + "/")));
+    return !longer;
   };
 
-  const buildHref = (item) => item.tabId ? `${item.href}?tab=${item.tabId}` : item.href;
+  const buildHref = (item) => item.href;
 
   // Per-item visibility. A section is shown iff it has at least one visible item,
   // so an item can be exposed below its section's minLevel (via `minView`) or to
@@ -105,9 +104,9 @@ function SidebarInner({ mobile, setMobile, theme, toggleTheme, auth }) {
   const itemAllowed = (item, section) => {
     // Event Team: only ever see ET-flagged items, in any section.
     if (auth.isEventTeam) return !!item.eventTeam;
-    // Items restricted to a specific user. Hidden while impersonating / viewing-as
-    // so the impersonator sees ONLY what the target sees (never via _realId).
-    if (item.userId) return !auth._impersonating && auth.id === item.userId;
+    // Owner-only items (OWNER_IDS from the environment). Hidden while impersonating /
+    // viewing-as so the impersonator sees ONLY what the target sees (never via _realId).
+    if (item.owner) return !auth._impersonating && isOwner(auth.id);
     // Lead Storyteller grant — additive on top of whatever their level allows below.
     if (auth.isLeadStoryteller && item.lst) return true;
     // Floor: items may opt to appear below the section minLevel via `minView`.
@@ -440,8 +439,15 @@ export default function FMLayout({ children }) {
   const [mobile, setMobile] = useState(false);
   const [theme, setTheme] = useState("dark");
 
+  // One storage key for both shells ("meridian_theme"); the old hyphenated key
+  // is read once so nobody's choice is lost, and dark is the default.
   useEffect(() => {
-    const saved = localStorage.getItem("meridian-theme") || "dark";
+    let saved = "dark";
+    try {
+      saved = localStorage.getItem("meridian_theme") || localStorage.getItem("meridian-theme") || "dark";
+      if (saved !== "light") saved = "dark";
+      localStorage.setItem("meridian_theme", saved);
+    } catch {}
     setTheme(saved);
     document.documentElement.setAttribute("data-theme", saved);
   }, []);
@@ -449,7 +455,7 @@ export default function FMLayout({ children }) {
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
-    localStorage.setItem("meridian-theme", next);
+    try { localStorage.setItem("meridian_theme", next); } catch {}
     document.documentElement.setAttribute("data-theme", next);
   };
 

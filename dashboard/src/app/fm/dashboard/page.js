@@ -68,10 +68,12 @@ const DEFAULT_LAYOUTS = {
 function CompleteModal({ task, onClose, onDone }) {
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState('');
   const submit = async () => {
-    setSubmitting(true);
-    await completeMyTask(task.task_uid, note.trim() || undefined);
+    setSubmitting(true); setErr('');
+    let res; try { res = await completeMyTask(task.task_uid, note.trim() || undefined); } catch (e) { res = { ok: false, error: e?.message }; }
     setSubmitting(false);
+    if (!res?.ok) { setErr(res?.error || 'Could not complete the task.'); return; }
     onDone();
   };
   return (
@@ -89,6 +91,7 @@ function CompleteModal({ task, onClose, onDone }) {
               style={{ width:'100%', background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:8, padding:'10px 14px', fontSize:13, color:'var(--fg-0)', resize:'vertical' }} />
           </div>
           <div className="text-[10px]" style={{ color:'var(--fg-4)' }}>If the creator gets pinged, the note will be included.</div>
+          {err && <div className="text-xs" style={{ color:'var(--red)' }}>{err}</div>}
         </div>
         <div className="p-4 flex justify-end gap-3" style={{ borderTop:'1px solid var(--border)' }}>
           <button onClick={onClose} style={{ background:'transparent', color:'var(--fg-3)', border:'1px solid var(--border)', padding:'6px 14px', borderRadius:8, fontSize:11, fontWeight:700, cursor:'pointer', textTransform:'uppercase' }}>Cancel</button>
@@ -105,10 +108,12 @@ function CompleteModal({ task, onClose, onDone }) {
 function UnclaimModal({ task, onClose, onDone }) {
   const [note, setNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState('');
   const submit = async () => {
-    setSubmitting(true);
-    await unclaimMyTask(task.task_uid, note.trim() || undefined);
+    setSubmitting(true); setErr('');
+    let res; try { res = await unclaimMyTask(task.task_uid, note.trim() || undefined); } catch (e) { res = { ok: false, error: e?.message }; }
     setSubmitting(false);
+    if (!res?.ok) { setErr(res?.error || 'Could not unclaim the task.'); return; }
     onDone();
   };
   return (
@@ -125,6 +130,7 @@ function UnclaimModal({ task, onClose, onDone }) {
             <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Why are you releasing this?" rows={3}
               style={{ width:'100%', background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:8, padding:'10px 14px', fontSize:13, color:'var(--fg-0)', resize:'vertical' }} />
           </div>
+          {err && <div className="text-xs" style={{ color:'var(--red)' }}>{err}</div>}
         </div>
         <div className="p-4 flex justify-end gap-3" style={{ borderTop:'1px solid var(--border)' }}>
           <button onClick={onClose} style={{ background:'transparent', color:'var(--fg-3)', border:'1px solid var(--border)', padding:'6px 14px', borderRadius:8, fontSize:11, fontWeight:700, cursor:'pointer', textTransform:'uppercase' }}>Cancel</button>
@@ -146,9 +152,9 @@ function RequestInfoModal({ task, onClose, onDone }) {
     setErr('');
     if (!question.trim()) { setErr('Question is required.'); return; }
     setSubmitting(true);
-    const res = await requestTaskInfo(task.task_uid, question.trim());
+    let res; try { res = await requestTaskInfo(task.task_uid, question.trim()); } catch (e) { res = { ok: false, error: e?.message }; }
     setSubmitting(false);
-    if (!res.ok) { setErr(res.error || 'Failed to send'); return; }
+    if (!res?.ok) { setErr(res?.error || 'Failed to send'); return; }
     onDone();
   };
   return (
@@ -195,20 +201,17 @@ function ReassignModal({ task, auth, onClose, onDone }) {
   }, []);
 
   const isL2 = auth.level < 3;
-  const filteredStaff = isL2
-    ? staffList.filter(s => {
-        const r = (s.rank || '').toLowerCase();
-        return !r.includes('leadership') && !r.includes('management') && !r.includes('game affairs');
-      })
-    : staffList;
+  // L2 may not hand a task to leadership (clearance 3); the server refuses too.
+  const filteredStaff = isL2 ? staffList.filter(s => Number(s.clearance) < 3) : staffList;
 
   const submit = async () => {
     setErr('');
     if (!tid) { setErr('Pick a target.'); return; }
     setSubmitting(true);
-    const res = await reassignMyTask(task.task_uid, tid, type, note);
+    // 'Team' is a team role: the server maps it to Role=<team id>.
+    let res; try { res = await reassignMyTask(task.task_uid, tid, type === 'Team' ? 'Role' : type, note); } catch (e) { res = { ok: false, error: e?.message }; }
     setSubmitting(false);
-    if (!res.ok) { setErr(res.error || 'Failed to reassign'); return; }
+    if (!res?.ok) { setErr(res?.error || 'Failed to reassign'); return; }
     onDone();
   };
 
@@ -241,7 +244,7 @@ function ReassignModal({ task, auth, onClose, onDone }) {
               ))}
               {type === 'Role' && (<>
                 {!isL2 && roleTargets.leadershipId && <option value={roleTargets.leadershipId}>FM Leadership</option>}
-                {!isL2 && <option value="1457189093594239147">Game Affairs Management</option>}
+                {!isL2 && roleTargets.gameAffairsId && <option value={roleTargets.gameAffairsId}>Game Affairs Management</option>}
                 {roleTargets.leadId && <option value={roleTargets.leadId}>FM Team Lead</option>}
                 {roleTargets.allFmId && <option value={roleTargets.allFmId}>All FM</option>}
               </>)}
@@ -287,7 +290,6 @@ export default function DashboardPage() {
   const [completing, setCompleting] = useState(null);
   const [unclaimingTask, setUnclaimingTask] = useState(null);
   const [requestingInfo, setRequestingInfo] = useState(null);
-  const [filter, setFilter] = useState('all');
   const [expandedTask, setExpandedTask] = useState(null);
   const [expandedReminder, setExpandedReminder] = useState(null);
   const [createdByMeTasks, setCreatedByMeTasks] = useState([]);
@@ -313,7 +315,7 @@ export default function DashboardPage() {
     eventType: 'General', date: '', time: '', warning: false, note: ''
   });
 
-  // ── Personal mentions (owner-only) ──
+  // ── Personal mentions (all staff) ──
   const IS_FM_LEADERSHIP = auth.level >= 3;
   const [mentions, setMentions] = useState([]);
   const [mentionsOpen, setMentionsOpen] = useState(false);
@@ -323,7 +325,7 @@ export default function DashboardPage() {
   const [replyError, setReplyError] = useState('');
   const unreadCount = mentions.filter(m => !m.is_read).length;
 
-  // ── FM Leadership role mentions (owner-only) ──
+  // ── FM Leadership role mentions (L3) ──
   const [leadershipMentions, setLeadershipMentions] = useState([]);
   const [leadershipMentionsOpen, setLeadershipMentionsOpen] = useState(false);
 
@@ -342,8 +344,9 @@ export default function DashboardPage() {
     if (!pingTaskTarget || !pingTaskDesc.trim()) return;
     setPingTaskBusy(true);
     const [type, ...rest] = pingTaskTarget.split(':');
-    await createMyTask({ desc: pingTaskDesc.trim(), targetType: type, targetId: rest.join(':'), enableDM: false });
+    let res; try { res = await createMyTask({ desc: pingTaskDesc.trim(), targetType: type, targetId: rest.join(':'), enableDM: false }); } catch (e) { res = { ok: false, error: e?.message }; }
     setPingTaskBusy(false);
+    if (!res?.ok) { showAlert(res?.error || 'Could not create the task.', 'Task not created'); return; }
     closePingTask();
   };
 
@@ -594,16 +597,6 @@ export default function DashboardPage() {
 
   const actor = { id: auth.id, name: auth.displayName || auth.name };
 
-  // Task filter/sort
-  const allTasks = [...data.assignedToMe, ...data.forMyTeam];
-  let displayedTasks = filter === 'mine' ? data.assignedToMe : filter === 'team' ? data.forMyTeam : allTasks;
-  displayedTasks = [...displayedTasks].sort((a, b) => {
-    const ac = a.claimed_by !== 'None' && a.claimed_by;
-    const bc = b.claimed_by !== 'None' && b.claimed_by;
-    if (ac !== bc) return ac ? 1 : -1;
-    return (b.created_at || '').localeCompare(a.created_at || '');
-  });
-
   const sortedReminders = [...reminders].sort((a, b) => a.epochMs - b.epochMs);
 
   const S = {
@@ -787,8 +780,8 @@ export default function DashboardPage() {
                   {showQA && qaCounts[t.task_uid]?.total > 0 && <a href={`/fm/tasks/${t.task_uid}`} style={{color:'var(--accent)',textDecoration:'none'}}>💬 {qaCounts[t.task_uid].open>0?`${qaCounts[t.task_uid].open} open`:`${qaCounts[t.task_uid].total} answered`}</a>}
                 </div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {!isClaimed && <button style={S.btnSmall} onClick={async()=>{await claimMyTask(t.task_uid);refresh();}}>Claim</button>}
-                  {canEdit && <button style={{...S.btnSmall,color:'var(--fg-2)',borderColor:'var(--border)'}} onClick={async()=>{const v=await showPrompt('Edit:',t.description);if(v&&v!==t.description){await editMyTask(t.task_uid,v);refresh();}}}>Edit</button>}
+                  {!isClaimed && <button style={S.btnSmall} onClick={async()=>{const r=await claimMyTask(t.task_uid);if(!r?.ok)showAlert(r?.error||'Could not claim.','Not claimed');refresh();}}>Claim</button>}
+                  {canEdit && <button style={{...S.btnSmall,color:'var(--fg-2)',borderColor:'var(--border)'}} onClick={async()=>{const v=await showPrompt('Edit:',t.description);if(v&&v!==t.description){const r=await editMyTask(t.task_uid,v);if(!r?.ok)showAlert(r?.error||'Could not edit.','Not saved');refresh();}}}>Edit</button>}
                   <button style={{...S.btnSmall,color:'var(--amber)',borderColor:'rgba(251,191,36,0.3)'}} onClick={()=>setReassigning(t)}>Reassign</button>
                   {t.created_by_id&&t.created_by_id!==auth.id && <button style={{...S.btnSmall,color:'var(--accent)',borderColor:'rgba(160,126,245,0.3)'}} onClick={()=>setRequestingInfo(t)}>Request Info</button>}
                   {isClaimed&&(t.claimed_by===auth.id||auth.level>=3) && <button style={{...S.btnSmall,color:'var(--fg-2)',borderColor:'var(--border)'}} onClick={()=>setUnclaimingTask(t)}>Unclaim</button>}
@@ -842,8 +835,9 @@ export default function DashboardPage() {
       { id: 'assigned', label: `Assigned to Me (${data.assignedToMe.length})` },
       ...(auth.level >= 2 ? [{ id: 'created', label: `Created by Me (${createdByMeTasks.length})` }] : []),
       ...(auth.level >= 2 && auth.level < 3 ? [{ id: 'team', label: `My Team (${teamAllTasks.length})` }] : []),
+      ...(auth.level < 2 ? [{ id: 'team', label: `Team & Role Tasks (${data.forMyTeam.length})` }] : []),
     ];
-    const shownTasks = taskSection === 'created' ? createdByMeTasks : taskSection === 'team' ? teamAllTasks : data.assignedToMe;
+    const shownTasks = taskSection === 'created' ? createdByMeTasks : taskSection === 'team' ? (auth.level >= 2 ? teamAllTasks : data.forMyTeam) : data.assignedToMe;
     const emptyMsg = taskSection === 'created' ? 'No tasks created by you.' : taskSection === 'team' ? 'No tasks targeted at your team.' : 'No tasks assigned to you.';
     const unclaimedCount = shownTasks.filter(t => !t.claimed_by || t.claimed_by === 'None').length;
 
@@ -890,8 +884,8 @@ export default function DashboardPage() {
                     {qaCounts[t.task_uid]?.total > 0 && <a href={`/fm/tasks/${t.task_uid}`} style={{color:'var(--accent)',textDecoration:'none'}}>💬 {qaCounts[t.task_uid].open>0?`${qaCounts[t.task_uid].open} open`:`${qaCounts[t.task_uid].total} answered`}</a>}
                   </div>
                   <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                    {!isClaimed && <button style={S.btnSmall} onClick={async()=>{await claimMyTask(t.task_uid);refresh();}}>Claim</button>}
-                    {canEdit && <button style={{...S.btnSmall,color:'var(--fg-2)',borderColor:'var(--border)'}} onClick={async()=>{const v=await showPrompt('Edit:',t.description);if(v&&v!==t.description){await editMyTask(t.task_uid,v);refresh();}}}>Edit</button>}
+                    {!isClaimed && <button style={S.btnSmall} onClick={async()=>{const r=await claimMyTask(t.task_uid);if(!r?.ok)showAlert(r?.error||'Could not claim.','Not claimed');refresh();}}>Claim</button>}
+                    {canEdit && <button style={{...S.btnSmall,color:'var(--fg-2)',borderColor:'var(--border)'}} onClick={async()=>{const v=await showPrompt('Edit:',t.description);if(v&&v!==t.description){const r=await editMyTask(t.task_uid,v);if(!r?.ok)showAlert(r?.error||'Could not edit.','Not saved');refresh();}}}>Edit</button>}
                     {auth.level>=2 && <button style={{...S.btnSmall,color:'var(--amber)',borderColor:'rgba(251,191,36,0.3)'}} onClick={()=>setReassigning(t)}>Reassign</button>}
                     {t.created_by_id&&t.created_by_id!==auth.id && <button style={{...S.btnSmall,color:'var(--accent)',borderColor:'rgba(160,126,245,0.3)'}} onClick={()=>setRequestingInfo(t)}>Request Info</button>}
                     {isClaimed&&(t.claimed_by===auth.id||auth.level>=3) && <button style={{...S.btnSmall,color:'var(--fg-2)',borderColor:'var(--border)'}} onClick={()=>setUnclaimingTask(t)}>Unclaim</button>}
@@ -912,6 +906,17 @@ export default function DashboardPage() {
         <span>Events &amp; Reminders</span>
         <button onClick={()=>{setShowCreate(true);setCreateMode('reminder');}} style={{fontSize:10,fontWeight:700,color:'var(--accent)',background:'transparent',border:'none',cursor:'pointer',letterSpacing:'0.04em'}}>+ Schedule</button>
       </div>
+      {recurringInstances.length > 0 && (
+        <div style={{padding:'8px 14px', borderBottom:'1px solid var(--border)'}}>
+          <div style={{fontSize:9, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.12em', color:'var(--amber)', fontFamily:'var(--font-mono)', marginBottom:6}}>Recurring duties · {recurringInstances.length} open</div>
+          {recurringInstances.map(i => (
+            <div key={i.id} style={{display:'flex', alignItems:'center', gap:8, padding:'4px 0', fontSize:12}}>
+              <span style={{flex:1, color:'var(--fg-1)'}}>{i.title} <span style={{color:'var(--fg-4)', fontFamily:'var(--font-mono)', fontSize:10}}>· {i.month}/{i.year} · due by the {i.due_day}</span></span>
+              <button style={S.btnSmall} onClick={async()=>{const x=await completeMyRecurringInstance(i.id);if(!x?.ok)showAlert(x?.error||'Could not complete.','Not completed');refresh();}}>Done ✓</button>
+            </div>
+          ))}
+        </div>
+      )}
       {sortedReminders.length === 0 ? (
         <div style={{padding:'32px 16px',textAlign:'center',color:'var(--fg-4)',fontStyle:'italic',fontSize:13}}>No upcoming events.</div>
       ) : sortedReminders.map(r => {
@@ -937,8 +942,8 @@ export default function DashboardPage() {
                   {r.target_tag && <span>Target <code style={{background:'rgba(255,255,255,0.06)',padding:'1px 5px',borderRadius:3}}>{r.target_tag}</code></span>}
                 </div>
                 <div style={{display:'flex',gap:6}}>
-                  <button style={S.btnSmall} onClick={async()=>{await snoozeMyReminder(r.uuid);refresh();}}>Snooze 1h</button>
-                  {(isOwner||auth.level>=2) && <button style={S.btnDanger} onClick={async()=>{if(await showConfirm('Delete this reminder?')){await deleteMyReminder(r.uuid);refresh();}}}>Delete</button>}
+                  {(isOwner||auth.level>=2) && <button style={S.btnSmall} onClick={async()=>{const x=await snoozeMyReminder(r.uuid);if(!x?.ok)showAlert(x?.error||'Could not snooze.','Not snoozed');refresh();}}>Snooze 1h</button>}
+                  {(isOwner||auth.level>=2) && <button style={S.btnDanger} onClick={async()=>{if(await showConfirm('Delete this reminder?')){const x=await deleteMyReminder(r.uuid);if(!x?.ok)showAlert(x?.error||'Could not delete.','Not deleted');refresh();}}}>Delete</button>}
                 </div>
               </div>
             )}
@@ -1339,8 +1344,8 @@ export default function DashboardPage() {
                         {roleTargets.leadershipId && <option value={`Role:${roleTargets.leadershipId}`}>FM Leadership</option>}
                         {roleTargets.leadId       && <option value={`Role:${roleTargets.leadId}`}>FM Team Leads</option>}
                         {roleTargets.allFmId      && <option value={`Role:${roleTargets.allFmId}`}>All FM</option>}
-                        {(roleTargets.teams||[]).map(t => <option key={t.id} value={`Role:${t.id}`}>{t.name}</option>)}
-                        {staffList.map(s => <option key={s.id} value={`User:${s.id}`}>{s.name}</option>)}
+                        {(roleTargets.teams||[]).map(t => <option key={t.team_id} value={`Role:${t.team_id}`}>{t.team_name}</option>)}
+                        {staffList.map(s => <option key={s.discord_id} value={`User:${s.discord_id}`}>{s.display_name}</option>)}
                       </select>
                       <div style={{display:'flex', gap:6}}>
                         <button style={{flex:1, padding:'6px', borderRadius:6, background:'var(--accent)', border:'none', color:'#fff', fontSize:12, fontWeight:700, cursor:'pointer'}}
@@ -2171,7 +2176,7 @@ export default function DashboardPage() {
                 </div>
                 <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,cursor:'pointer'}}>
                   <input type="checkbox" checked={createForm.enableDM} onChange={e=>setCreateForm({...createForm,enableDM:e.target.checked})} />
-                  Daily DM reminder until claimed
+                  Daily DM reminder to whoever claims it, until it is done
                 </label>
               </div>
             ) : (
@@ -2215,13 +2220,15 @@ export default function DashboardPage() {
                 if (createMode === 'task') {
                   if (!createForm.desc.trim()) { showAlert('Description required'); return; }
                   if (!createForm.targetId) { showAlert('Target required'); return; }
-                  await createMyTask({desc:createForm.desc.trim(),targetType:createForm.targetType,targetId:createForm.targetId,enableDM:createForm.enableDM});
+                  const r = await createMyTask({desc:createForm.desc.trim(),targetType:createForm.targetType,targetId:createForm.targetId,enableDM:createForm.enableDM});
+                  if (!r?.ok) { showAlert(r?.error || 'Could not create the task.', 'Task not created'); return; }
                 } else {
                   if (!createForm.note.trim()) { showAlert('Message required'); return; }
                   if (!createForm.date || !createForm.time) { showAlert('Date and time required'); return; }
                   if (!createForm.targetId) { showAlert('Target required'); return; }
                   const epochMs = new Date(createForm.date + 'T' + createForm.time).getTime();
-                  await createMyReminder({message:createForm.note.trim(),epochMs,targetType:createForm.targetType,targetId:createForm.targetId,eventType:createForm.eventType,note:createForm.note});
+                  const r = await createMyReminder({message:createForm.note.trim(),epochMs,targetType:createForm.targetType,targetId:createForm.targetId,eventType:createForm.eventType,note:createForm.note});
+                  if (!r?.ok) { showAlert(r?.error || 'Could not schedule the event.', 'Event not scheduled'); return; }
                 }
                 setShowCreate(false);
                 setCreateForm({desc:'',targetType:'Role',targetId:'',enableDM:false,eventType:'General',date:'',time:'',warning:false,note:''});

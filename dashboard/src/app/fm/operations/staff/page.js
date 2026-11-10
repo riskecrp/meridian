@@ -2,7 +2,11 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { useAuth } from "../../../../lib/useAuth";
 import { useDialog } from "../../../../lib/useDialog";
-import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, addStaff, updateStaff, removeStaff, createTeam, renameTeam, deleteTeam, commitAllChanges, getAllStaffCOI, getMeridianFactions, addStaffCOI, removeStaffCOI, getStaffFactions, retireStaff, promoteToLead, takeoverTeam, getDashboardAccessList, grantDashboardAccess, revokeDashboardAccess } from "./actions";
+import { getStaffList, getStaffActivity, getTeamList, getFactionAssignments, addStaff, updateStaff, createTeam, renameTeam, deleteTeam, commitAllChanges, getAllStaffCOI, getMeridianFactions, addStaffCOI, removeStaffCOI, getStaffFactions, retireStaff, restoreStaff, getRetiredStaff, promoteToLead, takeoverTeam, getDashboardAccessList, grantDashboardAccess, revokeDashboardAccess } from "./actions";
+
+// Clearance is explicit (policy 15): the form offers it, the rank only suggests it.
+const CLEARANCE_OPTS = [{label:'L1 — Guide',value:'1'},{label:'L2 — Team Lead',value:'2'},{label:'L3 — Management',value:'3'}];
+const RANK_OPTS = [{label:'Guide',value:'Guide'},{label:'Team Lead',value:'Team Lead'},{label:'Management',value:'Management'}];
 
 const btn  = { background:'var(--accent)', color:'white', border:'none', padding:'6px 14px', borderRadius:8, fontSize:11, fontWeight:700, cursor:'pointer', letterSpacing:'0.03em' };
 const ghost = { background:'transparent', color:'var(--fg-2)', border:'1px solid var(--border)', padding:'6px 14px', borderRadius:8, fontSize:11, fontWeight:600, cursor:'pointer' };
@@ -384,16 +388,17 @@ export default function StaffPage() {
   const [accessForm,    setAccessForm]      = useState({ discordId: '', displayName: '' });
   const [accessBusy,    setAccessBusy]      = useState(false);
   const [accessError,   setAccessError]     = useState('');
+  const [retired,       setRetired]         = useState([]);
 
   useEffect(() => { if (!auth.loading && auth.level >= 3) refresh(); }, [auth.loading]);
 
   const refresh = async () => {
-    const [st, ac, te, fa, coi, mf, al] = await Promise.all([
+    const [st, ac, te, fa, coi, mf, al, rt] = await Promise.all([
       getStaffList(), getStaffActivity(), getTeamList(), getFactionAssignments(),
-      getAllStaffCOI(), getMeridianFactions(), getDashboardAccessList(),
+      getAllStaffCOI(), getMeridianFactions(), getDashboardAccessList(), getRetiredStaff().catch(() => []),
     ]);
     setStaff(st); setActivity(ac); setTeams(te); setFactions(fa);
-    setCoiEntries(coi); setMeridianFactions(mf); setAccessList(al);
+    setCoiEntries(coi); setMeridianFactions(mf); setAccessList(al); setRetired(rt || []);
     setStaffMoves([]); setFactionMoves([]); setLoading(false);
   };
 
@@ -507,15 +512,23 @@ export default function StaffPage() {
   }, [staff, teams, factions, staffMoves, factionMoves, activity]);
 
   const handleRetireConfirm = async (reassignments) => {
-    await retireStaff(retireMember.id, retireMember.display_name, retireMember.discord_id, reassignments);
+    let opts = {};
+    if (retireMember.clearance >= 3) {
+      // The server refuses to retire Leadership without this explicit confirmation.
+      if (!await showConfirm(`${retireMember.display_name} is Leadership (L${retireMember.clearance}). Retire them anyway?`)) return;
+      opts = { confirm: true };
+    }
+    const res = await retireStaff(retireMember.id, retireMember.display_name, retireMember.discord_id, reassignments, opts);
     setRetireMember(null);
-    await showAlert(`${retireMember.display_name} has been retired. All historical data is preserved.`);
+    if (!res?.ok) { await showAlert(res?.error || 'Could not retire.'); return; }
+    await showAlert(`${retireMember.display_name} has been retired. All historical data is preserved; they can be restored from the Retired list below.`);
     refresh();
   };
 
   const handlePromoteConfirm = async (newTeamName) => {
-    await promoteToLead(promoteMember.id, promoteMember.display_name, promoteMember.team_id, newTeamName);
+    const res = await promoteToLead(promoteMember.id, promoteMember.display_name, promoteMember.team_id, newTeamName);
     setPromoteMember(null);
+    if (!res?.ok) { await showAlert(res?.error || 'Could not promote.'); return; }
     await showAlert(`${promoteMember.display_name} promoted to Team Lead.${newTeamName !== promoteMember.team_name ? `\nTeam renamed to "${newTeamName}".` : ''}`);
     refresh();
   };
@@ -530,6 +543,7 @@ export default function StaffPage() {
     );
     const captured = promoteMember;
     setPromoteMember(null);
+    if (!result?.ok) { await showAlert(result?.error || 'Could not take over the team.'); return; }
     const lines = [
       `${captured.display_name} promoted to Team Lead on "${newTeamName}".`,
       oldLeadStaffName ? `${oldLeadStaffName} ${disposition === 'retire' ? 'retired' : 'returned to Guide'}.` : '',
@@ -549,7 +563,9 @@ export default function StaffPage() {
     setCommitting(true);
     const result = await commitAllChanges(staffMoves, factionMoves);
     setCommitting(false);
-    await showAlert(`Done!\nStaff moved: ${result.staffMoves}\nFactions reassigned: ${result.factionMoves}\nRoles synced: ${result.rolesSynced} | Failed: ${result.rolesFailed}`);
+    if (!result?.ok) { await showAlert(result?.error || 'Commit failed.'); return; }
+    const errs = result.errors?.length ? `\n\nNot applied:\n${result.errors.join('\n')}` : '';
+    await showAlert(`Done!\nStaff moved: ${result.staffMoves}\nFactions reassigned: ${result.factionMoves}\nRoles synced: ${result.rolesSynced} | Failed: ${result.rolesFailed}${errs}`);
     refresh();
   };
 
@@ -559,13 +575,16 @@ export default function StaffPage() {
       {name:'discordId', label:'Discord ID', type:'text'},
       {name:'name', label:'Display Name', type:'text'},
       {name:'teamId', label:'Team', type:'select', options:teamOpts, placeholder:'Select...'},
-      {name:'rank', label:'Rank', type:'select', options:[{label:'Guide',value:'Guide'},{label:'Team Lead',value:'Team Lead'}], default:'Guide'},
+      {name:'rank', label:'Rank', type:'select', options:RANK_OPTS, default:'Guide'},
+      {name:'clearance', label:'Clearance', type:'select', options:[{label:'Match the rank (suggested)',value:''}, ...CLEARANCE_OPTS], default:''},
     ]);
     if (!res) return; // cancelled
     if (!res.name?.trim()) { await showAlert('Display name is required.'); return; }
     if (!res.discordId?.trim()) { await showAlert('Discord ID is required. Right-click the user in Discord → Copy User ID.'); return; }
     const tname = teams.find(t => t.id === res.teamId)?.name || '';
-    await addStaff({discordId:res.discordId.trim(), name:res.name.trim(), teamId:res.teamId||'', teamName:tname, rank:res.rank||'Guide'});
+    const r = await addStaff({discordId:res.discordId.trim(), name:res.name.trim(), teamId:res.teamId||'', teamName:tname, rank:res.rank||'Guide', clearance:res.clearance||''});
+    if (!r?.ok) { await showAlert(r?.error || 'Could not add.'); return; }
+    if (r.updated) await showAlert('That Discord id was already on the roster — their row was updated (and restored if retired).');
     refresh();
   };
 
@@ -575,7 +594,7 @@ export default function StaffPage() {
       {name:'teamName', label:'Team Name', type:'text'},
       {name:'channelId', label:'Team Channel ID', type:'text'},
     ]);
-    if (res?.teamId && res?.teamName) { await createTeam(res.teamId, res.teamName, res.channelId || ''); refresh(); }
+    if (res?.teamId && res?.teamName) { const r = await createTeam(res.teamId, res.teamName, res.channelId || ''); if (!r?.ok) { await showAlert(r?.error || 'Could not create the team.'); return; } refresh(); }
   };
 
   if (auth.loading || loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading...</div>;
@@ -726,23 +745,30 @@ export default function StaffPage() {
                           onClick={async()=>{
                             const res=await showForm(`Edit: ${m.display_name}`,[
                               {name:'name',label:'Name',type:'text',default:m.display_name},
-                              {name:'rank',label:'Rank',type:'select',options:[{label:'Guide',value:'Guide'},{label:'Team Lead',value:'Team Lead'},{label:'Management',value:'Management'}],default:m.rank},
+                              {name:'rank',label:'Rank',type:'select',options:RANK_OPTS,default:m.rank},
+                              {name:'clearance',label:'Clearance (explicit — the rank only suggests it)',type:'select',options:CLEARANCE_OPTS,default:String(m.clearance||1)},
                               {name:'lst',label:'Lead Storyteller (full access to all factions)',type:'checkbox',default:!!m.lead_storyteller},
                             ]);
                             if(!res)return;
-                            if(res.name!==m.display_name) await updateStaff(m.id,'display_name',res.name);
-                            if(res.rank!==m.rank) await updateStaff(m.id,'rank',res.rank);
-                            if(!!res.lst !== !!m.lead_storyteller) await updateStaff(m.id,'lead_storyteller',res.lst?1:0);
+                            const results=[];
+                            if(res.name!==m.display_name) results.push(await updateStaff(m.id,'display_name',res.name));
+                            if(res.rank!==m.rank) results.push(await updateStaff(m.id,'rank',res.rank));
+                            if(String(res.clearance||'')!==String(m.clearance)) results.push(await updateStaff(m.id,'clearance',parseInt(res.clearance)));
+                            if(!!res.lst !== !!m.lead_storyteller) results.push(await updateStaff(m.id,'lead_storyteller',res.lst?1:0));
+                            const bad=results.find(r=>r&&!r.ok);
+                            if(bad) await showAlert(bad.error||'Some changes were not saved.');
                             refresh();
                           }}
                           style={{...micro, color:'var(--fg-3)'}}
                         >✎</button>
-                        {/* Retire */}
-                        <button
-                          onClick={() => setRetireMember(m)}
-                          title="Retire staff member"
-                          style={{...micro, color:'var(--red)', fontSize:10}}
-                        >✕</button>
+                        {/* Retire — never yourself */}
+                        {m.discord_id !== auth.id && (
+                          <button
+                            onClick={() => setRetireMember(m)}
+                            title="Retire staff member"
+                            style={{...micro, color:'var(--red)', fontSize:10}}
+                          >✕</button>
+                        )}
                       </div>
                     </div>
                   );
@@ -876,6 +902,30 @@ export default function StaffPage() {
                 })}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── Retired staff (soft-retired; restore brings them back Unassigned) ── */}
+      {retired.length > 0 && (
+        <div className="sec-card" style={{ marginTop: 24 }}>
+          <div className="sec-card-hdr">
+            <span>Retired</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-4)' }}>{retired.length}</span>
+          </div>
+          {retired.map(r => (
+            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderTop: '1px solid var(--border)' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-1)' }}>{r.display_name}</div>
+                <div style={{ fontSize: 10, color: 'var(--fg-4)', marginTop: 2 }}>{r.rank} · L{r.clearance} · retired {String(r.updated_at || '').slice(0, 10)}</div>
+              </div>
+              <button style={ghost} onClick={async () => {
+                if (!await showConfirm(`Restore ${r.display_name} to the roster as ${r.rank} (L${r.clearance})?`)) return;
+                const res = await restoreStaff(r.id);
+                if (!res?.ok) { await showAlert(res?.error || 'Could not restore.'); return; }
+                refresh();
+              }}>Restore</button>
+            </div>
+          ))}
         </div>
       )}
 

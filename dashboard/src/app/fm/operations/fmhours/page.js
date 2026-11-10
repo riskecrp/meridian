@@ -1,9 +1,8 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 import { useAuth } from "../../../../lib/useAuth";
+import { isOwner } from "../../../../lib/constants.js";
 import { getFMStaffWithLinks, setCharacterLink, getFMHoursForPeriod, saveFMHours, getFMScenesForPeriod, getFMMeetingsForPeriod, postFMReport } from "./actions";
-
-const RISK_ID = "738214924760907907";
 
 const s = {
   card:    { background: "var(--bg-1)", border: "1px solid var(--border)", borderRadius: 12 },
@@ -400,31 +399,34 @@ export default function FMHoursPage() {
     setStaff(data); setLoading(false);
   };
 
+  // One gate, matching the actions: team leads (L2) see their own team,
+  // leadership (L3) sees everyone and posts the report.
+  const allowed = !auth.loading && auth.level >= 2;
   useEffect(() => {
-    if (!auth.loading && auth.id === RISK_ID) loadStaff();
+    if (allowed) loadStaff();
     else if (!auth.loading) setLoading(false);
-  }, [auth.loading, auth.id]);
+  }, [auth.loading, allowed]);
 
   if (auth.loading || loading) return null;
-  if (auth.id !== RISK_ID) return <div style={{ padding: 48, textAlign: "center", color: "var(--fg-4)", fontStyle: "italic" }}>Access denied.</div>;
+  if (!allowed) return <div style={{ padding: 48, textAlign: "center", color: "var(--fg-4)", fontStyle: "italic" }}>Team leads and leadership only.</div>;
 
   const tabs = [
     { id: "links",  label: "Character Links" },
     { id: "hours",  label: "Import Hours" },
-    { id: "report", label: "Post Report" },
+    ...(auth.level >= 3 ? [{ id: "report", label: "Post Report" }] : []),
   ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div>
         <h1 style={{ fontSize: 22, fontWeight: 800, color: "var(--fg-0)", letterSpacing: "-0.02em", marginBottom: 4 }}>FM Hours & Activity</h1>
-        <p style={{ fontSize: 12, color: "var(--fg-4)" }}>Monthly activity tracking for Faction Management — visible only to you</p>
+        <p style={{ fontSize: 12, color: "var(--fg-4)" }}>Monthly activity tracking for Faction Management{auth.level >= 3 ? "" : " — your team"}</p>
       </div>
       {/* Two ends of one job: the report is built here, and this opens the
           read-only view that gets sent out. It used to be a separate sidebar
           entry, which made them look like unrelated pages. The route re-checks
           the session itself, so this only ever works for the owner. */}
-      {auth?.id === RISK_ID && (
+      {isOwner(auth?.id) && !auth?._impersonating && (
         <a href="/api/auth/verify-impersonate" target="_blank" rel="noopener noreferrer"
           style={{ ...s.ghost, alignSelf: "flex-start", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
           Open the view that gets sent out ↗

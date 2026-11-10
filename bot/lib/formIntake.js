@@ -248,9 +248,17 @@ export function identify(form, header, row) {
   // through to the next candidate rather than to whatever column merely has the
   // word Discord in its header — on these forms that is the invite link, which
   // is not a person anyone can message.
+  // A value that is a link (the faction's invite URL) is never a contact,
+  // whatever its header says (BOT-19).
   let contact = null;
   for (const pattern of form.contact || []) {
-    contact = valueByHeader(header, row, pattern)?.value;
+    for (let i = 0; i < header.length; i++) {
+      const value = String(row[i] ?? '').trim();
+      if (!value || !pattern.test(String(header[i] || '').trim())) continue;
+      if (/^https?:\/\//i.test(value) || /discord\.gg\//i.test(value)) continue;
+      contact = value;
+      break;
+    }
     if (contact) break;
   }
   return {

@@ -3,10 +3,12 @@ import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 
 const ERRORS = {
-  unauthorized:  'Your Discord account is not a member of the required server.',
-  oauth_failed:  'Discord authentication failed. Please try again.',
-  server_error:  'An unexpected error occurred. Please try again.',
-  no_code:       'Authorization was cancelled.',
+  unauthorized:   'Your Discord account is not a member of the required server.',
+  no_role:        'Your Discord account does not hold the verification role on the management server.',
+  not_configured: 'The verification portal is not configured on this server (VERIFY_ROLE_ID / SESSION_SECRET). Ask the dashboard owner.',
+  oauth_failed:   'Discord authentication failed. Please try again.',
+  server_error:   'An unexpected error occurred. Please try again.',
+  no_code:        'Authorization was cancelled.',
 };
 
 function LoginContent() {

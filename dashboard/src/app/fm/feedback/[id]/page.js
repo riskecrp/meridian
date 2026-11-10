@@ -5,12 +5,11 @@ import { useParams } from "next/navigation";
 import { useAuth } from "../../../../lib/useAuth";
 import { getFeedbackItem, getFeedbackDiscussion } from "../actions";
 import { ui } from "../../../../lib/ui.js";
+import { FM_GUILD_ID as GUILD_ID } from "../../../../lib/constants.js";
 
 // One submission: what the player wrote, and what the team said about it in the
 // thread. The thread half is fetched live from Discord rather than mirrored —
 // see fetchChannelMessages in lib/discord.js.
-
-const GUILD_ID = "1457188814916423855";
 
 const STATUS_LABELS = {
   new: "Pending Acknowledgement",
@@ -129,7 +128,7 @@ export default function FeedbackDetailPage() {
   );
 
   const parts = [
-    `Received ${item.created_at}`,
+    `Received ${item.received || item.submitted_at || item.created_at}`,
     `Discord: ${item.discord_username}`,
     `Status: ${STATUS_LABELS[item.status] || item.status}`,
     item.claimed_by_name && `Acknowledged by ${item.claimed_by_name} (${item.claimed_at})`,
