@@ -3,9 +3,17 @@
 // every publish. Overflow past Discord's 2000-char message limit is spread
 // across follow-up messages inside the same post and reconciled each time.
 import { queryOne, run } from './db.js';
+import { FM_GUILD_ID } from './constants.js';
+import { nowIso } from '../../../shared/dates.js';
 
-const GUILD_ID = '1457188814916423855'; // [ECRP] Game Affairs / FM guild
+// The FM guild the forum channel lives in (env GUILD_ID / NEXT_PUBLIC_GUILD_ID).
+const guildId = () => process.env.GUILD_ID || FM_GUILD_ID;
 const MSG_LIMIT = 1900;                 // leave margin under Discord's 2000
+
+/** Link to a thread in the FM guild. */
+export function threadUrl(threadId) {
+  return threadId ? `https://discord.com/channels/${guildId()}/${threadId}` : null;
+}
 
 export function renderSection(s) {
   if (!s || !s.heading) return '';
@@ -70,8 +78,10 @@ async function dapi(method, path, body) {
 export async function publishManagedPost(key, updatedBy) {
   const row = queryOne('SELECT * FROM managed_forum_posts WHERE key = ?', [key]);
   if (!row) throw new Error(`No managed post '${key}'.`);
+  if (!row.channel_id) throw new Error(`Managed post '${key}' has no Discord channel configured.`);
 
-  const sections = JSON.parse(row.content_json || '[]');
+  let sections = [];
+  try { sections = JSON.parse(row.content_json || '[]'); } catch { sections = []; }
   const chunks = renderChunks(sections);
   const title = (row.title || 'Untitled').slice(0, 100);
 
@@ -118,12 +128,12 @@ export async function publishManagedPost(key, updatedBy) {
     `UPDATE managed_forum_posts
        SET thread_id = ?, message_ids = ?, replace_thread_id = NULL, updated_at = ?, updated_by = ?
      WHERE key = ?`,
-    [threadId, JSON.stringify(msgIds), new Date().toISOString(), updatedBy || 'dashboard', key]
+    [threadId, JSON.stringify(msgIds), nowIso(), updatedBy || 'dashboard', key]
   );
 
   return {
     threadId,
-    url: `https://discord.com/channels/${GUILD_ID}/${threadId}`,
+    url: threadUrl(threadId),
     messageCount: msgIds.length,
     createdNew,
     replacedOld,

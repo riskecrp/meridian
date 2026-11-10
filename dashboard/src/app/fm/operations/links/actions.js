@@ -1,10 +1,14 @@
 'use server';
 import { requireActor } from '../../../../lib/requireActor.js';
 import { queryOne, run } from '../../../../lib/db.js';
-import { publishManagedPost } from '../../../../lib/forumPosts.js';
+import { logAudit } from '../../../../lib/audit.js';
+import { publishManagedPost, threadUrl } from '../../../../lib/forumPosts.js';
+import { nowIso } from '../../../../../../shared/dates.js';
+import { str } from '../../../../../../shared/validate.js';
 
-// Leadership only (L3) — matches the Operations section gating.
+// Leadership only (L3) — the post is FM policy, not a scene asset (policy 4).
 const LEVEL = 3;
+const KEY = 'important_links';
 
 function cleanUrl(u) {
   const s = String(u || '').trim();
@@ -27,16 +31,26 @@ function sanitizeSections(raw) {
   }).filter((s) => s.heading || (s.type === 'text' ? s.text : s.links.length));
 }
 
-const GUILD_ID = '1457188814916423855';
+function summarize(sections) {
+  const links = sections.reduce((n, s) => n + (s.type === 'links' ? s.links.length : 0), 0);
+  return `${sections.length} section${sections.length === 1 ? '' : 's'}, ${links} link${links === 1 ? '' : 's'}`;
+}
 
 export async function getLinks() {
   await requireActor(LEVEL);
-  const row = queryOne("SELECT * FROM managed_forum_posts WHERE key = 'important_links'");
+  const row = queryOne("SELECT * FROM managed_forum_posts WHERE key = ?", [KEY]);
+  // The destination is whatever the row says; label it from discord_config
+  // when a configured channel matches so the UI never has to guess a name.
+  const cfg = row?.channel_id ? queryOne("SELECT key FROM discord_config WHERE channel_id = ?", [row.channel_id]) : null;
+  let sections = [];
+  try { sections = row?.content_json ? JSON.parse(row.content_json) : []; } catch { sections = []; }
   return {
     title: row?.title || 'Important Links',
-    sections: row?.content_json ? JSON.parse(row.content_json) : [],
+    sections,
     published: !!row?.thread_id,
-    postUrl: row?.thread_id ? `https://discord.com/channels/${GUILD_ID}/${row.thread_id}` : null,
+    postUrl: row?.thread_id ? threadUrl(row.thread_id) : null,
+    channelId: row?.channel_id || '',
+    channelLabel: cfg?.key || (row?.channel_id ? `channel ${row.channel_id}` : 'no channel configured'),
     updatedAt: row?.updated_at || null,
     updatedBy: row?.updated_by || null,
   };
@@ -44,23 +58,29 @@ export async function getLinks() {
 
 export async function saveLinks(title, sections) {
   const actor = await requireActor(LEVEL);
+  const row = queryOne("SELECT key FROM managed_forum_posts WHERE key = ?", [KEY]);
+  if (!row) return { ok: false, error: `No managed post '${KEY}' is configured.` };
   const clean = sanitizeSections(sections);
-  const t = (String(title ?? '').trim().slice(0, 100)) || 'Important Links';
+  const t = str(title, { max: 100 }) || 'Important Links';
   run(
-    `UPDATE managed_forum_posts SET title = ?, content_json = ?, updated_at = ?, updated_by = ?
-     WHERE key = 'important_links'`,
-    [t, JSON.stringify(clean), new Date().toISOString(), actor.name]
+    `UPDATE managed_forum_posts SET title = ?, content_json = ?, updated_at = ?, updated_by = ? WHERE key = ?`,
+    [t, JSON.stringify(clean), nowIso(), actor.name, KEY]
   );
-  return { ok: true };
+  logAudit(actor.id, actor.name, 'EDIT', 'managed_forum_post', KEY, t, `Draft saved: ${summarize(clean)}`);
+  return { ok: true, sections: clean.length };
 }
 
 export async function publishLinks(title, sections) {
   const actor = await requireActor(LEVEL);
-  await saveLinks(title, sections);
+  const saved = await saveLinks(title, sections);
+  if (!saved.ok) return saved;
   try {
-    const res = await publishManagedPost('important_links', actor.name);
+    const res = await publishManagedPost(KEY, actor.name);
+    logAudit(actor.id, actor.name, 'PUBLISH', 'managed_forum_post', KEY, str(title, { max: 100 }) || 'Important Links',
+      `${res.createdNew ? 'Created' : 'Updated'} Discord thread ${res.threadId} (${res.messageCount} message${res.messageCount === 1 ? '' : 's'})${res.replacedOld ? ', old post removed' : ''}`);
     return { ok: true, ...res };
   } catch (e) {
+    logAudit(actor.id, actor.name, 'PUBLISH', 'managed_forum_post', KEY, str(title, { max: 100 }) || 'Important Links', `FAILED: ${e.message}`);
     return { ok: false, error: e.message };
   }
 }
