@@ -53,7 +53,7 @@ reply or a deferral.
 
 | Surface | Minimum |
 |---|---|
-| `/adddossier`, `/addnote`, `/logscene`, `/feedback` | L1, and the faction must be writable by the actor (team scope via `dashboard/src/lib/access.js`); archived factions refuse writes |
+| `/adddossier`, `/addnote`, `/logscene`, `/feedback` | L1, and the faction must be writable by the actor (team scope via `shared/access.js`); archived factions refuse writes |
 | `/getnotes`, `/factioninfo`, `/imports`, `/scenecount`, `/matrix teams|team|staff` | L1 or Lead Storyteller (read) |
 | `/reminder`, `/summarize` | L1 |
 | `/autodelete`, `/triggerword` | L3 |

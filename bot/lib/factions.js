@@ -1,10 +1,10 @@
 // Faction lookup for slash commands: exact name first, then a single
 // case-insensitive LIKE match, with an ambiguity error rather than a guess.
 // Writes refuse archived factions and go through the dashboard's scope rules
-// (dashboard/src/lib/access.js) so a guide cannot log against another team's
+// (shared/access.js) so a guide cannot log against another team's
 // faction from Discord when the site would refuse it.
 import { query, queryOne } from './db.js';
-import { canWriteFaction } from '../../dashboard/src/lib/access.js';
+import { canWriteFaction } from '../../shared/access.js';
 
 const esc = (s) => String(s).replace(/[%_\\]/g, '\\$&');
 

@@ -729,7 +729,7 @@ CREATE TABLE faction_feedback (
   concluded_by_name TEXT,
   concluded_at      TEXT,
   created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
-, reopen_card_id TEXT);
+, reopen_card_id TEXT, row_key TEXT);
 CREATE TABLE faction_feedback_state (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   last_row    INTEGER NOT NULL DEFAULT 0,
@@ -742,7 +742,7 @@ CREATE TABLE faction_feedback_failures (
   first_failed_at TEXT,
   last_failed_at  TEXT,
   last_error      TEXT
-);
+, row_key TEXT);
 CREATE TABLE sync_status (
   job                   TEXT PRIMARY KEY,
   label                 TEXT    NOT NULL DEFAULT '',
@@ -779,7 +779,7 @@ CREATE TABLE form_submissions (
   last_reminder_at  TEXT,
   concluded_by_name TEXT,
   concluded_at      TEXT,
-  created_at        TEXT    NOT NULL DEFAULT (datetime('now')), decided_by_id       TEXT, decided_by_name     TEXT, decided_at          TEXT, decision_reason     TEXT, checklist_message_id TEXT,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now')), decided_by_id       TEXT, decided_by_name     TEXT, decided_at          TEXT, decision_reason     TEXT, checklist_message_id TEXT, row_key TEXT,
   UNIQUE (form_key, sheet_row)
 );
 CREATE TABLE form_submission_state (
@@ -794,7 +794,7 @@ CREATE TABLE form_submission_failures (
   skipped         INTEGER NOT NULL DEFAULT 0,
   first_failed_at TEXT,
   last_failed_at  TEXT,
-  last_error      TEXT,
+  last_error      TEXT, row_key TEXT,
   PRIMARY KEY (form_key, sheet_row)
 );
 CREATE TABLE form_submission_checklist (
@@ -939,3 +939,13 @@ CREATE TABLE verify_sessions (
   expires_at TEXT NOT NULL
 );
 CREATE INDEX idx_verify_sessions_exp ON verify_sessions(expires_at);
+CREATE UNIQUE INDEX uq_faction_feedback_row_key ON faction_feedback(row_key) WHERE row_key IS NOT NULL;
+CREATE UNIQUE INDEX uq_form_submissions_row_key ON form_submissions(form_key, row_key) WHERE row_key IS NOT NULL;
+CREATE TABLE sheet_rows_seen (
+    source    TEXT NOT NULL,
+    row_key   TEXT NOT NULL,
+    sheet_row INTEGER NOT NULL DEFAULT 0,
+    record_id INTEGER,
+    seen_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (source, row_key)
+  );
