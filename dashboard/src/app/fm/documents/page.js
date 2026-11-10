@@ -22,40 +22,48 @@ export default function DocumentsPage() {
   const [showArchived, setShowArchived] = useState(false);
   const { showConfirm, showAlert } = useDialog();
 
+  // Readers: L1+ staff, plus Lead Storytellers and Event Team (level-1 docs,
+  // read-only). The server (getDocuments) is the level gate — it returns only
+  // what this viewer may read, so nothing is re-filtered here.
+  const canRead = auth.level >= 1 || auth.isLeadStoryteller || auth.isEventTeam;
+  const canEdit = auth.level >= 3;
+
   useEffect(() => {
-    if (!auth.loading && auth.level >= 1) {
-      getDocuments().then(d => {
-        // Client-side guard: never display a doc above the viewer's level
-        const safe = (d || []).filter(doc => (doc.level_required || 1) <= auth.level);
-        setDocs(safe);
-        setLoading(false);
-        const params = new URLSearchParams(window.location.search);
-        const sop = params.get('sop');
-        if (sop) {
-          const match = safe.find(doc => doc.title === decodeURIComponent(sop));
-          if (match) {
-            setExpandedId(match.id);
-            setTimeout(() => document.querySelector(`[data-doc-id="${match.id}"]`)?.scrollIntoView({ behavior:'smooth', block:'start' }), 300);
-          }
+    if (auth.loading) return;
+    if (!canRead) { setLoading(false); return; }
+    getDocuments().then(d => {
+      const safe = d || [];
+      setDocs(safe);
+      setLoading(false);
+      const params = new URLSearchParams(window.location.search);
+      const sop = params.get('sop');
+      if (sop) {
+        const match = safe.find(doc => doc.title === decodeURIComponent(sop));
+        if (match) {
+          setExpandedId(match.id);
+          setTimeout(() => document.querySelector(`[data-doc-id="${match.id}"]`)?.scrollIntoView({ behavior:'smooth', block:'start' }), 300);
         }
-      });
-    }
-  }, [auth.loading, auth.level]);
+      }
+    }).catch(() => setLoading(false));
+  }, [auth.loading, auth.level, canRead]);
 
   const refresh = async () => {
-    const d = await getDocuments();
-    setDocs((d || []).filter(doc => (doc.level_required || 1) <= auth.level));
+    const d = await getDocuments().catch(() => null);
+    if (d) setDocs(d);
   };
 
   const handleSave = async () => {
     if (!form.title.trim()) return;
-    if (editDoc) await updateDocument(editDoc.id, form);
-    else await createDocument(form);
+    let res;
+    try { res = editDoc ? await updateDocument(editDoc.id, form) : await createDocument(form); }
+    catch (e) { res = { ok: false, error: e?.message || 'Save failed.' }; }
+    if (!res?.ok) { showAlert(res?.error || 'Save failed.'); return; }
     setShowForm(false); setEditDoc(null); setForm({ title:'', category:'General', content:'', level_required:1 });
     refresh();
   };
 
   if (auth.loading || loading) return <div className="p-10 text-sm animate-pulse" style={{color:'var(--accent)'}}>Loading documents...</div>;
+  if (!canRead) return <div className="p-10 text-sm" style={{color:'var(--fg-4)'}}>Staff access required.</div>;
 
   const q = search.toLowerCase();
   const filtered = docs.filter(d => {
@@ -79,7 +87,7 @@ export default function DocumentsPage() {
           <h1 style={{fontSize:22,fontWeight:700,margin:0,letterSpacing:'-0.02em'}}>Documents</h1>
           <div style={{fontSize:10,color:'var(--fg-4)',marginTop:3,fontFamily:'var(--font-mono)'}}>Operational documentation and reference material</div>
         </div>
-        {auth.level >= 3 && (
+        {canEdit && (
           <button style={{...st.btn,marginTop:4}} onClick={() => {
             setEditDoc(null);
             setForm({ title:'', category:'General', content:'', level_required:1 });
@@ -112,7 +120,7 @@ export default function DocumentsPage() {
                         <span className="text-[9px] font-mono px-2 py-0.5 rounded" style={{background:'var(--bg-3)',color:'var(--fg-4)'}}>{doc.created_by}</span>
                       </div>
                       <div className="flex items-center gap-3">
-                        {auth.level >= 3 && (
+                        {canEdit && (
                           <div className="flex gap-2" onClick={e => e.stopPropagation()}>
                             <button onClick={() => {
                               setEditDoc(doc);
@@ -120,7 +128,11 @@ export default function DocumentsPage() {
                               setShowForm(true);
                             }} style={{fontSize:10,color:'var(--accent)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>Edit</button>
                             <button onClick={async () => {
-                              if (await showConfirm('Delete this document?')) { await deleteDocument(doc.id); refresh(); }
+                              if (await showConfirm('Delete this document?')) {
+                                const r = await deleteDocument(doc.id).catch(e => ({ ok:false, error:e?.message }));
+                                if (!r?.ok) showAlert(r?.error || 'Delete failed.');
+                                refresh();
+                              }
                             }} style={{fontSize:10,color:'var(--red)',background:'none',border:'none',cursor:'pointer',fontWeight:700}}>Del</button>
                           </div>
                         )}

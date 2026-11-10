@@ -321,7 +321,7 @@ export async function sendAnnouncement(configIds, message, postToFM = false, cha
   logAudit(actor.id, actor.name, 'CREATE', 'announcement', logId,
     `${ok ? 'Sent' : 'FAILED'} ${sentTotal}/${results.length} ${label} channels${postedToFM ? ' + FM Discord' : ''}`, text.substring(0, 100));
 
-  const base = { sent: sentTotal, failed, total: results.length, postedToFM, mirrored, channelType: ct, channelLabel: label, logId };
+  const base = { sent: sentTotal, failed, total: results.length, postedToFM, fmOnly: wantFM && !targets.length, mirrored, channelType: ct, channelLabel: label, logId };
   if (!ok) return { ok: false, error: failed.length === 1 && failed[0].channel_type === 'FM Discord' ? fmError || 'FM Discord post failed' : `Nothing was delivered (${failed.length} failed).`, ...base };
   return { ok: true, ...base };
 }

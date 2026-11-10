@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useAuth } from "../../../lib/useAuth";
-import { listTables, getTableExport, getFullDump } from "./actions";
+import { listTables, getTableExport } from "./actions";
 import { RUNBOOK, TABLE_DOCS } from "../../../lib/handoverContent.js";
 
 /*
@@ -91,14 +91,19 @@ function Block({ b }) {
 }
 
 // ── Database export ──────────────────────────────────────────────────────────
-const PREVIEW_CAP = 5000; // inline copy box shows up to this many rows; download always gives all
+// Downloads are served by /api/handover (policy 14): the .db copy with login
+// tokens blanked, the CSV bundle for Sheets, and one table as CSV. The server
+// action only feeds the capped inline preview.
+const PREVIEW_CAP = 2000; // inline copy box shows up to this many rows; the download always gives all
 
-function downloadText(filename, text, mime = "text/plain") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+function DownloadCard({ href, title, desc, primary }) {
+  return (
+    <a href={href} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "12px 14px", borderRadius: 10, textDecoration: "none", minWidth: 0,
+      border: `1px solid ${primary ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.12)"}`, background: primary ? "rgba(99,102,241,0.85)" : "rgba(255,255,255,0.03)" }}>
+      <span style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>⬇ {title}</span>
+      <span style={{ fontSize: 11.5, lineHeight: 1.5, color: primary ? "rgba(255,255,255,0.88)" : "rgba(255,255,255,0.6)" }}>{desc}</span>
+    </a>
+  );
 }
 
 function CopyBtn({ text, label = "Copy", style }) {
@@ -115,9 +120,8 @@ function CopyBtn({ text, label = "Copy", style }) {
 function TableRow({ t }) {
   const [open, setOpen] = useState(false);
   const [format, setFormat] = useState("csv");
-  const [data, setData] = useState(null);      // { text, returned, total, cols }
+  const [data, setData] = useState(null);      // { text, returned, total, cols, truncated, downloadUrl }
   const [busy, setBusy] = useState(false);
-  const [dl, setDl] = useState(false);
 
   const load = async (fmt) => {
     setBusy(true);
@@ -126,14 +130,7 @@ function TableRow({ t }) {
   };
   const toggle = () => { const next = !open; setOpen(next); if (next && !data) load(format); };
   const switchFmt = (fmt) => { setFormat(fmt); load(fmt); };
-  const doDownload = async () => {
-    setDl(true);
-    try {
-      const full = await getTableExport(t.name, format, 0); // 0 = all rows
-      downloadText(`${t.name}.${format}`, full.text, format === "json" ? "application/json" : "text/csv");
-    } catch {}
-    setDl(false);
-  };
+  const downloadUrl = `/api/handover?what=table&name=${encodeURIComponent(t.name)}`;
 
   const truncated = data && data.total > data.returned;
 
@@ -158,7 +155,7 @@ function TableRow({ t }) {
                 border: `1px solid ${format === f ? "rgba(129,140,248,0.4)" : "rgba(255,255,255,0.12)"}`, background: format === f ? "rgba(99,102,241,0.15)" : "transparent", color: format === f ? "#a5b4fc" : "rgba(255,255,255,0.5)" }}>{f.toUpperCase()}</button>
             ))}
             {data && <CopyBtn text={data.text} />}
-            <button onClick={doDownload} disabled={dl} style={{ fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontFamily: "JetBrains Mono, monospace", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.6)" }}>{dl ? "…" : `DOWNLOAD .${format.toUpperCase()}`}</button>
+            <a href={downloadUrl} style={{ fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 6, textDecoration: "none", fontFamily: "JetBrains Mono, monospace", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.6)" }}>DOWNLOAD .CSV (all rows)</a>
             {truncated && <span style={{ fontSize: 10.5, color: "#fbbf24" }}>preview capped at {PREVIEW_CAP.toLocaleString()} of {data.total.toLocaleString()} — download for all</span>}
           </div>
           {busy && !data ? <div style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", padding: "8px 0" }}>Loading…</div> : data && (
@@ -177,46 +174,34 @@ function GroupLabel({ children }) {
 function DatabaseExport() {
   const [tables, setTables] = useState(null);
   const [filter, setFilter] = useState("");
-  const [dump, setDump] = useState("");        // which bundle is generating
   const [showExcluded, setShowExcluded] = useState(false);
 
   useEffect(() => { listTables().then(setTables).catch(() => setTables([])); }, []);
-
-  const fullDump = async (format) => {
-    setDump(format);
-    try {
-      const text = await getFullDump(format);  // core scope (transient excluded)
-      downloadText(`meridian-handover.${format === "sql" ? "sql" : "json"}`, text, format === "sql" ? "application/sql" : "application/json");
-    } catch (e) { alert("Export failed: " + (e.message || e)); }
-    setDump("");
-  };
 
   const match = (t) => t.name.toLowerCase().includes(filter.toLowerCase());
   const core = (tables || []).filter((t) => t.core && match(t));
   const excluded = (tables || []).filter((t) => !t.core && match(t));
   const coreCount = (tables || []).filter((t) => t.core).length;
   const coreRows = (tables || []).filter((t) => t.core).reduce((a, t) => a + t.rows, 0);
+  const allRows = (tables || []).reduce((a, t) => a + t.rows, 0);
 
   return (
     <div>
       <p style={{ fontSize: 13.5, color: "rgba(255,255,255,0.72)", lineHeight: 1.75, margin: "10px 0" }}>
-        {md("This is where the data lives. Each table below is a spreadsheet of one kind of information, with a **plain-English note explaining what it holds**. This is a live, read-only export of the **transition-critical** data — factions & history (**including archived**), properties, NPCs, scene logs, arsenal, inventory, fleet, treasury, staff, config, documents & knowledge base — so it survives even if the website is switched off. Everyday clutter (pings, tasks, reminders, message/audit logs, logins) is **left out of the download** and tucked below.")}
+        {md("This is where the data lives. Each table below is a spreadsheet of one kind of information, with a **plain-English note explaining what it holds**. Two downloads cover everything; both read the database **at the moment you click**, so regenerate right before the handoff.")}
       </p>
-      <Note tone="warn">{md("This reads the database **at the moment you click** — regenerate right before handoff so it's current. Live session tokens (`sessions.token`, `mdb_sessions.token`) are redacted.")}</Note>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "16px 0 6px" }}>
-        <button onClick={() => fullDump("sql")} disabled={!!dump} style={{ fontSize: 12, fontWeight: 700, padding: "8px 14px", borderRadius: 8, cursor: "pointer", border: "none", background: "rgba(99,102,241,0.85)", color: "#fff", opacity: dump ? 0.5 : 1 }}>
-          {dump === "sql" ? "Generating…" : "⬇ Handover data — SQL"}
-        </button>
-        <button onClick={() => fullDump("json")} disabled={!!dump} style={{ fontSize: 12, fontWeight: 700, padding: "8px 14px", borderRadius: 8, cursor: "pointer", border: "1px solid rgba(255,255,255,0.14)", background: "transparent", color: "rgba(255,255,255,0.7)", opacity: dump ? 0.5 : 1 }}>
-          {dump === "json" ? "Generating…" : "⬇ Handover data — JSON"}
-        </button>
-        <span style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)" }}>
-          {tables ? `${coreCount} core tables · ${coreRows.toLocaleString()} rows` : "loading…"}
-        </span>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, margin: "14px 0 10px" }}>
+        <DownloadCard primary href="/api/handover?what=db" title="Download the database (.db)"
+          desc={`The complete SQLite file — every table (${tables ? `${tables.length} tables, ${allRows.toLocaleString()} rows` : "…"}) including the logs, tasks and pings, with all indexes and views, exactly as the dashboard uses it. The only change: every login token (sessions, mdb_sessions) is blanked, so nobody can use the copy to sign in — everyone logs in again on the new install. This is what a new server or the “Run it yourself” guide needs.`} />
+        <DownloadCard href="/api/handover?what=sheets" title="Download for Google Sheets (.zip of CSVs)"
+          desc={`One CSV per core table (${tables ? `${coreCount} tables, ${coreRows.toLocaleString()} rows` : "…"}): factions & history (including archived), members, properties, NPCs, peds, turfs, scene logs, arsenal, inventory, fleet, treasury, staff, reviews, the RP-change pipeline, documents, knowledge base, config and ping routes — plus TABLES.csv explaining each one and the schema. Everyday clutter (message/audit logs, tasks, reminders, pings, logins) is left out; cells starting with = + - @ are quoted so a spreadsheet never runs them.`} />
+        <DownloadCard href="/api/handover?what=sheets&scope=all" title="Google Sheets — every table"
+          desc="The same CSV bundle with the transient tables included as well (message logs, audit log, tasks, reminders, sessions with tokens blanked). Bigger; only if you want absolutely everything in spreadsheets." />
       </div>
+      <Note tone="warn">{md("Both downloads contain **leadership-only material** (Leadership documents, leadership notes, intel). Keep the files somewhere only the right people can open them. The database copy holds no usable login tokens; the website's own `.env` secrets are never part of any export.")}</Note>
       <p style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", margin: "0 0 16px", lineHeight: 1.6 }}>
-        {md("The bundle includes **only** the transition data below. **SQL** rebuilds it anywhere: `sqlite3 restored.db < meridian-handover.sql`. **JSON** is `{ tables: { name: [rows] } }`. Need a specific transient table too? Expand it below and download it on its own.")}
+        {md("Need one table on its own? Expand it below for a preview (first " + PREVIEW_CAP.toLocaleString() + " rows) and a full CSV download. Every download is recorded in the audit log.")}
       </p>
 
       <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter tables… (e.g. properties, npcs, scene_logs, faction_history)"
@@ -224,7 +209,7 @@ function DatabaseExport() {
 
       {!tables ? <div style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", padding: "8px 0" }}>Loading tables…</div> : (
         <>
-          <GroupLabel>Included in handover — {core.length} table{core.length === 1 ? "" : "s"}</GroupLabel>
+          <GroupLabel>Core data — {core.length} table{core.length === 1 ? "" : "s"} (in both downloads)</GroupLabel>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {core.map((t) => <TableRow key={t.name} t={t} />)}
             {core.length === 0 && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", padding: "4px 0" }}>No included tables match “{filter}”.</div>}
@@ -235,7 +220,7 @@ function DatabaseExport() {
               <button onClick={() => setShowExcluded((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", border: "none", cursor: "pointer", padding: 0, marginBottom: 8 }}>
                 <span style={{ color: "rgba(255,255,255,0.35)", fontSize: 11 }}>{showExcluded ? "▾" : "▸"}</span>
                 <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: "rgba(255,255,255,0.4)", fontFamily: "JetBrains Mono, monospace" }}>
-                  Excluded — transient &amp; logs · {excluded.length} · not in the bundle
+                  Transient &amp; logs · {excluded.length} · in the .db, not in the core Sheets bundle
                 </span>
               </button>
               {showExcluded && (

@@ -28,15 +28,19 @@ export default function HistoryView({ kind }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (auth.loading || (auth.level < 1 && !auth.isLeadStoryteller)) return;
+    if (auth.loading) return;
+    if (auth.level < 2) { setLoading(false); return; }
     getAnnouncementHistory(kind).then(h => { setRows(h || []); setLoading(false); }).catch(() => setLoading(false));
   }, [auth.loading, auth.level, kind]);
 
   if (auth.loading || loading) {
     return <div style={{ padding: 40, color: "var(--fg-4)", fontSize: 13 }}>Loading…</div>;
   }
+  if (auth.level < 2) {
+    return <div style={{ padding: 40, color: "var(--fg-4)", fontSize: 13 }}>Team Lead access (L2) required.</div>;
+  }
 
-  const canSeeAll = auth.level >= 3 || auth.isLeadStoryteller;
+  const canSeeAll = auth.level >= 3;
 
   return (
     <div>

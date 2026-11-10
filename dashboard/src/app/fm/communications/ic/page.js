@@ -47,9 +47,12 @@ export default function ICCommunicationsPage() {
     if (file) processFile(file);
   }, [processFile]);
 
+  // Policy 6: IC memos are a Team Lead (L2+) action — below that there is
+  // nothing to load, so stop the spinner instead of waiting forever.
   useEffect(() => {
-    if (auth.loading || (auth.level < 1 && !auth.isLeadStoryteller)) return;
-    getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); });
+    if (auth.loading) return;
+    if (auth.level < 2) { setLoading(false); return; }
+    getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); }).catch(() => setLoading(false));
   }, [auth.loading, auth.level]);
 
   const channelLabel = channelType === 'faction' ? 'Faction-wide' : channelType === 'both' ? 'Command + Faction-wide' : 'Command';
@@ -93,6 +96,9 @@ export default function ICCommunicationsPage() {
   if (auth.loading || loading) {
     return <div style={{ padding: 40, color: 'var(--fg-4)', fontSize: 13 }}>Loading…</div>;
   }
+  if (auth.level < 2) {
+    return <div style={{ padding: 40, color: 'var(--fg-4)', fontSize: 13 }}>Team Lead access (L2) required. IC communications to faction Discords are sent by team leads and leadership.</div>;
+  }
 
   const isLeadership = auth.level >= 3;
 
@@ -106,7 +112,7 @@ export default function ICCommunicationsPage() {
           {isLeadership
             ? `Send IC content to any or all ${configurable.length} configured faction Discords.`
             : `Send IC content to your team's ${configurable.length} configured faction Discord${configurable.length !== 1 ? 's' : ''}.`}
-          {' '}A copy of the link is always posted in the FM IC channel.
+          {' '}Every send is filed in the FM IC log channel with the image, caption and delivery report.
         </p>
         <DocBar authLevel={auth.level} links={[{ title: 'Communications', label: 'IC Communication Guide', minLevel: 1 }]} />
       </div>
@@ -209,11 +215,11 @@ export default function ICCommunicationsPage() {
               {message.trim() && <><br /><br /><span style={{ color: 'var(--fg-2)', whiteSpace: 'pre-wrap' }}>{message.trim()}</span></>}
               {link.trim()
                 ? <><br /><br /><span style={{ fontStyle: 'italic', color: 'var(--fg-4)' }}>[image renders here]</span></>
-                : <><br /><br /><span style={{ fontStyle: 'italic', color: 'var(--fg-4)' }}>Paste a link above to attach an image</span></>}
+                : <><br /><br /><span style={{ fontStyle: 'italic', color: 'var(--fg-4)' }}>Upload an image above to attach it</span></>}
             </div>
             <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)',
               fontSize: 10, color: 'var(--fg-4)' }}>
-              FM IC channel receives: link only
+              FM IC log channel receives: the image, the caption and which factions it reached or failed
             </div>
           </div>
 
@@ -234,18 +240,16 @@ export default function ICCommunicationsPage() {
               background: result.ok ? 'rgba(52,211,153,0.08)' : 'rgba(239,68,68,0.08)',
               border: `1px solid ${result.ok ? 'rgba(52,211,153,0.3)' : 'rgba(239,68,68,0.3)'}` }}>
               {result.ok ? (
-                <>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#34d399', marginBottom: 4 }}>
-                    ✓ Sent to {result.sent} of {result.total} {result.channelLabel || ''} channel{result.total !== 1 ? 's' : ''} · Link copied to FM IC channel
-                  </div>
-                  {result.failed?.length > 0 && (
-                    <div style={{ fontSize: 11, color: 'var(--red)' }}>
-                      Failed: {result.failed.map(f => `${f.name} (${f.reason || f.status})`).join(', ')}
-                    </div>
-                  )}
-                </>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#34d399', marginBottom: 4 }}>
+                  ✓ Sent to {result.sent} of {result.total} {result.channelLabel || ''} channel{result.total !== 1 ? 's' : ''}{result.mirrored ? ' · Filed in the FM IC log' : ''}
+                </div>
               ) : (
-                <div style={{ fontSize: 13, color: 'var(--red)' }}>✗ {result.error}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red)', marginBottom: 4 }}>✗ {result.error}</div>
+              )}
+              {result.failed?.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--red)' }}>
+                  Failed: {result.failed.map(f => `${f.name} (${f.reason || f.error || f.status})`).join(', ')}
+                </div>
               )}
             </div>
           )}

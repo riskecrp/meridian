@@ -34,9 +34,12 @@ export default function CommunicationsPage() {
     return parts.join('  ·  ');
   };
 
+  // Policy 6: announcements are a Team Lead (L2+) action — below that there is
+  // nothing to load, so stop the spinner instead of waiting forever.
   useEffect(() => {
-    if (auth.loading || (auth.level < 1 && !auth.isLeadStoryteller)) return;
-    getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); });
+    if (auth.loading) return;
+    if (auth.level < 2) { setLoading(false); return; }
+    getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); }).catch(() => setLoading(false));
   }, [auth.loading, auth.level]);
 
   const configurable = useMemo(() => targets.filter(hasChan), [targets, channelType]);
@@ -69,6 +72,9 @@ export default function CommunicationsPage() {
   if (auth.loading || loading) {
     return <div style={{ padding: 40, color: 'var(--fg-4)', fontSize: 13 }}>Loading…</div>;
   }
+  if (auth.level < 2) {
+    return <div style={{ padding: 40, color: 'var(--fg-4)', fontSize: 13 }}>Team Lead access (L2) required. Announcements to faction Discords are sent by team leads and leadership.</div>;
+  }
 
   const isLeadership = auth.level >= 3;
   const canSend      = message.trim() && (selected.size > 0 || (isLeadership && postToFM));
@@ -83,6 +89,7 @@ export default function CommunicationsPage() {
           {isLeadership
             ? `Send a message to any or all ${configurable.length} configured faction Discords.`
             : `Send a message to your team's ${configurable.length} configured faction Discord${configurable.length !== 1 ? 's' : ''}.`}
+          {' '}Every send is copied to the FM announcements log with its delivery report.
         </p>
         <DocBar authLevel={auth.level}
           links={[
@@ -168,19 +175,20 @@ export default function CommunicationsPage() {
               background: result.ok ? 'rgba(52,211,153,0.08)' : 'rgba(239,68,68,0.08)',
               border: `1px solid ${result.ok ? 'rgba(52,211,153,0.3)' : 'rgba(239,68,68,0.3)'}` }}>
               {result.ok ? (
-                <>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#34d399', marginBottom: 4 }}>
-                    {result.total > 0 && `✓ Sent to ${result.sent} of ${result.total} ${result.channelLabel || ''} channel${result.total !== 1 ? 's' : ''}`}
-                    {result.postedToFM && `${result.total > 0 ? ' · ' : '✓ '}Posted in FM Discord with @Faction Management ping`}
-                  </div>
-                  {result.failed?.length > 0 && (
-                    <div style={{ fontSize: 11, color: 'var(--red)' }}>
-                      Failed: {result.failed.map(f => `${f.name} (${f.reason || f.status})`).join(', ')}
-                    </div>
-                  )}
-                </>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#34d399', marginBottom: 4 }}>
+                  {result.fmOnly
+                    ? '✓ Posted in FM Discord with @Faction Management ping'
+                    : `✓ Sent to ${result.sent} of ${result.total} ${result.channelLabel || ''} channel${result.total !== 1 ? 's' : ''}`}
+                  {!result.fmOnly && result.postedToFM && ' · Posted in FM Discord with @Faction Management ping'}
+                  {!result.postedToFM && result.mirrored && ' · copied to the FM log'}
+                </div>
               ) : (
-                <div style={{ fontSize: 13, color: 'var(--red)' }}>✗ {result.error}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red)', marginBottom: 4 }}>✗ {result.error}</div>
+              )}
+              {result.failed?.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--red)' }}>
+                  Failed: {result.failed.map(f => `${f.name} (${f.reason || f.error || f.status})`).join(', ')}
+                </div>
               )}
             </div>
           )}
