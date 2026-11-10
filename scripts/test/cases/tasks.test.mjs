@@ -1,0 +1,24 @@
+import * as T from '../../../shared/tasks.js';
+import { actorFromDiscord } from '../../../shared/actor.js';
+import { query } from '../../../shared/db.js';
+import { ok, eq, failsWith, pass } from '../lib.mjs';
+
+const l3 = actorFromDiscord('100000000000000003'), l2 = actorFromDiscord('100000000000000002'), l1 = actorFromDiscord('100000000000000001');
+eq(actorFromDiscord('123'), null, 'unknown discord id is not an actor');
+await failsWith(() => T.createTask(l3, { desc: '', targetType: 'User', targetId: l1.id }), /description/, 'empty description');
+await failsWith(() => T.createTask(l3, { desc: 'x', targetType: 'User', targetId: '123' }), /roster/, 'unknown target');
+const c = await T.createTask(l3, { desc: 'Smoke task', targetType: 'User', targetId: l1.id }); ok(c.ok && c.uid.length > 20, 'created with a random uid'); pass('create');
+ok(T.visibleTasks(l1).some(t => t.task_uid === c.uid), 'target sees it');
+ok(!T.visibleTasks(l2).some(t => t.task_uid === c.uid), 'other guide does not');
+ok(T.visibleTasks(l1).some(t => t.task_uid === 't1001'), 'L1 sees the guide-role task');
+ok(!T.visibleTasks(l1).some(t => t.task_uid === 't1003'), 'L1 cannot see the leadership task'); pass('visibility');
+await failsWith(() => T.claimTask(l1, 't1003'), /not visible/, 'claim invisible task refused');
+ok((await T.claimTask(l1, c.uid)).ok, 'claim'); await failsWith(() => T.claimTask(l3, c.uid), /Already claimed/, 'second claim refused'); pass('claim guards');
+const q = await T.requestTaskInfo(l1, c.uid, 'Which NPC?'); ok(q.ok, 'question');
+ok((await T.answerTaskQuestion(l3, q.id, 'The one on Grove')).ok, 'answer'); await failsWith(() => T.answerTaskQuestion(l3, q.id, 'again'), /Already/, 'no double answer'); pass('Q&A');
+ok((await T.completeTask(l1, c.uid, 'done')).ok, 'complete'); await failsWith(() => T.completeTask(l1, c.uid), /already completed/, 'no double complete');
+const row = T.getTask(c.uid); eq(row.status, 'completed', 'row kept'); ok(/^\d{4}-\d{2}-\d{2}T/.test(row.completed_at), 'ISO completed_at');
+eq(query("SELECT count(*) n FROM task_log WHERE task_uid = ?", [c.uid])[0].n, 5, 'five log rows'); pass('completion keeps history');
+await failsWith(() => T.reassignTask(l1, 't1001', '900000000000000001', 'Role'), /team leads/i, 'L1 cannot reassign');
+await failsWith(() => T.reassignTask(l2, 't1001', '900000000000000001', 'Role'), /leadership/i, 'L2 cannot reassign to leadership');
+ok((await T.reassignTask(l3, 't1001', l2.id, 'User')).ok, 'L3 reassigns'); eq(T.getTask('t1001').claimed_by, 'None', 'reassign clears claim'); pass('reassign');
