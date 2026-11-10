@@ -22,7 +22,7 @@ import { sanitizeHtml } from "../../leadership/_shared/sanitize.js";
 import { PROPERTY_TYPES } from "../../../../../../shared/validate.js";
 
 const MAIN_TABS = ["overview", "activity", "portal", "admin"];
-const PORTAL_BASE = process.env.NEXT_PUBLIC_PORTAL_URL || "https://meridiandatabase.net";
+import { PORTAL_URL as PORTAL_BASE } from "../../../../lib/constants.js";
 // Every server action returns { ok, error }; surface a refusal instead of silently reloading.
 const failed = (r) => (r && r.ok === false) ? (r.error || "Action failed.") : null;
 

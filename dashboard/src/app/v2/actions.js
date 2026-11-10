@@ -142,32 +142,7 @@ export async function getAllDocuments({ titlesOnly = false } = {}) {
   return query(`SELECT ${cols} FROM documents WHERE COALESCE(level_required, 1) <= ? ORDER BY level_required ASC, category, title`, [level]);
 }
 
-// Per-faction cycle state that getReviewData can't answer: who got their
-// feedback message this month, and which factions have a promo staged.
-export async function getReviewCycleMap() {
-  await requireActor(2, { allowLeadStoryteller: true });
-  const month = new Date().toISOString().substring(0, 7);
-  const fb = query(`SELECT target_label, actor_name, MAX(timestamp) t FROM site_audit_log
-    WHERE target_type = 'feedback_sent' AND strftime('%Y-%m', timestamp) = ?
-    GROUP BY target_label`, [month]);
-  const promos = query("SELECT name FROM factions WHERE archived = 0 AND pending_promo IS NOT NULL AND pending_promo != ''");
-  return {
-    feedback: Object.fromEntries(fb.map(r => [r.target_label, { by: r.actor_name, at: r.t }])),
-    staged: promos.map(p => p.name),
-  };
-}
 
-// Has this month's feedback been delivered to the faction? Sent-ness is only
-// recorded in the audit log (by sendFeedbackToFaction / markFeedbackSent), so
-// read it back from there for the review checklist.
-export async function getFeedbackSentThisMonth(factionName) {
-  await requireActor(2, { allowLeadStoryteller: true });
-  const row = queryOne(`SELECT actor_name, timestamp FROM site_audit_log
-    WHERE target_type = 'feedback_sent' AND target_label = ?
-      AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')
-    ORDER BY timestamp DESC LIMIT 1`, [String(factionName || "")]);
-  return row ? { sent: true, by: row.actor_name, at: row.timestamp } : { sent: false };
-}
 
 // Complete one of MY recurring-reminder instances. One implementation for both
 // shells: this is the fm action (recipient, or L3 for anyone; audited).

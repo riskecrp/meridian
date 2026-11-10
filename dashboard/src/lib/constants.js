@@ -15,3 +15,6 @@ export const GAME_AFFAIRS_ID  = '1457189093594239147';
 // The FM management guild — where IC-contact / intake threads live.
 // Client-safe plain string so v2 pages can build thread links.
 export const FM_GUILD_ID      = process.env.NEXT_PUBLIC_GUILD_ID || '1457188814916423855';
+
+// The public member-database portal (meridiandatabase.net) that faction pages link to.
+export const PORTAL_URL = (process.env.NEXT_PUBLIC_PORTAL_URL || 'https://meridiandatabase.net').replace(/\/$/, '');

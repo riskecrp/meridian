@@ -33,7 +33,7 @@ import { PROPERTY_TYPES, REVIEW_STATUSES } from "../../../../../../shared/valida
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const money = (n) => "$" + (n || 0).toLocaleString();
 const IC_STATUS = { pending_discussion: ["disc", "Pending Discussion"], pending_roleplay: ["rp", "Pending Roleplay"], completed: ["done", "Completed"] };
-const PORTAL_BASE = process.env.NEXT_PUBLIC_PORTAL_URL || "https://meridiandatabase.net";
+import { PORTAL_URL as PORTAL_BASE } from "../../../../lib/constants.js";
 
 import Modal from "../../Modal.js";
 

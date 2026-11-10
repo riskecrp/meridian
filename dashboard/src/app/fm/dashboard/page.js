@@ -705,9 +705,9 @@ export default function DashboardPage() {
                   </div>
                   <div style={{display:'flex', gap:6, borderTop:'1px solid rgba(74,222,128,0.15)', paddingTop:8}}>
                     {auth.level >= 3 && (
-                      <button style={qBtn('var(--red)','transparent','rgba(248,113,113,0.3)')} onClick={async()=>{ if(await showConfirm(`Cancel promo for ${p.faction_name}?`)){await cancelPromotion(p.faction_id,p.faction_name,actor);refreshQueue();} }}>Cancel</button>
+                      <button style={qBtn('var(--red)','transparent','rgba(248,113,113,0.3)')} onClick={async()=>{ if(await showConfirm(`Cancel promo for ${p.faction_name}?`)){const r=await cancelPromotion(p.faction_id);if(r&&r.ok===false)showAlert(r.error||'Could not cancel the promotion.');refreshQueue();} }}>Cancel</button>
                     )}
-                    <button style={qBtn('white','var(--green)','transparent')} onClick={async()=>{ if(await showConfirm(`Complete promo for ${p.faction_name}?`)){await completePromotion(p.faction_id,p.faction_name,actor);refreshQueue();} }}>Complete</button>
+                    <button style={qBtn('white','var(--green)','transparent')} onClick={async()=>{ if(await showConfirm(`Complete promo for ${p.faction_name}?`)){const r=await completePromotion(p.faction_id);if(r&&r.ok===false)showAlert(r.error||'Could not complete the promotion.');refreshQueue();} }}>Complete</button>
                   </div>
                 </div>
               );

@@ -9,7 +9,7 @@ import { s, tierColor } from "./_shared/styles";
 import RowMenu from "./_shared/RowMenu";
 import TableSkeleton from "../../../lib/TableSkeleton";
 
-const PORTAL_BASE = process.env.NEXT_PUBLIC_PORTAL_URL || "https://meridiandatabase.net";
+import { PORTAL_URL as PORTAL_BASE } from "../../../lib/constants.js";
 const th = { padding: "9px 12px", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--fg-4)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", userSelect: "none", cursor: "pointer", borderBottom: "1px solid var(--border)" };
 const td = { padding: "10px 12px", fontSize: 13, color: "var(--fg-2)", whiteSpace: "nowrap", borderBottom: "1px solid var(--border)" };
 
