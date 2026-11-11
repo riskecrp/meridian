@@ -8,5 +8,6 @@ export async function GET(request) {
   cookieStore.delete('meridian_session');
   const host = request.headers.get('host');
   const proto = host?.includes('localhost') ? 'http' : 'https';
-  return NextResponse.redirect(new URL('/login', `${proto}://${host}`));
+  const reason = request.nextUrl?.searchParams?.get('reason');
+  return NextResponse.redirect(new URL(reason === 'expired' ? '/login?error=expired' : '/login', `${proto}://${host}`));
 }

@@ -29,7 +29,7 @@ export default function TaskDetailPage() {
 
   const crumbs = <><Link href="/v3">Home</Link> · <Link href="/v3/work">Work</Link> · Task</>;
   if (auth?.loading || (auth?.ok && data === null)) return <><PageHeader eyebrow={crumbs} title="Loading…" /><Skeleton rows={4} /></>;
-  if (!auth?.ok) return <><PageHeader eyebrow={crumbs} title={uid} /><Restricted>You are not signed in.</Restricted></>;
+  if (!auth?.ok) return <><PageHeader eyebrow={crumbs} title={uid} /><Restricted>Your session has ended. <a href="/api/auth/logout?reason=expired" style={{ textDecoration: "underline" }}>Sign in again</a>.</Restricted></>;
   if (!data?.ok) return <><PageHeader eyebrow={crumbs} title={uid} /><Restricted>{data?.error || "Task not found."}</Restricted></>;
 
   const { task, questions, can } = data;

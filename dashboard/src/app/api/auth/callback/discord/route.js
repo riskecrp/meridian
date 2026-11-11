@@ -75,8 +75,10 @@ export async function GET(request) {
       run("UPDATE staff SET discord_name = ?, clearance = ?, updated_at = datetime('now') WHERE discord_id = ?", [displayName, clearance, user.id]);
     }
 
-    // Invalidate existing sessions for this user so clearance changes take immediate effect
-    run("DELETE FROM sessions WHERE discord_id = ?", [user.id]);
+    // Sessions on other devices stay valid: clearance is read live from the
+    // staff row on every request (lib/session.js), so there is nothing stale to
+    // flush. Keep at most five per person so a forgotten device cannot pile up.
+    run("DELETE FROM sessions WHERE discord_id = ? AND id NOT IN (SELECT id FROM sessions WHERE discord_id = ? ORDER BY id DESC LIMIT 4)", [user.id, user.id]);
 
     pruneSessions();
 
