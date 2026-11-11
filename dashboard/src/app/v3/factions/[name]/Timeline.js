@@ -41,12 +41,12 @@ export default function Timeline({ factionId }) {
 
   return (
     <Card title="Timeline" right={<span className="muted small">{shown.length}{allOn ? "" : ` of ${entries.length}`} loaded{more ? " · more below" : ""}</span>}>
-      <div className="chips" style={{ marginBottom: 6 }}>
+      <div className="chips mb-s">
         <button className={`chip${allOn ? " on" : ""}`} onClick={() => setOn(new Set(KINDS.map(k => k[0])))}>All</button>
         {KINDS.map(([k, label]) => <button key={k} className={`chip${on.has(k) ? " on" : ""}`} onClick={() => toggle(k)}>{label}{counts[k] ? <span className="ct">{counts[k]}</span> : null}</button>)}
       </div>
       {err && <div className="err">{err}</div>}
-      {loading && entries.length === 0 && <div className="stack"><div className="skeleton" style={{ height: 40 }} /><div className="skeleton" style={{ height: 40 }} /><div className="skeleton" style={{ height: 40 }} /></div>}
+      {loading && entries.length === 0 && <div className="stack"><div className="skeleton sk-row" /><div className="skeleton sk-row" /><div className="skeleton sk-row" /></div>}
       {!loading && shown.length === 0 && <Empty title={entries.length === 0 ? "Nothing on record yet." : "Nothing of these kinds loaded."}>{entries.length === 0 ? null : "Load more or widen the filter."}</Empty>}
       {shown.map(e => (
         <div className="tl" key={e.key}>
@@ -59,7 +59,7 @@ export default function Timeline({ factionId }) {
           {e.href && <Link className="btn quiet sm" href={translatePath(e.href, "v3")}>Open</Link>}
         </div>
       ))}
-      <div className="row" style={{ justifyContent: "center", paddingTop: 12 }}>
+      <div className="row center pt-m">
         {loading && entries.length > 0 ? <span className="hint">Loading…</span>
           : !loading && more ? <Button size="sm" variant="ghost" onClick={() => load(entries[entries.length - 1]?.cursor)}>Load more</Button>
           : !loading && entries.length > 0 ? <span className="mono tiny faint">— start of the record —</span> : null}

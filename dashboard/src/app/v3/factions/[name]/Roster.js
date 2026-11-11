@@ -9,7 +9,7 @@ export default function Roster({ hub }) {
   const del = (m) => { if (window.confirm(`Remove ${m.character_name} from the roster?`)) run(() => deleteMember(m.id), { success: `${m.character_name} removed.`, onDone: reload }); };
   return (
     <Card flush title="Known command & members" right={canWrite ? <Button size="sm" onClick={() => setModal({ kind: "member" })}>+ Add member</Button> : <span className="faint small">{detail.members.length} on file</span>}>
-      {detail.members.length === 0 ? <div style={{ padding: "0 16px 16px" }}><Empty title="No members on file.">{canWrite ? "Add the characters you know hold command." : null}</Empty></div> : (
+      {detail.members.length === 0 ? <div className="pad-in"><Empty title="No members on file.">{canWrite ? "Add the characters you know hold command." : null}</Empty></div> : (
         <div className="tblwrap">
           <table className="tbl">
             <thead><tr><th>Character</th><th>Role</th><th className="hide-sm">Phone</th><th className="hide-sm">Residence</th>{canWrite && <th></th>}</tr></thead>

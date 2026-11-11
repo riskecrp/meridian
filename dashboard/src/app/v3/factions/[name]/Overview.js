@@ -16,13 +16,13 @@ export function Readiness({ factionId, refreshKey }) {
       <div className="list">
         {r.checks.map(c => (
           <div className="li" key={c.id}>
-            <span className="mono" style={{ color: c.ok ? "var(--good)" : "var(--amber)", fontWeight: 800 }}>{c.ok ? "✓" : "✕"}</span>
-            <div className="body"><div className="d" style={{ color: "var(--ink-1)" }}>{c.label}</div></div>
-            <div className="side"><span className="mono small"><b style={{ color: c.ok ? "var(--ink-0)" : "var(--amber)" }}>{c.value}</b> <span className="faint">· target {c.op === "max" ? `≤ ${c.target}` : `≥ ${c.target}`}</span></span></div>
+            <span className={`mono w-800 ${c.ok ? "c-good" : "c-amber"}`}>{c.ok ? "✓" : "✕"}</span>
+            <div className="body"><div className="d c-ink1">{c.label}</div></div>
+            <div className="side"><span className="mono small"><b className={c.ok ? "c-ink" : "c-amber"}>{c.value}</b> <span className="faint">· target {c.op === "max" ? `≤ ${c.target}` : `≥ ${c.target}`}</span></span></div>
           </div>
         ))}
       </div>
-      <div className="hint" style={{ paddingTop: 8, color: r.ready && !r.staged ? "var(--good)" : undefined }}>
+      <div className={`hint pt-s${r.ready && !r.staged ? " c-good" : ""}`}>
         {r.archived ? "Archived — for the record only." : r.staged ? "A promotion is already staged — complete it from the Review tab." : r.ready ? "Every check is met — worth raising at this month's review." : "Targets are set per tier by leadership; a guide for the review, not a gate."}
       </div>
     </Card>
@@ -43,7 +43,7 @@ export default function Overview({ hub }) {
         <Card title="Standing" right={<span className="muted small">Tier {detail.tier}</span>}>
           <div className="kv">
             <div><div className="k">Imports allowed</div><div className="v mono">{permitted}</div></div>
-            <div><div className="k">Fleet</div><div className="v mono">{fleetSum ? <>{fleetSum.totalQuantity} / {fleetSum.limits.maxTotal}{fleetSum.limits.isOverridden && <> <Badge tone="lock">OVR</Badge></>}</> : (td.total ?? "—")} <span className="small faint" style={{ fontFamily: "var(--sans)", fontWeight: 400 }}>({fleetSum ? `${fleetSum.typeCount}/${fleetSum.limits.maxTypes}` : (td.types ?? "—")} types)</span></div></div>
+            <div><div className="k">Fleet</div><div className="v mono">{fleetSum ? <>{fleetSum.totalQuantity} / {fleetSum.limits.maxTotal}{fleetSum.limits.isOverridden && <> <Badge tone="lock">OVR</Badge></>}</> : (td.total ?? "—")} <span className="small faint">({fleetSum ? `${fleetSum.typeCount}/${fleetSum.limits.maxTypes}` : (td.types ?? "—")} types)</span></div></div>
             <div><div className="k">Garages</div><div className="v mono">{fleetSum ? `${fleetSum.garageCount} / ${fleetSum.limits.maxGarages}` : (td.garages ?? "—")}</div></div>
             <div><div className="k">Stipend</div><div className="v mono">{fleetSum ? money(fleetSum.stipend) : td.stipend != null ? money(td.stipend) : "—"}</div></div>
             <div><div className="k">Scenes · 30d</div><div className="v mono">{detail.scenes30d ?? "—"}</div></div>

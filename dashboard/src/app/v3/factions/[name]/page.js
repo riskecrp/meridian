@@ -27,7 +27,7 @@ const TAB_IDS = ["overview", "roster", "activity", "assets", "imports", "comms",
 const LEADER_TABS = new Set(["review", "admin"]);
 
 function Skeleton() {
-  return <div className="stack"><div className="skeleton" style={{ height: 30, width: "40%" }} /><div className="skeleton" style={{ height: 64 }} /><div className="skeleton" style={{ height: 240 }} /></div>;
+  return <div className="stack"><div className="skeleton sk-line" /><div className="skeleton sk-box" /><div className="skeleton sk-tall" /></div>;
 }
 
 export default function FactionHubPage() {
@@ -83,7 +83,7 @@ export default function FactionHubPage() {
 
   if (auth?.loading || (auth?.ok && !detail && !notFound)) return <Skeleton />;
   if (!auth?.ok) return <Restricted>Sign in to see this faction.</Restricted>;
-  if (notFound) return <><Link className="btn quiet sm" href="/v3/factions">← Factions</Link><div style={{ marginTop: 12 }}><Empty title={`Faction “${name}” not found.`}>It may have been renamed — the list has the current names.</Empty></div></>;
+  if (notFound) return <><Link className="btn quiet sm" href="/v3/factions">← Factions</Link><div className="mt-m"><Empty title={`Faction “${name}” not found.`}>It may have been renamed — the list has the current names.</Empty></div></>;
 
   // The server decides what this viewer may change (team scope for L1/L2,
   // archived, Event Team / Lead Storyteller read-only): every write control
@@ -120,7 +120,7 @@ export default function FactionHubPage() {
 
   return (
     <>
-      <div className="row spread" style={{ marginBottom: 8 }}>
+      <div className="row spread mb-s">
         <Link className="btn quiet sm" href="/v3/factions">← Factions</Link>
         <a className="btn ghost sm" href={`${PORTAL_URL}/faction/${encodeURIComponent(detail.name)}`} target="_blank" rel="noreferrer">Public portal ↗</a>
       </div>
@@ -138,7 +138,7 @@ export default function FactionHubPage() {
         </div>
       </div>
 
-      <div className="stack" style={{ marginBottom: 16 }}>
+      <div className="stack mb-m">
         {archived && (
           <div className="callout warn">
             <span>This faction is archived{detail.archivedAt ? ` (since ${String(detail.archivedAt).slice(0, 10)})` : ""} — read-only. Nothing here can be changed until it is restored.</span>

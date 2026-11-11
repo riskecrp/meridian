@@ -27,7 +27,7 @@ function FleetCard({ hub }) {
       <CapBar label="Vehicle types" used={sum.types} max={sum.limits.maxTypes} />
       <CapBar label="Total vehicles" used={sum.total} max={sum.limits.maxTotal} />
       <CapBar label="Garages" used={sum.garages} max={sum.limits.maxGarages} />
-      <div className="cap"><span className="lbl">Stipend</span><span className="num" style={{ textAlign: "left", flex: 1 }}><b>{money(sum.stipend)}</b>/mo</span></div>
+      <div className="cap"><span className="lbl">Stipend</span><span className="num left"><b>{money(sum.stipend)}</b>/mo</span></div>
       {fleet ? <>
         <div className="grp">Vehicles</div>
         {fleet.vehicles.length === 0 ? <Empty>No vehicles.</Empty> : <div className="list">{fleet.vehicles.map(v => <div className="li" key={v.id}><div className="body"><div className="t"><span className="mono">{v.quantity}×</span> {v.vehicle_name}</div>{v.notes && <div className="d">{v.notes}</div>}</div>{manage && <div className="side"><Button size="sm" variant="danger ghost" disabled={busy} onClick={() => { if (window.confirm(`Remove ${v.vehicle_name} from the fleet?`)) run(() => deleteFleetVehicle(v.id), done("Vehicle removed.")); }}>Remove</Button></div>}</div>)}</div>}
@@ -77,7 +77,7 @@ function TreasuryCard({ hub }) {
     <Card title="Treasury" right={<span className="muted small">stipend + scene rewards</span>}>
       <div className="kv">
         <div><div className="k">Monthly stipend</div><div className="v mono">{stipend != null ? money(stipend) : "—"}</div></div>
-        <div><div className="k">Rewarded scenes</div><div className="v mono">{rewarded.length} <span className="faint small" style={{ fontFamily: "var(--sans)", fontWeight: 400 }}>of last {detail.sceneLogs.length}</span></div></div>
+        <div><div className="k">Rewarded scenes</div><div className="v mono">{rewarded.length} <span className="faint small">of last {detail.sceneLogs.length}</span></div></div>
       </div>
       <div className="grp">Recent rewards</div>
       {rewarded.length === 0 ? <Empty>No rewards on the recent scenes.</Empty> : <div className="list">{rewarded.slice(0, 8).map(l => <div className="li" key={l.id}><div className="body"><div className="t small">{l.rewards}</div><div className="d">{l.date} · {l.logged_by}</div></div></div>)}</div>}

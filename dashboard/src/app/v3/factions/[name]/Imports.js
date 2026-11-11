@@ -18,7 +18,7 @@ export default function Imports({ hub }) {
           <div className="list">
             {items.map(i => (
               <div className="li" key={i.id}>
-                <div className="body"><div className="t" style={{ fontWeight: i.permitted ? 600 : 500 }}>{i.name}</div>{i.category && <div className="d">{i.category}</div>}</div>
+                <div className="body"><div className="t">{i.name}</div>{i.category && <div className="d">{i.category}</div>}</div>
                 <div className="side"><button className={`tg${i.permitted ? " on" : ""}`} disabled={!canToggle || busy} onClick={() => run(() => toggleFactionImport(detail.id, i.id, !i.permitted), { success: `${i.name} ${i.permitted ? "revoked" : "authorized"}.`, onDone: reload })}>{i.permitted ? "Authorized" : "Off"}</button></div>
               </div>
             ))}

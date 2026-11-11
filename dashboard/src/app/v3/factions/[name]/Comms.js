@@ -54,7 +54,7 @@ function Contact({ c, hub, onChanged }) {
       {thread === "loading" && <div className="skeleton sk-row mt-s" />}
       {Array.isArray(thread) && (
         <div className="list mt-s">
-          {thread.length === 0 ? <div className="hint">No messages in the thread (or the bot cannot read it).</div> : thread.map(m => <div className="li" key={m.id}><div className="body"><div className="t small">{m.author}{m.authorBot && <Badge>bot</Badge>} <span className="faint mono tiny">{short(m.timestamp)}</span></div><div className="d body" style={{ whiteSpace: "pre-wrap" }}>{m.content}</div></div></div>)}
+          {thread.length === 0 ? <div className="hint">No messages in the thread (or the bot cannot read it).</div> : thread.map(m => <div className="li" key={m.id}><div className="body"><div className="t small">{m.author}{m.authorBot && <Badge>bot</Badge>} <span className="faint mono tiny">{short(m.timestamp)}</span></div><div className="d pre">{m.content}</div></div></div>)}
         </div>
       )}
       {assign && (
@@ -99,7 +99,7 @@ export default function Comms({ hub }) {
         {isLeadPlus && (
           <Card title="IC memos sent" right={!archived && <Link className="btn ghost sm" href={`/v3/comms?tab=ic&faction=${detail.id}`}>Send IC memo →</Link>}>
             {ic === null ? <div className="skeleton sk-box" /> : ic.length === 0 ? <Empty>No IC memos have reached this faction yet{!isL3 ? " (or it is outside your team)" : ""}.</Empty> : (
-              <div className="list">{ic.map(m => <div className="li" key={m.id}><div className="body"><div className="t small">{m.author_name} <span className="faint mono tiny">{short(m.created_at)}</span></div>{m.message && <div className="d body" style={{ whiteSpace: "pre-wrap" }}>{m.message}</div>}</div><div className="side"><a className="badge accent" href={m.link} target="_blank" rel="noreferrer">Image ↗</a></div></div>)}</div>
+              <div className="list">{ic.map(m => <div className="li" key={m.id}><div className="body"><div className="t small">{m.author_name} <span className="faint mono tiny">{short(m.created_at)}</span></div>{m.message && <div className="d pre">{m.message}</div>}</div><div className="side"><a className="badge accent" href={m.link} target="_blank" rel="noreferrer">Image ↗</a></div></div>)}</div>
             )}
           </Card>
         )}
@@ -132,7 +132,7 @@ export default function Comms({ hub }) {
           <Card title="Announcements sent" right={!archived && <Link className="btn ghost sm" href={`/v3/comms?faction=${detail.id}`}>Announce →</Link>}>
             {ann === null ? <div className="skeleton sk-box" /> : ann.length === 0 ? <Empty>No announcements have been sent to this faction's Discord{!isL3 ? " by you" : ""}.</Empty> : (
               <div className="list">{ann.map(r => { const d = (r.deliveries || []).filter(x => x.faction_id === detail.id || x.faction_name === detail.name); return (
-                <div className="li" key={r.id}><div className="body"><div className="t small">{r.author_name || r.sent_by || "FM"} <span className="faint mono tiny">{short(r.created_at || r.sent_at)}</span></div><div className="d body" style={{ whiteSpace: "pre-wrap" }}>{String(r.message || "").slice(0, 400)}{String(r.message || "").length > 400 ? "…" : ""}</div></div><div className="side">{d.map(x => <Badge key={x.id} tone={x.ok ? "good" : "bad"} title={x.error || ""}>{x.ok ? "✓" : "✗"} {x.channel_type}</Badge>)}</div></div>
+                <div className="li" key={r.id}><div className="body"><div className="t small">{r.author_name || r.sent_by || "FM"} <span className="faint mono tiny">{short(r.created_at || r.sent_at)}</span></div><div className="d pre">{String(r.message || "").slice(0, 400)}{String(r.message || "").length > 400 ? "…" : ""}</div></div><div className="side">{d.map(x => <Badge key={x.id} tone={x.ok ? "good" : "bad"} title={x.error || ""}>{x.ok ? "✓" : "✗"} {x.channel_type}</Badge>)}</div></div>
               ); })}</div>
             )}
           </Card>
