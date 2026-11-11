@@ -486,6 +486,17 @@ export async function deleteMember(memberId) {
 
 // ── PROPERTIES (L2+, team-scoped — one rule for every property write) ─────────
 
+function currentHQ(factionId) {
+  return queryOne("SELECT address FROM properties WHERE faction_id = ? AND is_hq = 1", [factionId])?.address || '';
+}
+
+/** Below leadership a property change becomes an RP-change request (policy 16). */
+async function queueProperty(actor, f, type, oldValue, newValue, what) {
+  const res = await requestRPChange({ factionId: f.id, type, oldValue, newValue, turf: 'N/A' });
+  if (!res.ok) return res;
+  return ok({ queued: true, requestId: res.id ?? res.execId ?? null, notice: `Sent to leadership for approval: ${what} (${f.name}). It takes effect when the request is approved and executed.` });
+}
+
 export async function addFactionProperty(factionId, factionName, data) {
   const actor = await requireActor(2);
   const d = data && typeof data === 'object' ? data : {};
@@ -498,6 +509,9 @@ export async function addFactionProperty(factionId, factionName, data) {
   const f = r.faction;
   if (queryOne("SELECT id FROM properties WHERE faction_id = ? AND address = ? COLLATE NOCASE", [f.id, address])) return fail(`${f.name} already has ${address} on file.`);
   const isHQ = !!d.isHQ || type === 'HQ';
+  // Policy 16: below leadership, property changes go through the same approval
+  // queue as HQ moves; leadership executes them directly.
+  if (actor.level < 3) return queueProperty(actor, f, isHQ ? 'HQ' : 'PROPERTY', isHQ ? (currentHQ(f.id) || 'N/A') : 'N/A', address, `add ${isHQ ? 'HQ' : type.toLowerCase()} ${address}`);
   let id;
   transaction(() => {
     if (isHQ) run("UPDATE properties SET is_hq = 0, updated_at = ? WHERE faction_id = ? AND is_hq = 1", [nowIso(), f.id]);
@@ -523,6 +537,12 @@ export async function editFactionProperty(propId, data) {
   const r = assertFactionWrite(actor, existing.faction_id);
   if (r.error) return fail(r.error);
   const f = r.faction;
+  if (actor.level < 3) {
+    if (address !== existing.address) return queueProperty(actor, f, 'PROPERTY', existing.address, address, `re-address ${existing.address} → ${address}`);
+    if (isHQ && existing.is_hq !== 1) return queueProperty(actor, f, 'HQ', currentHQ(f.id) || 'N/A', existing.address, `make ${existing.address} the HQ`);
+    if (!isHQ && existing.is_hq === 1) return fail('Un-marking the HQ is done by making another property the HQ; that goes through approval.');
+    // Only the label changed: a cosmetic edit, applied directly.
+  }
   transaction(() => {
     if (isHQ) run("UPDATE properties SET is_hq = 0, updated_at = ? WHERE faction_id = ? AND is_hq = 1 AND id != ?", [nowIso(), f.id, existing.id]);
     run("UPDATE properties SET address = ?, property_type = ?, is_hq = ?, updated_at = ? WHERE id = ?", [address, type, isHQ ? 1 : 0, nowIso(), existing.id]);
@@ -543,6 +563,7 @@ export async function deleteFactionProperty(propId) {
   if (!existing.faction_id) return fail('This property is not assigned to a faction; manage it from Admin → Properties.');
   const r = assertFactionWrite(actor, existing.faction_id);
   if (r.error) return fail(r.error);
+  if (actor.level < 3) return queueProperty(actor, r.faction, 'PROPERTY', existing.address, 'REMOVED', `remove ${existing.address}`);
   transaction(() => {
     run("DELETE FROM properties WHERE id = ?", [existing.id]);
     history(r.faction.id, r.faction.name, 'PROPERTY_REMOVED', `Removed ${existing.is_hq ? 'HQ ' : ''}${existing.address}`, actor.name);

@@ -45,7 +45,11 @@ as('tok-l1'); { const ac = auditCount(); ok((await A.deleteMember(m.id)).ok, 'de
 // ── properties / notes / portal / contacts ──
 await rejects(() => A.addFactionProperty(1, '', { address: '1 St', type: 'Property' }), 'AUTH_INSUFFICIENT', 'L1 property');
 as('tok-l2'); await failsWith(() => A.addFactionProperty(1, '', { address: '1 St', type: 'Castle' }), null, 'bad property type');
-{ const r = await A.addFactionProperty(1, '', { address: '99 New HQ', type: 'HQ', isHQ: true }); ok(r.ok && queryOne('SELECT COUNT(*) c FROM properties WHERE faction_id=1 AND is_hq=1').c === 1, 'one HQ only'); ok(/^\d{4}-\d{2}-\d{2}$/.test(queryOne('SELECT date_given FROM properties WHERE id=?', [r.id]).date_given), 'ISO date_given'); }
+// Policy 16: below leadership a property change becomes an RP-change request; leadership writes directly.
+{ const before = queryOne('SELECT COUNT(*) c FROM properties WHERE faction_id=1').c; const r = await A.addFactionProperty(1, '', { address: '7 Queue Rd', type: 'Property' });
+  ok(r.ok && r.queued && r.requestId && /approval/.test(r.notice), 'L2 property add is queued'); eq(queryOne('SELECT COUNT(*) c FROM properties WHERE faction_id=1').c, before, 'nothing written yet');
+  const pe = queryOne('SELECT * FROM pending_executions WHERE id=?', [r.requestId]); ok(pe && pe.execution_type === 'PROPERTY' && pe.old_value === 'N/A' && pe.new_value === '7 Queue Rd' && pe.status === 'PENDING', 'PROPERTY request recorded'); }
+as('tok-l3'); { const r = await A.addFactionProperty(1, '', { address: '99 New HQ', type: 'HQ', isHQ: true }); ok(r.ok && !r.queued && queryOne('SELECT COUNT(*) c FROM properties WHERE faction_id=1 AND is_hq=1').c === 1, 'L3 writes directly, one HQ only'); ok(/^\d{4}-\d{2}-\d{2}$/.test(queryOne('SELECT date_given FROM properties WHERE id=?', [r.id]).date_given), 'ISO date_given'); } as('tok-l2');
 await failsWith(() => A.deleteFactionProperty(3), null, 'cross-team property delete');
 await failsWith(() => A.editNote(1, 'overwritten'), null, 'edit note not author'); eq(queryOne('SELECT text FROM intel_notes WHERE id=1').text, 'Rumoured to be moving weapons via the docks', 'note untouched');
 as('tok-l1'); ok((await A.editNote(1, 'edited by author')).ok, 'author edits note'); ok((await A.editSceneLog(1, 'edited scene')).ok, 'author edits scene');

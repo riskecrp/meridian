@@ -4,7 +4,7 @@
 import { ok, eq, pass, captureDiscord } from '../lib.mjs';
 import { query, queryOne, run } from '../../../shared/db.js';
 import { fakeClient, fakeMessage, IDS, ROLES } from '../harness/discord-fakes.mjs';
-import cron from '../../../bot/node_modules/node-cron/src/node-cron.js';
+import cron from '../../../bot/node_modules/node-cron/dist/node-cron.js';
 import { Collection } from '../../../bot/node_modules/discord.js/src/index.js';
 process.env.BASE_URL = 'http://localhost:3000'; process.env.DISCORD_CLIENT_ID = '111111111111111111';
 process.env.SHEET_FEEDBACK_ID = 'sheet-feedback'; process.env.SHEET_FEEDBACK_GID = '7';
@@ -115,5 +115,6 @@ sheet.push(['2026-11-10 16:00', 'Criminal Faction Management (FM)', 'NA', 'The V
   for (const f of FORMS) await pollForm(f); ok(FORMS.every(f => /initialised at sheet row 1; no backfill/.test(sync('form_poll.' + f.key).last_detail)), 'all four forms initialise without backfill');
   forms['sheet-rcf_application'].push(['2026-11-10', 'The Reapers', 'Jay', '', 'https://discord.gg/new']); await pollForm(FORMS[0]); const row = queryOne("SELECT title, contact, status, row_key FROM form_submissions WHERE form_key='rcf_application' ORDER BY id DESC LIMIT 1");
   ok(/1 new submission/.test(sync('form_poll.rcf_application').last_detail) && row.title === 'The Reapers · Jay' && row.contact === '' && row.status === 'new' && row.row_key, 'new RCF row posts; contact never a URL');
-  const saved = process.env.SHEET_CI_APPLICATION_ID; delete process.env.SHEET_CI_APPLICATION_ID; await pollForm(FORMS[3]); process.env.SHEET_CI_APPLICATION_ID = saved; ok(/no sheet id configured/.test(sync('form_poll.ci_application').last_error), 'unset sheet id is a recorded configuration failure, not a crash'); }
+  // Sheet ids default to the production forms; blank one out to exercise the configuration-failure path.
+  const savedDesc = Object.getOwnPropertyDescriptor(FORMS[3], 'sheet'); Object.defineProperty(FORMS[3], 'sheet', { configurable: true, get: () => ({ id: '', gid: '' }) }); await pollForm(FORMS[3]); Object.defineProperty(FORMS[3], 'sheet', savedDesc); ok(/no sheet id configured/.test(sync('form_poll.ci_application').last_error), 'blank sheet id is a recorded configuration failure, not a crash'); }
 unq(); pass('sheet intakes');

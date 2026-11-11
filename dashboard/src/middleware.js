@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
 
-// The legacy /fm shell is retired: every /fm route lands on its /v2 equivalent.
-// The files stay in the tree for one release; set MERIDIAN_LEGACY_FM=1 at build
-// time to make /fm reachable again while anything is missing from /v2.
-const LEGACY_FM = process.env.MERIDIAN_LEGACY_FM === '1';
+// The legacy /fm shell is retired and its pages deleted: every /fm link,
+// bookmark or old ping lands on its /v2 equivalent. The fm/**/actions.js
+// server actions remain; the v2 pages are built on them.
 
 const FM_TO_V2 = {
   '/fm': '/v2',
@@ -68,7 +67,7 @@ export function middleware(request) {
   if (pathname.startsWith('/fm') || pathname.startsWith('/v2')) {
     if (!fmSession) return NextResponse.redirect(new URL('/login', request.url));
   }
-  if (pathname.startsWith('/fm') && !LEGACY_FM) {
+  if (pathname.startsWith('/fm')) {
     const target = new URL(v2Target(pathname), request.url);
     // Keep any query the legacy link carried (?tab= on the hub pages, ?sop=, …) unless the target sets its own.
     request.nextUrl.searchParams.forEach((v, k) => { if (!target.searchParams.has(k)) target.searchParams.set(k, v); });

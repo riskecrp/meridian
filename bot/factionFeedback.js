@@ -50,7 +50,8 @@ import {
 // Responses sheet of the ECRP roleplay feedback form. The id and tab come from
 // the environment (see .env.example); with GOOGLE_SHEETS_API_KEY set it is
 // read through the Sheets API, otherwise as a link-viewable CSV export.
-const SHEET = () => ({ id: process.env.SHEET_FEEDBACK_ID || '', gid: process.env.SHEET_FEEDBACK_GID || '' });
+// Defaults are the production responses sheet (link-viewable, not a secret); .env overrides.
+const SHEET = () => ({ id: process.env.SHEET_FEEDBACK_ID || '1T6d-I_P1Gvr1nyJctk0-LM3xlXEBUNCi3CMM2MWrUoQ', gid: process.env.SHEET_FEEDBACK_GID || '1222111670' });
 const TEAM_VALUE = process.env.FEEDBACK_TEAM_VALUE || 'Criminal Faction Management (FM)';
 const SOURCE = 'feedback';
 

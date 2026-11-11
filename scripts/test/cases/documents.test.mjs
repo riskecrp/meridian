@@ -18,6 +18,8 @@ as('tok-l1'); eq(await D.getDocument(2), null, 'L1 cannot read an L3 doc'); as('
 as('tok-l3'); log.length = 0; { const r = await D.createDocument({ title: 'New SOP', category: 'SOP', content: '<p>hi</p>', level_required: 1 }); const p = pings(log);
   ok(r.ok && r.pinged && p.length === 1 && p[0].ch === '1457230769951998114' && /New SOP/.test(p[0].content) && /All FM staff/.test(p[0].content), 'level-1 doc pings the route channel');
   ok(lastAudit().action === 'CREATE' && lastAudit().target_id === String(r.id) && lastAudit().target_label === 'New SOP', 'create audited'); }
+// Migration 025 seeds the leadership branch from task.assigned's alt channel, so a restricted doc is announced there.
+run("UPDATE ping_routes SET alt_channel_id='' WHERE key='document.published'");
 log.length = 0; { const r = await D.createDocument({ title: 'Secret Plan', category: 'Leadership', content: '<p>x</p>', level_required: 3 }); ok(r.ok && r.pinged === false && pings(log).length === 0, 'L3 doc without alt channel: no ping'); }
 run("UPDATE ping_routes SET alt_channel_id='777000000000000001' WHERE key='document.published'"); log.length = 0;
 { const r = await D.createDocument({ title: 'Lead Memo', category: 'Leadership', content: '<p>x</p>', level_required: 2 }); const p = pings(log); ok(r.ok && r.pinged && p[0].ch === '777000000000000001' && /L2\+/.test(p[0].content), 'L2 doc pings the alt channel'); }

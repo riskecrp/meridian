@@ -60,7 +60,18 @@ import {
 // Sheet ids/tabs and the links the setup checklist hands out come from the
 // environment (.env.example lists them); nothing identifying lives in code.
 const env = (k, d = '') => process.env[k] || d;
-const sheetFor = (key) => ({ id: env(`SHEET_${key.toUpperCase()}_ID`), gid: env(`SHEET_${key.toUpperCase()}_GID`) });
+// The production forms, so an unconfigured copy keeps polling the same sheets
+// (ids of link-viewable Google Sheets, not secrets); .env overrides them.
+const DEFAULT_SHEETS = {
+  rcf_application:   { id: '1_CWtU4LA-sH6IeD-rnCVq_PFcOo_e9rMZ1Pac6kDVMQ', gid: '' },
+  staff_application: { id: '1n485B947BGHbyf1U3xZd4V2wGAMPeK4DQZFBG6n2LCQ', gid: '1145131757' },
+  garage_request:    { id: '1JIZGWKHYik3cMul1L1J3a4ZLXNYWSTFiXz92wPFSHYo', gid: '' },
+  ci_application:    { id: '1ZgUuEPhXZow3m3i32w0mbk0mKZoWxJP5bAAPEqioW14', gid: '' },
+};
+const sheetFor = (key) => ({
+  id: env(`SHEET_${key.toUpperCase()}_ID`, DEFAULT_SHEETS[key]?.id || ''),
+  gid: env(`SHEET_${key.toUpperCase()}_GID`, DEFAULT_SHEETS[key]?.gid || ''),
+});
 const botInviteUrl = () => {
   const id = env('DISCORD_CLIENT_ID');
   return id ? `https://discord.com/oauth2/authorize?client_id=${id}&permissions=274877991936&integration_type=0&scope=bot+applications.commands` : '';

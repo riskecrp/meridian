@@ -85,6 +85,7 @@ function FactionHub() {
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
   const [form, setForm] = useState(null);          // generic modal state
   const [aiText, setAiText] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -122,6 +123,7 @@ function FactionHub() {
     try { r = await fn(); if (r && r.ok === false) { setErr(r.error || "Failed."); setBusy(false); return false; } }
     catch (e) { setErr(e?.message || "Failed."); setBusy(false); return false; }
     setBusy(false); setForm(null); await load();
+    if (r && r.notice) setNotice(r.notice);
     if (onOk) onOk(r);
     return true;
   };
@@ -213,6 +215,7 @@ function FactionHub() {
         <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8 }}>Read-only: {detail.teamName ? `${detail.teamName} manages this faction` : "this faction is outside your team"}.</div>
       )}
       {err && !form && <div className="err" style={{ marginBottom: 8 }}>{err}</div>}
+      {notice && !form && <div className="notice" style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", gap: 12 }}><span>{notice}</span><button className="act" onClick={() => setNotice("")}>Dismiss</button></div>}
 
       {/* Pending promo banner — status only; completing/cancelling lives in ONE
           place, the Review tab's Apply step, so there aren't two sets of the

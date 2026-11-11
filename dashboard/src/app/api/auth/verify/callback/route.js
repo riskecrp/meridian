@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createVerifySession, VERIFY_COOKIE } from '../../../../../lib/verifySession.js';
+let warnedNoRole = false;
 
 // Who may use the /verify portal: members of the verification guild who hold
 // the verification role. Both come from the environment; only the guild has a
@@ -24,11 +25,10 @@ export async function GET(request) {
     const code = request.nextUrl.searchParams.get('code');
     if (!code) return back('no_code');
 
+    // VERIFY_ROLE_ID narrows the portal to one role; unset, any member of the
+    // verify guild may sign in (the original behaviour), with a warning in the log.
     const roleId = (process.env.VERIFY_ROLE_ID || '').trim();
-    if (!roleId) {
-      console.error('[Verify Auth] VERIFY_ROLE_ID is not set; refusing to sign anyone in.');
-      return back('not_configured');
-    }
+    if (!roleId && !warnedNoRole) { warnedNoRole = true; console.warn('[Verify Auth] VERIFY_ROLE_ID is not set; any member of the verify guild may sign in.'); }
     const guildId = verifyGuildId();
 
     const redirectUri = `${origin}/api/auth/verify/callback`;
@@ -56,7 +56,7 @@ export async function GET(request) {
     if (!memberRes.ok) return back('unauthorized');
     const member = await memberRes.json();
     const roles = Array.isArray(member?.roles) ? member.roles.map(String) : [];
-    if (!roles.includes(roleId)) return back('no_role');
+    if (roleId && !roles.includes(roleId)) return back('no_role');
 
     const displayName = member.nick || user.global_name || user.username;
     const token = createVerifySession(user.id, displayName);

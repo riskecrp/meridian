@@ -27,7 +27,7 @@ const tok = VS.createVerifySession(L1, 'Guide One'); ok(typeof tok === 'string' 
 { const v = VS.validateVerifySession(tok); ok(v && v.discord_id === L1 && v.jti, 'validate'); }
 eq(VS.validateVerifySession(tok.slice(0, -2) + 'zz'), null, 'tampered signature'); eq(VS.validateVerifySession('eyJ4IjoxfQ.' + tok.split('.')[1]), null, 'tampered payload'); eq(VS.validateVerifySession('garbage'), null, 'garbage');
 { process.env.SESSION_SECRET = 'fallback'; let err; try { VS.createVerifySession(L1, 'x'); } catch (e) { err = e; } process.env.SESSION_SECRET = 'test-secret'; ok(err && /SESSION_SECRET/.test(err.message), 'refuses the fallback secret'); }
-{ delete process.env.SESSION_SECRET; let err; try { VS.createVerifySession(L1, 'x'); } catch (e) { err = e; } ok(err, 'refuses an unset secret'); eq(VS.validateVerifySession(tok), null, 'validate with unset secret → null'); process.env.SESSION_SECRET = 'test-secret'; }
+{ delete process.env.SESSION_SECRET; const t2 = VS.createVerifySession(L1, 'x'); ok(typeof t2 === 'string' && VS.validateVerifySession(t2)?.discord_id === L1, 'unset secret: one is generated next to the database and signs'); eq(VS.validateVerifySession(tok), null, 'a token from another secret does not validate'); process.env.SESSION_SECRET = 'test-secret'; }
 { const p = Buffer.from(JSON.stringify({ discord_id: L1, discord_name: 'x', exp: Date.now() - 1000, jti: 'abc' })).toString('base64url'); const sig = createHmac('sha256', 'test-secret').update(p).digest('base64url'); eq(VS.validateVerifySession(`${p}.${sig}`), null, 'expired token'); }
 eq(VS.revokeVerifySession(tok), true, 'revoke'); eq(VS.validateVerifySession(tok), null, 'revoked token invalid'); eq(VS.revokeVerifySession('nope'), false, 'revoke bad token'); pass('verifySession');
 
@@ -48,14 +48,14 @@ eq(typeof V.getVerifyNotes, 'undefined', 'getVerifyNotes removed'); pass('verify
 const req = (code = 'abc') => ({ headers: new Headers({ host: 'localhost:3000' }), nextUrl: { searchParams: new URLSearchParams(code ? { code } : {}) } });
 const loc = (r) => r.headers.get('location');
 globalThis.__cookies = {}; delete process.env.VERIFY_ROLE_ID; delete process.env.VERIFY_GUILD_ID;
-ok(/error=no_code/.test(loc(await CB.GET(req('')))), 'no code'); ok(/error=not_configured/.test(loc(await CB.GET(req()))), 'VERIFY_ROLE_ID unset → not_configured');
+ok(/error=no_code/.test(loc(await CB.GET(req('')))), 'no code');
 process.env.VERIFY_ROLE_ID = 'role-x';
 { const r = await CB.GET(req()); ok(discord.lastGuild === '1371212587705958562' && /\/verify$/.test(loc(r)), 'guild falls back to the literal'); ok(jar().meridian_verify_session && queryOne("SELECT 1 FROM verify_sessions WHERE discord_id='424242424242424242'"), 'cookie + row'); }
 process.env.VERIFY_GUILD_ID = '555555555555555555'; globalThis.__cookies = {};
 { const r = await CB.GET(req()); ok(discord.lastGuild === '555555555555555555' && /\/verify$/.test(loc(r)), 'guild from env'); eq(VS.validateVerifySession(jar().meridian_verify_session)?.discord_name, 'Nick', 'nick as display name'); }
 discord = { roles: ['other'], memberOk: true }; globalThis.__cookies = {}; { const r = await CB.GET(req()); ok(/error=no_role/.test(loc(r)) && !jar().meridian_verify_session, 'member without role'); }
 discord = { roles: [], memberOk: false }; ok(/error=unauthorized/.test(loc(await CB.GET(req()))), 'non-member');
-discord = { roles: ['role-x'], memberOk: true }; { delete process.env.SESSION_SECRET; const r = await CB.GET(req()); process.env.SESSION_SECRET = 'test-secret'; ok(/error=server_error/.test(loc(r)) && !jar().meridian_verify_session, 'unset secret → server_error, no cookie'); }
+discord = { roles: ['other'], memberOk: true }; { const saved = process.env.VERIFY_ROLE_ID; delete process.env.VERIFY_ROLE_ID; globalThis.__cookies = {}; const r = await CB.GET(req()); process.env.VERIFY_ROLE_ID = saved; ok(!!jar().meridian_verify_session, 'no VERIFY_ROLE_ID: any guild member signs in'); } discord = { roles: ['role-x'], memberOk: true };
 globalThis.__cookies = {}; await CB.GET(req()); const live = jar().meridian_verify_session; ok(!!VS.validateVerifySession(live), 'token valid before logout');
 { const r = await LO.GET({ headers: new Headers({ host: 'localhost:3000' }) }); ok(/\/verify\/login$/.test(loc(r)) && !jar().meridian_verify_session, 'logout clears cookie'); eq(VS.validateVerifySession(live), null, 'logout revokes server-side'); }
 ok(/\/verify\/login$/.test(loc(await LO.GET({ headers: new Headers({ host: 'localhost:3000' }) }))), 'logout without cookie');
