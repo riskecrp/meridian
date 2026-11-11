@@ -305,9 +305,9 @@ export default function V2Layout({ children }) {
               </button>
               {auth?.ok && <ViewAsMenu auth={auth} />}
               {auth?.ok && (
-                <button className="tb-btn" title="Try the new site" aria-label="Try the new site" style={{ width: "auto", padding: "0 9px", fontSize: 11.5, fontWeight: 600, gap: 5 }}
+                <button className="tb-btn tn-newsite" title="Try the new site" aria-label="Try the new site" style={{ width: "auto", padding: "0 9px", fontSize: 11.5, fontWeight: 600, gap: 5 }}
                   onClick={async () => { const r = await fetch("/api/ui", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ui: "v3", from: pathname + window.location.search }) }).then(r => r.json()).catch(() => null); window.location.href = r?.to || "/v3"; }}>
-                  ✦ New site
+                  ✦<span className="lbl"> New site</span>
                 </button>
               )}
               <div className="tn-user" title={roleLabel}>

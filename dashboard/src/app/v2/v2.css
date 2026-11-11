@@ -310,3 +310,32 @@
 }
 /* Inline success/notice box (green counterpart of .err). */
 .v2-root .notice { padding: 10px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.5; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.35); color: var(--emerald, #10b981); }
+
+/* ── Phone hamburger, repeated here so it wins regardless of stylesheet order (the same block lives in globals.css). ── */
+@media (max-width: 480px) {
+  /* Hamburger: the nav becomes a drop-down panel; search moves into it; the
+     right cluster keeps only + New, the bell, theme and the avatar. */
+  .v2-root .tn-burger { display: grid; }
+  .v2-root .tn-links { display: none; }
+  .v2-root .topnav.menu-open .tn-links {
+    display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+    position: absolute; left: 0; right: 0; top: 100%; padding: 8px 10px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line-2);
+    box-shadow: 0 12px 28px rgba(0,0,0,.18); overflow: visible; max-height: calc(100vh - 54px); overflow-y: auto;
+  }
+  .v2-root .topnav.menu-open .tn-links .tn-i { padding: 10px 12px; font-size: 14px; width: 100%; justify-content: flex-start; }
+  .v2-root .topnav.menu-open .tn-links > div { display: flex; width: 100%; }
+  .v2-root .topnav.menu-open .tn-mobile-only { display: inline-flex; }
+  .v2-root .topnav-inner { height: 50px; }
+  .v2-root .tn-brand .mk-img { width: 22px; height: 22px; }
+  .v2-root .tn-right .search { display: none; }
+  .v2-root .tn-right .tn-new { padding: 0 9px !important; }
+  .v2-root .tn-user .who { display: none; }
+  .v2-root .page-head h1 { font-size: 19px; }
+  .v2-root .row { flex-wrap: wrap; row-gap: 4px; }
+  .v2-root .row .desc { flex-basis: 100%; }
+  .v2-root .hub-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .v2-root .hub-tab { white-space: nowrap; }
+  .v2-root .dtable { display: block; overflow-x: auto; }
+}
+@media (max-width: 480px) { .v2-root .tn-newsite .lbl { display: none; } .v2-root .tn-newsite { width: 32px !important; padding: 0 !important; } }

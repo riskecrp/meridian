@@ -644,3 +644,10 @@
 .v3-root .mb8 { margin-bottom: 8px; }
 .v3-root .pre { white-space: pre-wrap; } .v3-root .c-ink1 { color: var(--ink-1); } .v3-root .inline { display: inline; } .v3-root .w-800 { font-weight: 800; }
 .v3-root .cap .num.left { text-align: left; flex: 1; min-width: 0; }
+
+/* ── Coordinator: layout safety. Grid/flex children default to min-width:auto,
+   which lets an auto-fill grid or a nowrap chip row push a column to its
+   content width and force a horizontal page scroll. ── */
+.v3-root .grid > *, .v3-root .stack > *, .v3-root .settings > *, .v3-root .two > * { min-width: 0; }
+.v3-root .settings-chips { max-width: 100%; }
+.v3-root .main { overflow-x: clip; }
