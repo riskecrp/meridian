@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../lib/useAuth";
 import { getMyTasks, getMyCreatedTasks, getMyReminders, getMyTeamFactions, getStaffForCreate, getRoleTargetsForCreate, getQACountsForTasks } from "../fm/dashboard/actions.js";
-import { createTask, createReminder } from "../fm/teams/actions.js";
+import { createTask, createReminder, editReminder, deleteReminder } from "../fm/teams/actions.js";
+import Modal from "./Modal.js";
 import { getMyAttention, completeMyReminderInstance } from "./actions.js";
 import TaskList from "./TaskList.js";
 import { targetOptions } from "./TargetPicker.js";
@@ -99,6 +100,57 @@ function CreateAction({ mode, setMode, staffList, roleTargets, onDone, onCancel 
   );
 }
 
+const EVENT_TYPES = ["OOC Meeting", "RP Op / Scene", "Internal Meeting", "Deadline / Reminder"];
+// datetime-local wants "YYYY-MM-DDTHH:MM" in the viewer's local time.
+const toLocalInput = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+
+/* Edit an Up-and-Coming event: fix a wrong time, type or details. Author or L2+. */
+function EditEvent({ ev, onDone, onClose }) {
+  const m = (ev.message || "").match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
+  const [eventType, setEventType] = useState(m ? m[1] : "");
+  const [note, setNote] = useState(m ? m[2] : ev.message || "");
+  const [when, setWhen] = useState(toLocalInput(ev.epochMs));
+  const [confirmDel, setConfirmDel] = useState(false);
+  const { busy, err, setErr, run } = useRun();
+  const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 };
+  const types = eventType && !EVENT_TYPES.includes(eventType) ? [eventType, ...EVENT_TYPES] : EVENT_TYPES;
+
+  const save = () => {
+    const epochMs = new Date(when).getTime();
+    if (!when || isNaN(epochMs)) { setErr("Invalid date."); return; }
+    if (epochMs <= Date.now()) { setErr("That time is in the past."); return; }
+    if (!eventType && !note.trim()) { setErr("Details required."); return; }
+    run(() => editReminder(ev.uuid, { epochMs, eventType, note }), onDone);
+  };
+  const del = () => run(() => deleteReminder(ev.uuid), onDone);
+
+  return (
+    <Modal title="Edit event" onClose={onClose} onSave={save} saveDisabled={busy} saveLabel={busy ? "Saving…" : "Save"} error={err}>
+      <div>
+        <div style={lbl}>Event type</div>
+        <select className="filter-inp" style={{ width: "100%" }} value={eventType} onChange={e => setEventType(e.target.value)}>
+          {!eventType && <option value="">— None —</option>}
+          {types.map(t => <option key={t}>{t}</option>)}
+        </select>
+      </div>
+      <div>
+        <div style={lbl}>Date & time (local)</div>
+        <input type="datetime-local" className="filter-inp" style={{ width: "100%" }} value={when} onChange={e => setWhen(e.target.value)} />
+      </div>
+      <div>
+        <div style={lbl}>Details</div>
+        <input className="filter-inp" style={{ width: "100%" }} value={note} onChange={e => setNote(e.target.value)} placeholder="Meeting topic, agenda…" />
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>Saving posts an “updated” notice where the event was announced, and re-arms the 30-minute warning.</div>
+      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+        {confirmDel
+          ? <span style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5 }}>Delete this event? <button className="act" disabled={busy} onClick={del} style={{ color: "var(--rose)" }}>Yes, delete</button><button className="act" onClick={() => setConfirmDel(false)}>No</button></span>
+          : <button className="act" onClick={() => setConfirmDel(true)} style={{ color: "var(--rose)" }}>Delete event</button>}
+      </div>
+    </Modal>
+  );
+}
+
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const fmtDay = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" }).toUpperCase().replace(" ", "\n");
 const ord = (n) => (n >= 11 && n <= 13) ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th";
@@ -122,6 +174,7 @@ function V2Home() {
   const [loading, setLoading] = useState(true);
   const [createMode, setCreateMode] = useState(null); // null | 'task' | 'event'
   const [workTab, setWorkTab] = useState("assigned");
+  const [editingEvent, setEditingEvent] = useState(null);
 
   const level = auth?.level || 0;
   const isL3 = level >= 3;
@@ -265,12 +318,21 @@ function V2Home() {
             <div className="hd"><div className="t">Upcoming</div><div className="meta">Up and Coming</div></div>
             {upcoming.length === 0 ? <div className="empty">No upcoming events.</div> : (
               <div className="mini">
-                {upcoming.map(r => (
-                  <div className="ev" key={r.uuid}>
-                    <div className="when">{fmtDay(new Date(r.epochMs))}</div>
-                    <div className="body"><div className="t">{r.message}</div><div className="s">{r.authorName ? `by ${r.authorName}` : ""}</div></div>
-                  </div>
-                ))}
+                {upcoming.map(r => {
+                  const canEdit = r.author_id === auth.id || level >= 2;
+                  const at = new Date(r.epochMs);
+                  return (
+                    <div className="ev" key={r.uuid} onClick={canEdit ? () => setEditingEvent(r) : undefined}
+                      style={canEdit ? { cursor: "pointer" } : undefined} title={canEdit ? "Click to edit" : undefined}>
+                      <div className="when">{fmtDay(at)}</div>
+                      <div className="body" style={{ flex: 1, minWidth: 0 }}>
+                        <div className="t">{r.message}</div>
+                        <div className="s">{at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}{r.authorName ? ` · by ${r.authorName}` : ""}</div>
+                      </div>
+                      {canEdit && <span style={{ color: "var(--ink-3)", fontSize: 12, alignSelf: "center", flexShrink: 0 }}>✎</span>}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -294,6 +356,11 @@ function V2Home() {
             </Link>
           ))}
         </div>
+      )}
+
+      {editingEvent && (
+        <EditEvent ev={editingEvent} onClose={() => setEditingEvent(null)}
+          onDone={() => { setEditingEvent(null); getMyReminders().then(r => setReminders(r || [])).catch(() => {}); }} />
       )}
 
       <div className="disclaimer">Meridian v2 preview · live data · /fm is unchanged</div>

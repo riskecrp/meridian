@@ -262,6 +262,52 @@ export async function snoozeReminder(uuid) {
   } catch (e) { return { ok: false }; }
 }
 
+// Fix a scheduled event's time / type / details after the fact (wrong time typed
+// at creation). Author or L2+, same rule as delete. The row goes back to ACTIVE
+// so the bot's 30-minute warning re-arms against the corrected time, and an
+// "Updated" notice goes to the same channel the original announcement used —
+// that post can't be edited in place (sendPing keeps no message id).
+export async function editReminder(uuid, data) {
+  try {
+    const me = await requireActor(1);
+    const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [uuid]);
+    if (!r) return { ok: false, error: "Event not found — it may have already fired." };
+    if (r.author_id !== me.id && me.level < 2) {
+      return { ok: false, error: "Only the author or L2+ can edit this event" };
+    }
+    const epochMs = Number(data?.epochMs);
+    if (!Number.isFinite(epochMs)) return { ok: false, error: "Invalid date." };
+    if (epochMs <= Date.now()) return { ok: false, error: "That time is in the past." };
+
+    const eventType = String(data.eventType || '').trim();
+    const note = String(data.note || '').trim();
+    const message = eventType ? `[${eventType}] ${note}`.trim() : note;
+    if (!message) return { ok: false, error: "Details required." };
+
+    const oldMs = parseInt(r.epoch_ms);
+    const readable = new Date(epochMs).toISOString();
+    run("UPDATE reminders SET message = ?, epoch_ms = ?, readable_time = ?, status = 'ACTIVE' WHERE uuid = ?",
+      [message, epochMs.toString(), readable, uuid]);
+    const timeChanged = oldMs !== epochMs;
+    logAudit(me.id, me.name, 'EDIT', 'reminder', null, message.substring(0, 50),
+      timeChanged ? `Rescheduled ${new Date(oldMs).toISOString()} → ${readable}` : 'Details edited');
+
+    if (timeChanged || message !== r.message) {
+      const roleMatch = r.target_tag?.match(/<@&(\d+)>/);
+      const eventAlt = !!roleMatch && (roleMatch[1] === getRole('fm_leadership') || roleMatch[1] === getRole('game_affairs'));
+      const epoch = Math.floor(epochMs / 1000);
+      const oldEpoch = Math.floor(oldMs / 1000);
+      const lines = [`**Time:** <t:${epoch}:F> (<t:${epoch}:R>)`];
+      if (timeChanged) lines.push(`~~Was <t:${oldEpoch}:F>~~`);
+      if (note) lines.push(`**Details:** ${note}`);
+      lines.push('', `*Updated by ${me.name} via Meridian Dashboard*`);
+      const embeds = [{ title: `📝 ${eventType || 'Event'} ${timeChanged ? 'Rescheduled' : 'Updated'}`, description: lines.join('\n'), color: 0xF0B232 }];
+      await sendPing('event.created', r.target_tag, { alt: eventAlt, embeds });
+    }
+    return { ok: true };
+  } catch (e) { return { ok: false, error: "Couldn't save the change." }; }
+}
+
 export async function deleteReminder(uuid) {
   try {
     const me = await requireActor(1);
