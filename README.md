@@ -116,7 +116,7 @@ Day-to-day reference — only relevant with access to the box it runs on.
 
 | Path | What |
 |---|---|
-| `dashboard/` | the website (Next.js 16; the UI under `src/app/v2/`, server actions under `src/app/fm/**/actions.js`; old `/fm` links redirect) |
+| `dashboard/` | the website (Next.js 16). Two shells share one set of server actions (`src/app/fm/**/actions.js`): `src/app/v3/` is the redesign and default, `src/app/v2/` the classic site kept as the fallback; people switch from their user menu, `NEXT_PUBLIC_UI_DEFAULT` sets the default. Old `/fm` links redirect. |
 | `bot/` | the Discord bot (discord.js: commands, schedulers, message capture) |
 | `shared/` | database + Discord helpers used by both |
 | `schema.sql` | reference list of every table (regenerated, not hand-edited) |
