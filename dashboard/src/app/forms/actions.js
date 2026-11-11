@@ -104,33 +104,33 @@ export async function submitPublicForm(key, values, meta = {}) {
   let id;
 
   try {
-  if (table === 'faction_feedback') {
-    const pick = (re) => valueByHeader(header, row, re)?.value || '';
-    const faction = pick(def.identify.faction) || 'Unknown faction';
-    const character = pick(def.identify.character) || 'Unknown';
-    const discord = pick(def.identify.discord) || 'not provided';
-    const occurred = pick(def.identify.occurred);
-    transaction(() => {
-      id = run(
-        `INSERT INTO faction_feedback (sheet_row, row_key, faction, character_name, discord_username, occurred, submitted_at, payload,
-           thread_id, status, due_at, created_at, source, submitter_ip_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'new', ?, ?, 'web', ?)`,
-        [sheetRow, rowKey, faction, character, discord, occurred, submittedAt, JSON.stringify(payload),
-         plusHours(REMINDER_HOURS), nowSqlite(), ipHash]).lastInsertRowid;
-      logAudit('', 'Website form', 'CREATE', 'feedback', id, `${faction} — ${character}`, `Submission received from the website form (${reference})`);
-    });
-  } else {
-    const { title, contact } = identify(def.identify, header, row);
-    transaction(() => {
-      id = run(
-        `INSERT INTO form_submissions (form_key, sheet_row, row_key, title, contact, submitted_at, payload,
-           thread_id, status, due_at, created_at, source, submitter_ip_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'new', ?, ?, 'web', ?)`,
-        [def.key, sheetRow, rowKey, title, contact, submittedAt, JSON.stringify(payload),
-         plusHours(REMINDER_HOURS), nowSqlite(), ipHash]).lastInsertRowid;
-      logAudit('', 'Website form', 'CREATE', 'form_submission', id, `${def.title} — ${title}`, `Submission received from the website form (${reference})`);
-    });
-  }
+    if (table === 'faction_feedback') {
+      const pick = (re) => valueByHeader(header, row, re)?.value || '';
+      const faction = pick(def.identify.faction) || 'Unknown faction';
+      const character = pick(def.identify.character) || 'Unknown';
+      const discord = pick(def.identify.discord) || 'not provided';
+      const occurred = pick(def.identify.occurred);
+      transaction(() => {
+        id = run(
+          `INSERT INTO faction_feedback (sheet_row, row_key, faction, character_name, discord_username, occurred, submitted_at, payload,
+             thread_id, status, due_at, created_at, source, submitter_ip_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'new', ?, ?, 'web', ?)`,
+          [sheetRow, rowKey, faction, character, discord, occurred, submittedAt, JSON.stringify(payload),
+           plusHours(REMINDER_HOURS), nowSqlite(), ipHash]).lastInsertRowid;
+        logAudit('', 'Website form', 'CREATE', 'feedback', id, `${faction} — ${character}`, `Submission received from the website form (${reference})`);
+      });
+    } else {
+      const { title, contact } = identify(def.identify, header, row);
+      transaction(() => {
+        id = run(
+          `INSERT INTO form_submissions (form_key, sheet_row, row_key, title, contact, submitted_at, payload,
+             thread_id, status, due_at, created_at, source, submitter_ip_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'new', ?, ?, 'web', ?)`,
+          [def.key, sheetRow, rowKey, title, contact, submittedAt, JSON.stringify(payload),
+           plusHours(REMINDER_HOURS), nowSqlite(), ipHash]).lastInsertRowid;
+        logAudit('', 'Website form', 'CREATE', 'form_submission', id, `${def.title} — ${title}`, `Submission received from the website form (${reference})`);
+      });
+    }
   } catch (e) {
     console.error('[FORMS] submit failed:', e.message);
     return fail('The submission could not be saved. Try again in a minute.');
