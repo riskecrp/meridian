@@ -15,6 +15,18 @@ const SCALE_Y = 0.01424;
 const OFFSET_X = 58.87;
 const OFFSET_Y = -119.59;
 
+// ── RUNTIME DEPENDENCIES (third-party CDNs, fetched by the browser) ──
+// Leaflet 1.9.4 (script + css) is loaded from jsDelivr and the map tiles come
+// from Rockstar's Social Club renderer. Neither is vendored, so the map is
+// blank when the viewer is offline, behind a blocking proxy, or if either host
+// changes its URLs. The tile template is configurable at build time:
+//   NEXT_PUBLIC_MAP_TILES=/map-tiles/{z}/{x}/{y}.jpg   (a vendored copy under public/)
+// NEXT_PUBLIC_* values are inlined by Next at build time, so a change needs a rebuild.
+const DEFAULT_TILE_URL = 'https://s.rsg.sc/sc/images/games/GTAV/map/render/{z}/{x}/{y}.jpg';
+const TILE_URL = process.env.NEXT_PUBLIC_MAP_TILES || DEFAULT_TILE_URL;
+const LEAFLET_JS = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+const LEAFLET_CSS = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+
 function gameToLatLng(gameX, gameY) {
   return [gameY * SCALE_Y + OFFSET_Y, gameX * SCALE_X + OFFSET_X];
 }
@@ -24,10 +36,13 @@ const TURF_COLORS = {};
 let palIdx = 0;
 function getColor(turf) {
   if (turf === 'Neutral') return '#ef4444';
-  
   if (!TURF_COLORS[turf]) { TURF_COLORS[turf] = PALETTE[palIdx % PALETTE.length]; palIdx++; }
   return TURF_COLORS[turf];
 }
+
+// Popup markup is built as an HTML string for Leaflet; NPC names, types and
+// positions are staff-entered text, so escape them.
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let leafletReady = null;
 function loadLeaflet() {
@@ -38,13 +53,13 @@ function loadLeaflet() {
     if (!document.getElementById('leaflet-css')) {
       const link = document.createElement('link');
       link.id = 'leaflet-css'; link.rel = 'stylesheet';
-      link.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+      link.href = LEAFLET_CSS;
       document.head.appendChild(link);
     }
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+    s.src = LEAFLET_JS;
     s.onload = () => resolve(window.L);
-    s.onerror = () => resolve(null);
+    s.onerror = () => { leafletReady = null; resolve(null); };
     document.head.appendChild(s);
   });
   return leafletReady;
@@ -54,17 +69,20 @@ function makeIcon(color) {
   return `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid rgba(255,255,255,0.9);box-shadow:0 1px 4px rgba(0,0,0,0.5);"></div>`;
 }
 
-export default function GTAMap({ npcs, onCopyTP, selectedTurf, height }) {
+export default function GTAMap({ npcs, selectedTurf, height }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
   const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [debugCoord, setDebugCoord] = useState(null);
 
   useEffect(() => {
     let alive = true;
     loadLeaflet().then(L => {
-      if (!alive || !L || !containerRef.current || mapRef.current) return;
+      if (!alive) return;
+      if (!L) { setFailed(true); return; }
+      if (!containerRef.current || mapRef.current) return;
 
       const map = L.map(containerRef.current, {
         crs: L.CRS.Simple,
@@ -74,7 +92,7 @@ export default function GTAMap({ npcs, onCopyTP, selectedTurf, height }) {
         attributionControl: false,
       });
 
-      L.tileLayer('https://s.rsg.sc/sc/images/games/GTAV/map/render/{z}/{x}/{y}.jpg', {
+      L.tileLayer(TILE_URL, {
         minZoom: 0,
         maxZoom: 7,
         tileSize: 256,
@@ -134,16 +152,20 @@ export default function GTAMap({ npcs, onCopyTP, selectedTurf, height }) {
       });
 
       const marker = L.marker(latlng, { icon }).addTo(map);
-      const tpCmd = `/tppos ${npc.position}`;
+      const tpCmd = `/tppos ${npc.position.trim()}`;
       marker.bindPopup(`
         <div style="font-family:system-ui;min-width:150px;">
-          <div style="font-weight:800;font-size:13px;margin-bottom:3px;">${npc.name}</div>
-          <div style="font-size:11px;color:#888;">${npc.npc_type || ''}</div>
-          <div style="font-size:11px;color:${color};font-weight:600;margin-bottom:4px;">${turf}</div>
-          <div style="font-size:10px;font-family:monospace;color:#666;margin-bottom:6px;">${npc.position}</div>
-          <button onclick="navigator.clipboard.writeText('${tpCmd}');this.textContent='COPIED'" style="background:${color};color:white;border:none;padding:5px 10px;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer;width:100%;">COPY TP</button>
+          <div style="font-weight:800;font-size:13px;margin-bottom:3px;">${esc(npc.name)}</div>
+          <div style="font-size:11px;color:#888;">${esc(npc.npc_type || '')}</div>
+          <div style="font-size:11px;color:${color};font-weight:600;margin-bottom:4px;">${esc(turf)}</div>
+          <div style="font-size:10px;font-family:monospace;color:#666;margin-bottom:6px;">${esc(npc.position)}</div>
+          <button type="button" data-tp="${esc(tpCmd)}" style="background:${color};color:white;border:none;padding:5px 10px;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer;width:100%;">COPY TP</button>
         </div>
       `, { closeButton: true, className: 'gta-popup' });
+      marker.on('popupopen', (e) => {
+        const btn = e.popup.getElement()?.querySelector('button[data-tp]');
+        if (btn) btn.onclick = () => { navigator.clipboard?.writeText(btn.getAttribute('data-tp') || ''); btn.textContent = 'COPIED'; };
+      });
 
       markersRef.current.push(marker);
     });
@@ -156,7 +178,11 @@ export default function GTAMap({ npcs, onCopyTP, selectedTurf, height }) {
 
   return (
     <div style={{ position:'relative', width:'100%', height: height || 500 }}>
-      {!ready && <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg-2)', borderRadius:8, color:'var(--fg-4)' }}>Loading map...</div>}
+      {!ready && (
+        <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg-2)', borderRadius:8, color:'var(--fg-4)' }}>
+          {failed ? 'Map unavailable — the Leaflet library could not be loaded from its CDN.' : 'Loading map...'}
+        </div>
+      )}
       <div ref={containerRef} style={{ width:'100%', height:'100%', borderRadius:8, overflow:'hidden', background:'#1a1a24' }} />
       {debugCoord && (
         <div style={{ position:'absolute', bottom:10, left:10, zIndex:1000, background:'var(--bg-1)', border:'1px solid var(--border)', borderRadius:6, padding:'6px 10px', fontSize:11, fontFamily:'monospace', color:'var(--fg-2)' }}>

@@ -1,29 +1,30 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { queryOne, run } from '../lib/db.js';
+import { run } from '../lib/db.js';
 import { logAudit } from '../lib/audit.js';
+import { requireStaff, replyEphemeral } from '../lib/auth.js';
+import { assertFactionWrite, respondFactions } from '../lib/factions.js';
+import { str } from '../../shared/validate.js';
+import { todayIso } from '../../shared/dates.js';
+
 export default {
   data: new SlashCommandBuilder().setName('logscene').setDescription('Quickly log a faction scene')
     .addStringOption(o => o.setName('faction').setDescription('Faction name').setRequired(true).setAutocomplete(true))
-    .addStringOption(o => o.setName('notes').setDescription('Scene notes').setRequired(true))
-    .addStringOption(o => o.setName('rewards').setDescription('Rewards given').setRequired(false)),
-  async autocomplete(interaction) {
-    const focused = interaction.options.getFocused().toLowerCase();
-    const { query } = await import('../lib/db.js');
-    const factions = query("SELECT name FROM factions ORDER BY name").map(r => r.name);
-    await interaction.respond(factions.filter(f => f.toLowerCase().includes(focused)).slice(0, 25).map(f => ({ name: f, value: f })));
-  },
+    .addStringOption(o => o.setName('notes').setDescription('Scene notes').setRequired(true).setMaxLength(4000))
+    .addStringOption(o => o.setName('rewards').setDescription('Rewards given').setRequired(false).setMaxLength(500)),
+  async autocomplete(interaction) { await respondFactions(interaction); },
   async execute(interaction) {
-    const factionName = interaction.options.getString('faction');
-    const notes = interaction.options.getString('notes');
-    const rewards = interaction.options.getString('rewards') || 'None';
-    const f = queryOne("SELECT id FROM factions WHERE name = ?", [factionName]);
-    if (!f) return interaction.reply({ content: `Faction "${factionName}" not found.`, ephemeral: true });
-    const today = new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }).replace(/ /g, '/').toUpperCase();
-    const author = interaction.user.globalName || interaction.user.username;
-    run("INSERT INTO scene_logs (date, faction_id, rewards, logged_by, notes, author_id) VALUES (?, ?, ?, ?, ?, ?)",
-      [today, f.id, rewards, author, notes, interaction.user.id]);
-    logAudit(interaction.user.id, author, 'CREATE', 'scene', f.id, factionName,
+    const actor = await requireStaff(interaction, 1);
+    if (!actor) return;
+    const r = assertFactionWrite(actor, interaction.options.getString('faction'));
+    if (r.error) return replyEphemeral(interaction, `❌ ${r.error}`);
+    const f = r.faction;
+    const notes = str(interaction.options.getString('notes'), { max: 4000 });
+    if (!notes) return replyEphemeral(interaction, '❌ Scene notes are required.');
+    const rewards = str(interaction.options.getString('rewards'), { max: 500 }) || 'None';
+    const ins = run("INSERT INTO scene_logs (date, faction_id, rewards, logged_by, notes, author_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [todayIso(), f.id, rewards, actor.name, notes, actor.id]);
+    logAudit(actor.id, actor.name, 'CREATE', 'scene', Number(ins.lastInsertRowid), f.name,
       `via /logscene${rewards !== 'None' ? ` · rewards: ${rewards}` : ''}`);
-    await interaction.reply({ content: `✅ Scene logged for **${factionName}**\n> ${notes.substring(0, 200)}${rewards !== 'None' ? `\n**Rewards:** ${rewards}` : ''}` });
+    await interaction.reply({ content: `✅ Scene logged for **${f.name}**\n> ${notes.substring(0, 200)}${rewards !== 'None' ? `\n**Rewards:** ${rewards}` : ''}` });
   }
 };

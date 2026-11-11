@@ -39,28 +39,32 @@ import { query, queryOne, run } from './lib/db.js';
 import { pingChannel, pingMentions, pingRoleIds, pingEnabled } from './lib/pings.js';
 import { logAudit } from './lib/audit.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
+import { requireStaff, replyEphemeral } from './lib/auth.js';
 import {
   nowStr, plusHours, plusDays,
   discordFetch, discordPost, discordPatch, discordDelete, hideThreadCard,
-  STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
+  STATUS_TAGS, titled, retag, chunks, fetchSheetRows, valueByHeader, rowPayload, TIMESTAMP_HEADER,
+  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
 } from './lib/formIntake.js';
 
-// Responses sheet of the ECRP roleplay feedback form (link-viewable, read as
-// CSV). The same sheet api/notify links to when a submission arrives.
-const SHEET_ID = '1T6d-I_P1Gvr1nyJctk0-LM3xlXEBUNCi3CMM2MWrUoQ';
-const SHEET_GID = '1222111670';
-const TEAM_VALUE = 'Criminal Faction Management (FM)';
+// Responses sheet of the ECRP roleplay feedback form. The id and tab come from
+// the environment (see .env.example); with GOOGLE_SHEETS_API_KEY set it is
+// read through the Sheets API, otherwise as a link-viewable CSV export.
+// Defaults are the production responses sheet (link-viewable, not a secret); .env overrides.
+const SHEET = () => ({ id: process.env.SHEET_FEEDBACK_ID || '1T6d-I_P1Gvr1nyJctk0-LM3xlXEBUNCi3CMM2MWrUoQ', gid: process.env.SHEET_FEEDBACK_GID || '1222111670' });
+const TEAM_VALUE = process.env.FEEDBACK_TEAM_VALUE || 'Criminal Faction Management (FM)';
+const SOURCE = 'feedback';
 
-// Column indexes in the responses sheet (0-based). Everything from
-// FIRST_QUESTION_COL on is a long-form answer and is posted as its own section,
-// so questions can be added to the form without touching this file.
-const COL_TIMESTAMP = 0;
-const COL_TEAM = 1;
-const COL_FACTION = 2;
-const COL_CHARACTER = 3;
-const COL_DISCORD = 4;
-const COL_OCCURRED = 5;
-const FIRST_QUESTION_COL = 6;
+// Columns are found by HEADER TEXT, not position, so a question inserted into
+// the form cannot re-point every field below it (BOT-9). Everything that is
+// not one of these identity fields is a question and is posted as a section.
+const COLS = {
+  team: /team|division/i,
+  faction: /faction/i,
+  character: /character/i,
+  discord: /discord/i,
+  occurred: /occur|when did/i,
+};
 
 const EMBED_COLOR = 0xE74C3C;   // FM red, matching api/notify's feedback embed
 
@@ -163,7 +167,9 @@ const alreadyEnded = (interaction, id, status) => interaction.reply({
 // like a poll with nothing new, and a caller wrapping this in .then() would call
 // that a success.
 async function pollSheet() {
-  const { rows, error } = await fetchSheetRows(SHEET_ID, SHEET_GID);
+  ensureIntakeSchema();
+  const sheet = SHEET();
+  const { rows, error } = await fetchSheetRows(sheet.id, sheet.gid);
   if (error) {
     console.error('[FEEDBACK]', error);
     recordSyncFail('feedback_poll', error);
@@ -175,6 +181,8 @@ async function pollSheet() {
   }
   const header = rows[0];
   const data = rows.slice(1);
+  const teamCol = header.findIndex(h => COLS.team.test(String(h || '')));
+  if (teamCol < 0) { recordSyncFail('feedback_poll', 'the sheet has no team/division column — headers changed?'); return; }
 
   const state = queryOne('SELECT last_row, initialized FROM faction_feedback_state WHERE id = 1');
   if (!state) {
@@ -185,41 +193,44 @@ async function pollSheet() {
     // First run: everything already in the sheet is history. Those rows predate
     // the feature and would otherwise arrive as a wall of threads, each with its
     // own ping and its own 48-hour nudge cycle.
+    markAllRowsSeen(SOURCE, header, data);
     run('UPDATE faction_feedback_state SET last_row = ?, initialized = 1 WHERE id = 1', [data.length]);
     console.log(`[FEEDBACK] initialised at row ${data.length}; watching for new submissions`);
     recordSyncOk('feedback_poll', `initialised at sheet row ${data.length}; no backfill`);
     return;
   }
 
-  let posted = 0;
-  for (let idx = state.last_row; idx < data.length; idx++) {
+  let posted = 0, held = null;
+  const keys = rowKeys(header, data);
+  for (let idx = 0; idx < data.length; idx++) {
     const row = data[idx];
-    const sheetRow = idx + 2;   // 1-based, plus the header
+    const key = keys[idx];
+    if (rowSeen(SOURCE, key)) continue;
+    const sheetRow = idx + 2;   // 1-based, plus the header — informational only
+    if ((row[teamCol] || '').trim() !== TEAM_VALUE) { markRowSeen(SOURCE, key, sheetRow); continue; }
     try {
-      if ((row[COL_TEAM] || '').trim() === TEAM_VALUE) {
-        await postFeedback(header, row, sheetRow);
-        posted++;
-      }
+      const id = await postFeedback(header, row, sheetRow, key);
+      markRowSeen(SOURCE, key, sheetRow, id);
+      posted++;
     } catch (e) {
-      const attempts = recordFailure(sheetRow, e);
+      const attempts = recordFailure(sheetRow, key, e);
       if (attempts < MAX_POST_ATTEMPTS) {
-        // Probably transient. Stop WITHOUT advancing, so this row is retried next
-        // cycle and submissions keep arriving in the order they were sent.
+        // Probably transient. Stop WITHOUT marking it seen, so this row is
+        // retried next cycle and submissions keep arriving in order.
         console.error(`[FEEDBACK] row ${sheetRow} attempt ${attempts}/${MAX_POST_ATTEMPTS} failed, retrying next cycle:`, e.message);
-        // The job itself is working — it read the sheet and is holding position on
-        // purpose. The row's own trouble is recorded in faction_feedback_failures
-        // and shown on the feedback page, so this stays a success with a note.
-        recordSyncOk('feedback_poll', `holding at sheet row ${sheetRow}, attempt ${attempts}/${MAX_POST_ATTEMPTS}`);
-        return;
+        held = `holding at sheet row ${sheetRow}, attempt ${attempts}/${MAX_POST_ATTEMPTS}: ${e.message}`;
+        break;
       }
-      // Out of retries. Advance past it so everything queued behind it can still
+      // Out of retries. Mark it seen so everything queued behind it can still
       // post; the failure row stays behind for visibility.
       run('UPDATE faction_feedback_failures SET skipped = 1 WHERE sheet_row = ?', [sheetRow]);
+      markRowSeen(SOURCE, key, sheetRow);
       console.error(`[FEEDBACK] row ${sheetRow} failed ${attempts}x — SKIPPING so the queue can drain. Not posted:`, e.message);
     }
-    run('UPDATE faction_feedback_state SET last_row = ? WHERE id = 1', [idx + 1]);
   }
-  recordSyncOk('feedback_poll', posted ? `${posted} new submission(s) posted` : 'checked, nothing new');
+  run('UPDATE faction_feedback_state SET last_row = ? WHERE id = 1', [data.length]);
+  if (held) recordSyncFail('feedback_poll', held);
+  else recordSyncOk('feedback_poll', posted ? `${posted} new submission(s) posted` : 'checked, nothing new');
 }
 
 /**
@@ -227,15 +238,15 @@ async function pollSheet() {
  * problem here must not itself decide a row's fate, so a failure to record
  * reports attempt 1 — which retries rather than skips.
  */
-function recordFailure(sheetRow, err) {
+function recordFailure(sheetRow, key, err) {
   const message = `${err.name || 'Error'}: ${err.message}`.slice(0, 300);
   try {
     run(
-      `INSERT INTO faction_feedback_failures (sheet_row, attempts, first_failed_at, last_failed_at, last_error)
-       VALUES (?, 1, ?, ?, ?)
+      `INSERT INTO faction_feedback_failures (sheet_row, row_key, attempts, first_failed_at, last_failed_at, last_error)
+       VALUES (?, ?, 1, ?, ?, ?)
        ON CONFLICT(sheet_row) DO UPDATE SET
-         attempts = attempts + 1, last_failed_at = excluded.last_failed_at, last_error = excluded.last_error`,
-      [sheetRow, nowStr(), nowStr(), message],
+         row_key = excluded.row_key, attempts = attempts + 1, last_failed_at = excluded.last_failed_at, last_error = excluded.last_error`,
+      [sheetRow, key, nowStr(), nowStr(), message],
     );
     return queryOne('SELECT attempts FROM faction_feedback_failures WHERE sheet_row = ?', [sheetRow])?.attempts || 1;
   } catch (e) {
@@ -244,21 +255,21 @@ function recordFailure(sheetRow, err) {
   }
 }
 
-async function postFeedback(header, row, sheetRow) {
-  const col = (i) => (i < row.length ? String(row[i] || '').trim() : '');
-  const faction = col(COL_FACTION) || 'Unknown faction';
-  const character = col(COL_CHARACTER) || 'Unknown';
-  const submitter = col(COL_DISCORD) || 'not provided';
+async function postFeedback(header, row, sheetRow, key) {
+  const pick = (re) => valueByHeader(header, row, re)?.value || '';
+  const faction = pick(COLS.faction) || 'Unknown faction';
+  const character = pick(COLS.character) || 'Unknown';
+  const submitter = pick(COLS.discord) || 'not provided';
+  const occurred = pick(COLS.occurred);
+  const submittedAt = valueByHeader(header, row, TIMESTAMP_HEADER)?.value || '';
+  const payload = rowPayload(header, row);
 
-  const payload = {};
-  for (let i = 0; i < Math.min(header.length, row.length); i++) payload[header[i]] = row[i];
-
-  // Claim the row BEFORE touching Discord. sheet_row is UNIQUE, so a retry after
+  // Claim the row BEFORE touching Discord. row_key is UNIQUE, so a retry after
   // a half-finished post finds this record and resumes rather than opening a
-  // second thread and then dying on the constraint. ack_message_id is written
-  // last and checked first, so it doubles as the "posted in full" marker.
-  const existing = queryOne('SELECT id, thread_id, ack_message_id FROM faction_feedback WHERE sheet_row = ?', [sheetRow]);
-  if (existing?.ack_message_id) return;
+  // second thread. ack_message_id is written last and checked first, so it
+  // doubles as the "posted in full" marker.
+  const existing = queryOne('SELECT id, thread_id, ack_message_id FROM faction_feedback WHERE row_key = ?', [key]);
+  if (existing?.ack_message_id) return existing.id;
 
   let feedbackId, threadId;
   if (existing) {
@@ -267,10 +278,10 @@ async function postFeedback(header, row, sheetRow) {
     console.log(`[FEEDBACK] resuming partially posted row ${sheetRow} (#${feedbackId})`);
   } else {
     const res = run(
-      `INSERT INTO faction_feedback (sheet_row, faction, character_name, discord_username, occurred,
+      `INSERT INTO faction_feedback (sheet_row, row_key, faction, character_name, discord_username, occurred,
          submitted_at, payload, thread_id, due_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-      [sheetRow, faction, character, submitter, col(COL_OCCURRED), col(COL_TIMESTAMP),
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      [freeSheetRow('faction_feedback', sheetRow), key, faction, character, submitter, occurred, submittedAt,
        JSON.stringify(payload), plusHours(REMINDER_HOURS), nowStr()],
     );
     feedbackId = res.lastInsertRowid;
@@ -304,22 +315,24 @@ async function postFeedback(header, row, sheetRow) {
       `**Faction:** ${faction}`,
       `**Character:** ${character}`,
       `**Discord (for follow-up):** ${submitter}`,
-      `**When did this occur?** ${col(COL_OCCURRED) || 'not provided'}`,
-      `**Submitted:** ${col(COL_TIMESTAMP)}`,
+      `**When did this occur?** ${occurred || 'not provided'}`,
+      `**Submitted:** ${submittedAt}`,
     ].filter(Boolean).join('\n'),
     allowed_mentions: allowedMentions('feedback.new'),
   });
 
-  // One section per long-form question, split to fit the message limit. The
-  // zero-width space opens each section with a visible blank line.
-  for (let i = FIRST_QUESTION_COL; i < header.length; i++) {
+  // One section per question that is not an identity field, split to fit the
+  // message limit. The zero-width space opens each section with a blank line.
+  const identity = [TIMESTAMP_HEADER, ...Object.values(COLS)];
+  for (let i = 0; i < header.length; i++) {
     const question = String(header[i] || '').trim();
-    const answer = col(i);
+    const answer = String(row[i] ?? '').trim();
     if (!question || !answer || SKIP_QUESTION.test(question)) continue;
+    if (identity.some(re => re.test(question))) continue;
     const parts = chunks(answer);
     for (let n = 0; n < parts.length; n++) {
       await discordPost(`/channels/${threadId}/messages`, {
-        content: (n === 0 ? `​\n**${question}**\n` : '') + parts[n],
+        content: (n === 0 ? `\u200b\n**${question}**\n` : '') + parts[n],
         allowed_mentions: NO_MENTIONS,
       });
     }
@@ -344,7 +357,8 @@ async function postFeedback(header, row, sheetRow) {
   console.log(`[FEEDBACK] #${feedbackId} posted — ${faction} · ${character} (row ${sheetRow})`);
 
   // Only now is the row fully posted, so an earlier failure record is stale.
-  run('DELETE FROM faction_feedback_failures WHERE sheet_row = ?', [sheetRow]);
+  run('DELETE FROM faction_feedback_failures WHERE sheet_row = ? OR row_key = ?', [sheetRow, key]);
+  return feedbackId;
 }
 
 // ── Nudges ─────────────────────────────────────────────────────────────────────
@@ -367,6 +381,7 @@ async function checkReminders() {
   );
 
   let nudged = 0;
+  const failures = [];
   for (const item of due) {
     try {
       // A thread that auto-archived has to be reopened before it can be posted
@@ -387,8 +402,10 @@ async function checkReminders() {
         allowed_mentions: allowedMentions('feedback.nudge'),
       });
     } catch (e) {
-      // One unreachable thread must not stop the others being chased.
+      // One unreachable thread must not stop the others being chased, but the
+      // failure is reported rather than swallowed (BOT-32).
       console.error(`[FEEDBACK] nudge for #${item.id} failed:`, e.message);
+      failures.push(`#${item.id}: ${e.message.slice(0, 80)}`);
       continue;
     }
     // Roll the due date forward rather than only stamping the reminder, so an
@@ -397,27 +414,17 @@ async function checkReminders() {
       [nowStr(), plusHours(REMINDER_HOURS), item.id]);
     nudged++;
   }
-  return nudged;
+  return { nudged, failures };
 }
 
 // ── Button handling (called from index.js) ─────────────────────────────────────
 
 /**
- * Who may work feedback: FM Team Leads, FM Leadership and Game Affairs
- * Management — the same three roles the pings go to. Read from discord_roles so
- * a role being re-created in Discord is a database edit, not a redeploy.
- *
- * This is checked on every press. A component interaction carries no command
- * permissions with it, so nothing else stands between a random member and these
- * buttons.
+ * Who may work feedback: Team Leads and above on the staff roster (L2+), the
+ * same gate as the dashboard's feedback page. Checked on every press — a
+ * component interaction carries no command permissions with it.
  */
-function canAct(interaction) {
-  const allowed = query(
-    "SELECT role_id FROM discord_roles WHERE key IN ('fm_team_lead', 'fm_leadership', 'game_affairs')",
-  ).map((r) => r.role_id).filter(Boolean);
-  const held = interaction.member?.roles?.cache;
-  return !!held && allowed.some((id) => held.has(id));
-}
+const FEEDBACK_LEVEL = 2;
 
 const actorName = (interaction) => interaction.member?.displayName
   || interaction.user.globalName || interaction.user.username;
@@ -436,10 +443,13 @@ const actorName = (interaction) => interaction.member?.displayName
  * channel's archived-thread list.
  */
 async function retitleThread(interaction, threadId, tag, { archive = false } = {}) {
-  const id = interaction.channel?.isThread?.() ? interaction.channel.id : threadId;
+  // The record's thread wins; the interaction's channel is only trusted when
+  // it IS that thread (BOT-26: a press from an ephemeral reply or a nudge in
+  // another thread must not rename the wrong one).
+  const id = threadId || (interaction.channel?.isThread?.() ? interaction.channel.id : null);
   if (!id) return;
   try {
-    const cached = interaction.channel?.isThread?.() ? interaction.channel : null;
+    const cached = interaction.channel?.isThread?.() && interaction.channel.id === String(id) ? interaction.channel : null;
     let name = cached?.name || null;
     let parentId = cached?.parentId || null;
     // One GET covers both, and the parent is only needed when we are archiving.
@@ -635,15 +645,10 @@ export async function handleFeedbackButton(interaction) {
 
   const [, action, rawId] = customId.split(':');
   const id = parseInt(rawId, 10);
-  if (!Number.isInteger(id)) return true;
+  if (!Number.isInteger(id)) { await replyEphemeral(interaction, 'This button is malformed.'); return true; }
 
-  if (!canAct(interaction)) {
-    await interaction.reply({
-      content: 'Only FM Team Leads, FM Leadership and Game Affairs Management can work feedback.',
-      ephemeral: true,
-    });
-    return true;
-  }
+  const actor = await requireStaff(interaction, FEEDBACK_LEVEL);
+  if (!actor) return true;
 
   try {
     if (action === 'done') await handleDone(interaction, id);
@@ -651,6 +656,7 @@ export async function handleFeedbackButton(interaction) {
     else if (action === 'cancel') await handleEnd(interaction, id, 'cancelled');
     else if (action === 'snooze') await handleSnooze(interaction, id);
     else if (action === 'reopen') await handleReopen(interaction, id);
+    else await replyEphemeral(interaction, `Unknown feedback action "${action}".`);
   } catch (e) {
     console.error('[FEEDBACK] button error:', e.message);
     if (!interaction.replied && !interaction.deferred) {
@@ -662,14 +668,21 @@ export async function handleFeedbackButton(interaction) {
 
 // ── Start ──────────────────────────────────────────────────────────────────────
 
+export { pollSheet, checkReminders };
+
 export function startFactionFeedback() {
+  if (!SHEET().id) console.warn('[FEEDBACK] SHEET_FEEDBACK_ID is not set — the feedback intake will report a configuration error on every poll');
   cron.schedule('*/15 * * * *', () => {
     pollSheet().catch((e) => { console.error('[FEEDBACK] poll error:', e.message); recordSyncFail('feedback_poll', e); });
   }, { timezone: 'UTC' });
 
   cron.schedule('*/30 * * * *', () => {
     checkReminders()
-      .then((n) => recordSyncOk('feedback_nudge', n ? `${n} item(s) nudged` : 'checked, nothing due'))
+      .then((r) => {
+        if (r === 0) return;   // route switched off: already recorded
+        if (r.failures.length) recordSyncFail('feedback_nudge', `${r.failures.length} nudge(s) failed: ${r.failures.join(' | ')}`);
+        else recordSyncOk('feedback_nudge', r.nudged ? `${r.nudged} item(s) nudged` : 'checked, nothing due');
+      })
       .catch((e) => { console.error('[FEEDBACK] reminder error:', e.message); recordSyncFail('feedback_nudge', e); });
   }, { timezone: 'UTC' });
 

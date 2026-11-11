@@ -1,27 +1,16 @@
 // Claim / Done buttons on task-assigned pings (tsk:* custom ids).
-// Mirrors the dashboard's claimMyTask / completeMyTask semantics — same log
-// rows, same audit entries, same creator notifications with the same
-// confidentiality routing — so a task is equally "done" from either surface.
-import { queryOne, run } from './lib/db.js';
-import { sendPing, getRole } from './lib/pings.js';
-import { logAudit } from './lib/audit.js';
+// Both delegate to shared/tasks.js, so a button press is exactly a dashboard
+// claim / complete: same visibility rule, same "already claimed" guard, same
+// soft completion, same audit rows and creator notifications.
+import { actorFromDiscord } from '../shared/actor.js';
+import { getTask, claimTask, completeTask } from '../shared/tasks.js';
 
-const staffRow = (id) => queryOne("SELECT clearance, rank FROM staff WHERE discord_id = ? AND discord_id NOT LIKE 'placeholder%'", [id]);
-
-// Mirror of dashboard _creatorRoutesAlt: the creator ping takes the
-// confidentiality branch when the creator is Management and the task targets
-// a leadership role.
-function creatorRoutesAlt(createdById, targetType, targetId) {
-  if (!createdById) return false;
-  const s = queryOne("SELECT rank FROM staff WHERE discord_id = ?", [createdById]);
-  if (!(s?.rank || '').toLowerCase().includes('management')) return false;
-  return targetType === 'Role' && (targetId === getRole('fm_leadership') || targetId === getRole('game_affairs'));
-}
+const EPH = (content) => ({ content, ephemeral: true });
 
 // Strip the Claim button (after a claim) or all action buttons (after
 // completion), keeping the Open link.
 function remainingComponents(message, { keepDone }) {
-  const row = (message.components?.[0]?.components || []).filter(c =>
+  const row = (message?.components?.[0]?.components || []).filter(c =>
     c.style === 5 || (keepDone && c.customId?.startsWith('tsk:done:')));
   if (!row.length) return [];
   return [{ type: 1, components: row.map(c => c.style === 5
@@ -29,37 +18,34 @@ function remainingComponents(message, { keepDone }) {
     : { type: 2, style: 3, label: c.label || 'Done', custom_id: c.customId }) }];
 }
 
+/** Resolve the pressing user to an actor, or explain why they cannot act. Returns null after replying. */
+async function actorFor(interaction) {
+  const actor = actorFromDiscord(interaction.user.id, interaction.user.globalName || interaction.user.username);
+  if (!actor) { await interaction.reply(EPH('These buttons are for FM staff only.')); return null; }
+  if (actor.level < 1) { await interaction.reply(EPH('Task actions need FM clearance (L1+); your access is read-only.')); return null; }
+  return actor;
+}
+
+async function closeMessage(interaction, note) {
+  await interaction.update({ content: interaction.message.content + `\n\n${note}`, components: remainingComponents(interaction.message, { keepDone: false }) }).catch(() => {});
+}
+
 export async function handleTaskButton(interaction) {
   const { customId } = interaction;
   if (!customId.startsWith('tsk:')) return false;
   const [, action, uid] = customId.split(':');
-  const author = interaction.user.globalName || interaction.user.username;
 
-  if (!staffRow(interaction.user.id)) {
-    await interaction.reply({ content: 'These buttons are for FM staff only.', ephemeral: true });
-    return true;
-  }
-  const task = queryOne("SELECT * FROM tasks WHERE task_uid = ?", [uid]);
-  if (!task) {
-    await interaction.update({ content: interaction.message.content + '\n\n☑️ *This task has been completed.*', components: remainingComponents(interaction.message, { keepDone: false }) }).catch(() => {});
-    return true;
-  }
+  const actor = await actorFor(interaction);
+  if (!actor) return true;
+  const task = getTask(uid);
+  if (!task) { await closeMessage(interaction, '☑️ *This task no longer exists.*'); return true; }
+  if (task.status !== 'open') { await closeMessage(interaction, `☑️ *This task has been ${task.status}${task.completed_by_name ? ` by ${task.completed_by_name}` : ''}.*`); return true; }
 
   if (action === 'claim') {
-    if (task.claimed_by && task.claimed_by !== 'None') {
-      await interaction.reply({ content: `Already claimed by <@${task.claimed_by}>.`, ephemeral: true });
-      return true;
-    }
-    run("UPDATE tasks SET claimed_by = ? WHERE task_uid = ?", [interaction.user.id, uid]);
-    run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('CLAIMED', ?, ?, '', 'Claimed', ?)",
-      [`${author} (${interaction.user.id})`, uid, new Date().toISOString()]);
-    logAudit(interaction.user.id, author, 'EDIT', 'task', null, uid, 'Claimed via Discord button');
-    if (task.created_by_id && task.created_by_id !== interaction.user.id) {
-      const alt = creatorRoutesAlt(task.created_by_id, task.target_type, task.target_id);
-      try { await sendPing('task.claimed.creator', `🤚 <@${task.created_by_id}> — **${author}** claimed a task you assigned.\n📋 https://ecrpfm.com/fm/tasks/${uid}`, { alt }); } catch {}
-    }
+    const r = await claimTask(actor, uid, { via: 'Discord button' });
+    if (!r.ok) { await interaction.reply(EPH(`❌ ${r.error}`)); return true; }
     await interaction.update({
-      content: interaction.message.content + `\n✋ **Claimed by ${author}**`,
+      content: interaction.message.content + `\n✋ **Claimed by ${actor.name}**`,
       components: remainingComponents(interaction.message, { keepDone: true }),
     }).catch(() => {});
     return true;
@@ -73,38 +59,25 @@ export async function handleTaskButton(interaction) {
     });
     return true;
   }
+  await interaction.reply(EPH('Unknown task action.')).catch(() => {});
   return true;
 }
 
 export async function handleTaskModal(interaction) {
   if (!interaction.customId?.startsWith('tskdonem:')) return false;
   const uid = interaction.customId.split(':')[1];
-  const author = interaction.user.globalName || interaction.user.username;
-  if (!staffRow(interaction.user.id)) {
-    await interaction.reply({ content: 'FM staff only.', ephemeral: true });
-    return true;
-  }
-  const task = queryOne("SELECT * FROM tasks WHERE task_uid = ?", [uid]);
-  if (!task) {
-    await interaction.reply({ content: '☑️ This task was already completed.', ephemeral: true });
-    return true;
-  }
+  const actor = await actorFor(interaction);
+  if (!actor) return true;
   const note = (interaction.fields.getTextInputValue('note') || '').trim();
-  run("DELETE FROM tasks WHERE task_uid = ?", [uid]);
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('COMPLETED', ?, ?, ?, 'Done', ?)",
-    [author, uid, task.description || '', new Date().toISOString()]);
-  logAudit(interaction.user.id, author, 'DELETE', 'task', null, uid, `Completed via Discord button${note ? ` · ${note.slice(0, 80)}` : ''}`);
-  if (task.created_by_id && task.created_by_id !== interaction.user.id) {
-    const alt = creatorRoutesAlt(task.created_by_id, task.target_type, task.target_id);
-    try { await sendPing('task.completed.creator', `✅ <@${task.created_by_id}> — **${author}** completed a task you created.${note ? `\n**Note:** ${note}` : ''}`, { alt }); } catch {}
-  }
+  const r = await completeTask(actor, uid, note, { via: 'Discord button' });
+  if (!r.ok) { await interaction.reply(EPH(`❌ ${r.error}`)); return true; }
   if (interaction.isFromMessage()) {
     await interaction.update({
-      content: interaction.message.content + `\n✅ **Completed by ${author}**${note ? ` — ${note.slice(0, 200)}` : ''}`,
+      content: interaction.message.content + `\n✅ **Completed by ${actor.name}**${note ? ` — ${note.slice(0, 200)}` : ''}`,
       components: remainingComponents(interaction.message, { keepDone: false }),
     }).catch(() => {});
   } else {
-    await interaction.reply({ content: `✅ Task completed.`, ephemeral: true }).catch(() => {});
+    await interaction.reply(EPH('✅ Task completed.')).catch(() => {});
   }
   return true;
 }

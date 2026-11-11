@@ -1,19 +1,20 @@
 "use client";
-// Library › Documents. Everyone sees the whole catalog; the old clearance
-// gate is now an AUDIENCE tag ("who this is for") used for the default
-// "For you" filter — relevance, not secrecy (owner ruling 2026-08-03).
+// Library › Documents. level_required is a clearance GATE (policy 5): the
+// server (getDocuments) returns only the documents this viewer may read —
+// L1..L3 by clearance, Lead Storytellers and Event Team the level-1 set,
+// read-only. The pills filter what you can see by who it is written for.
 // L3 keeps CRUD. Deep links: ?sop=<title> expands a document.
 import { useEffect, useState } from "react";
-import { createDocument, updateDocument, deleteDocument } from "../../fm/documents/actions.js";
-import { getAllDocuments } from "../actions.js";
+import { getDocuments, createDocument, updateDocument, deleteDocument } from "../../fm/documents/actions.js";
 import QuillEditor from "../../../lib/QuillEditor";
 import { useRun } from "../hooks.js";
 
 const AUDIENCE = {
-  1: { label: "Everyone", color: "var(--good)" },
+  1: { label: "All staff", color: "var(--good)" },
   2: { label: "Leads+", color: "var(--amber)" },
   3: { label: "Leadership", color: "var(--lock)" },
 };
+const audienceOf = (doc) => AUDIENCE[Number(doc.level_required) || 1] || AUDIENCE[1];
 
 export default function DocumentsView({ auth }) {
   const [docs, setDocs] = useState([]);
@@ -28,7 +29,7 @@ export default function DocumentsView({ auth }) {
   const { busy, err, setErr, run } = useRun();
 
   useEffect(() => {
-    getAllDocuments().then(d => {
+    getDocuments().then(d => {
       setDocs(d || []); setLoading(false);
       const sop = new URLSearchParams(window.location.search).get("sop");
       if (sop) {
@@ -39,9 +40,9 @@ export default function DocumentsView({ auth }) {
           setTimeout(() => document.querySelector(`[data-doc-id="${match.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
         }
       }
-    });
+    }).catch(() => setLoading(false));
   }, []);
-  const refresh = async () => setDocs((await getAllDocuments().catch(() => [])) || []);
+  const refresh = async () => setDocs((await getDocuments().catch(() => [])) || []);
 
   const handleSave = () => {
     if (!form.title.trim()) return;
@@ -53,7 +54,9 @@ export default function DocumentsView({ auth }) {
 
   if (loading) return <div className="empty">Loading documents…</div>;
 
-  const myLevel = auth.level || 1;
+  // Everything in `docs` is already within this viewer's clearance (server gate).
+  const myLevel = Math.max(auth.level || 0, (auth.isEventTeam || auth.isLeadStoryteller) ? 1 : 0, 1);
+  const canEdit = auth.level >= 3;
   const q = search.toLowerCase();
   const filtered = docs.filter(d => {
     if (!showArchived && d.category === "z. Archived") return false;
@@ -65,18 +68,19 @@ export default function DocumentsView({ auth }) {
   const grouped = filtered.reduce((a, d) => { const c = d.category || "General"; (a[c] = a[c] || []).push(d); return a; }, {});
   const archivedCount = docs.filter(d => d.category === "z. Archived").length;
   const countFor = (v) => docs.filter(d => d.category !== "z. Archived" && (v === "mine" ? (d.level_required || 1) <= myLevel : v === "all" ? true : (d.level_required || 1) === v)).length;
+  const levels = [1, 2, 3].filter(v => v <= myLevel);
 
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
         <input className="filter-inp" style={{ maxWidth: 340 }} placeholder="Search title, category, content…" value={search} onChange={e => setSearch(e.target.value)} />
         <span style={{ flex: 1 }} />
-        {auth.level >= 3 && <button className="btn" onClick={() => { setEditDoc(null); setForm({ title: "", category: "General", content: "", level_required: 1 }); setShowForm(true); }}>Create +</button>}
+        {canEdit && <button className="btn" onClick={() => { setEditDoc(null); setForm({ title: "", category: "General", content: "", level_required: 1 }); setShowForm(true); }}>Create +</button>}
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
         <button className={`pill${aud === "mine" ? " on" : ""}`} onClick={() => setAud("mine")}>For you <span className="ct">{countFor("mine")}</span></button>
         <button className={`pill${aud === "all" ? " on" : ""}`} onClick={() => setAud("all")}>All <span className="ct">{countFor("all")}</span></button>
-        {[1, 2, 3].map(v => <button key={v} className={`pill${aud === v ? " on" : ""}`} onClick={() => setAud(aud === v ? "all" : v)}>{AUDIENCE[v].label} <span className="ct">{countFor(v)}</span></button>)}
+        {levels.map(v => <button key={v} className={`pill${aud === v ? " on" : ""}`} onClick={() => setAud(aud === v ? "all" : v)}>{AUDIENCE[v].label} <span className="ct">{countFor(v)}</span></button>)}
       </div>
 
       {Object.keys(grouped).sort().map(cat => (
@@ -84,18 +88,17 @@ export default function DocumentsView({ auth }) {
           <div className="hd"><div className="t">{cat}</div><div className="meta">{grouped[cat].length}</div></div>
           {grouped[cat].map(doc => {
             const open = expandedId === doc.id;
-            const a = AUDIENCE[doc.level_required || 1];
-            const forMe = (doc.level_required || 1) <= myLevel;
+            const a = audienceOf(doc);
             return (
               <div key={doc.id} data-doc-id={doc.id} style={{ borderBottom: "1px solid var(--line)" }}>
                 <div className="row" onClick={() => setExpandedId(open ? null : doc.id)}>
-                  <span className="desc" style={{ opacity: forMe ? 1 : 0.7 }}>{doc.title}</span>
+                  <span className="desc">{doc.title}</span>
                   <span className="chip" style={{ background: `color-mix(in srgb, ${a.color} 14%, transparent)`, color: a.color }}>{a.label}</span>
                   <span className="chip role">{doc.created_by}</span>
-                  {auth.level >= 3 && (
+                  {canEdit && (
                     <span onClick={e => e.stopPropagation()} style={{ display: "flex", gap: 4 }}>
                       <button className="act" style={{ padding: "2px 7px" }} onClick={() => { setEditDoc(doc); setForm({ title: doc.title, category: doc.category, content: doc.content, level_required: doc.level_required || 1 }); setShowForm(true); }}>Edit</button>
-                      <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this document?")) { await deleteDocument(doc.id); refresh(); } }}>Del</button>
+                      <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this document?")) { const r = await deleteDocument(doc.id).catch(e => ({ ok: false, error: e?.message })); if (!r?.ok) window.alert(r?.error || "Delete failed."); refresh(); } }}>Del</button>
                     </span>
                   )}
                   <span className="caret" style={{ transform: open ? "rotate(180deg)" : "none" }}>▼</span>
@@ -114,7 +117,7 @@ export default function DocumentsView({ auth }) {
                             setExpandedId(targetDoc.id);
                             setTimeout(() => document.querySelector(`[data-doc-id="${targetDoc.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
                           } else {
-                            window.alert("Document not found: " + title);
+                            window.alert("Document not found or above your access level: " + title);
                           }
                         }
                       }}
@@ -146,10 +149,10 @@ export default function DocumentsView({ auth }) {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
                 <input className="filter-inp" placeholder="Title" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
                 <input className="filter-inp" placeholder="Category" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
-                <select className="filter-inp" value={form.level_required} onChange={e => setForm({ ...form, level_required: parseInt(e.target.value) })} title="Audience — who this is written for (everyone can still read it)">
-                  <option value={1}>Audience: Everyone</option>
-                  <option value={2}>Audience: Leads+</option>
-                  <option value={3}>Audience: Leadership</option>
+                <select className="filter-inp" value={form.level_required} onChange={e => setForm({ ...form, level_required: parseInt(e.target.value) })} title="Visible to — the clearance needed to read this document">
+                  <option value={1}>Visible to: All FM staff (L1+)</option>
+                  <option value={2}>Visible to: Team Leads &amp; Leadership (L2+)</option>
+                  <option value={3}>Visible to: FM Leadership only (L3)</option>
                 </select>
               </div>
               <QuillEditor value={form.content} onChange={v => setForm({ ...form, content: v })} placeholder="Start writing…" />

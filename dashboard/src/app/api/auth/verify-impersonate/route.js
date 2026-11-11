@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { validateSession } from '../../../../lib/session.js';
-import { createVerifySession } from '../../../../lib/verifySession.js';
+import { createVerifySession, VERIFY_COOKIE } from '../../../../lib/verifySession.js';
 import { isOwner } from '../../../../lib/constants.js';
 
+// An owner may open the verify portal as themselves without the Discord
+// round-trip. The session is a real, revocable verify session like any other.
 export async function GET(request) {
   const host  = request.headers.get('host');
   const proto = host?.includes('localhost') ? 'http' : 'https';
@@ -17,8 +19,14 @@ export async function GET(request) {
     return NextResponse.redirect(new URL('/v2', origin));
   }
 
-  const verifyToken = createVerifySession(session.discord_id, session.discord_name || 'Risk');
-  cookieStore.set('meridian_verify_session', verifyToken, {
+  let verifyToken;
+  try {
+    verifyToken = createVerifySession(session.discord_id, session.display_name || session.discord_name || 'Owner');
+  } catch (e) {
+    console.error('[Verify Auth]', e.message);
+    return NextResponse.redirect(new URL('/verify/login?error=not_configured', origin));
+  }
+  cookieStore.set(VERIFY_COOKIE, verifyToken, {
     path: '/', maxAge: 3 * 86400, httpOnly: true,
     secure: proto === 'https', sameSite: 'lax',
   });

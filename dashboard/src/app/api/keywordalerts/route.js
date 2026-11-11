@@ -1,17 +1,14 @@
-import { NextResponse } from 'next/server';
-import { requireActor } from '../../../lib/requireActor.js';
 import { query } from '../../../lib/db.js';
+import { requireLeadership, safeJson } from '../memberlog/gate.js';
 
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  try {
-    const actor = await requireActor(1);
-    if (actor.level < 3) return NextResponse.json({ error: 'Access denied.' }, { status: 403 });
-    const logs = query(
-      `SELECT id, keyword, message_id, guild_id, guild_name, channel_id, channel_name,
-              author_id, author_name, content, event_type, created_at
-       FROM keyword_alerts ORDER BY id DESC LIMIT 1000`
-    );
-    return NextResponse.json(logs);
-  } catch { return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 }); }
+  const g = await requireLeadership();
+  if (g.response) return g.response;
+  return safeJson(() => query(
+    `SELECT id, keyword, message_id, guild_id, guild_name, channel_id, channel_name,
+            author_id, author_name, content, event_type, created_at
+     FROM keyword_alerts ORDER BY id DESC LIMIT 1000`
+  ));
 }

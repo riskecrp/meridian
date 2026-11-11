@@ -1,557 +1,571 @@
 "use server";
-import { query, queryOne, run } from "../../../lib/db.js";
+// Leadership actions: the monthly review cycle, team/guide performance, the
+// approvals queue and meeting notes. Shared by /fm/leadership/* and /v2.
+//
+// Review model (policy 7): the team lead writes ONE recommendation per faction
+// per month (faction_reviews). Each L3 casts ONE vote per faction per month —
+// a leadership_personal_notes row (UNIQUE faction/author/month, upserted) whose
+// `status` is one of REVIEW_STATUSES. faction_reviews.status is never set by
+// hand: it is DERIVED from the tally of those votes (strict majority of the
+// 'Confirmed *' votes → that status, otherwise 'Pending Discussion'). The bot's
+// 14th-of-month job reads the same 'Confirmed Promote' / 'Confirmed Hold'
+// strings. A tally that lands on Confirmed Demote / Remove raises a leadership
+// task, the same way the bot does for Promote. Feedback delivery is recorded on
+// faction_reviews.feedback_sent_at / feedback_sent_by.
+import { query, queryOne, run, transaction } from "../../../lib/db.js";
+import { sendPing, sendDiscord, urls } from "../../../lib/pings.js";
 import { getRole } from "../../../lib/discord.js";
-import { sendPing } from "../../../lib/pings.js";
 import { logAudit } from "../../../lib/audit.js";
 import { requireActor } from "../../../lib/requireActor.js";
+import { assertFactionWrite, resolveFaction, writableFactions, writableFactionIds, canWriteFaction } from "../../../lib/access.js";
+import { str, toInt, oneOf, isSnowflake, fail, REVIEW_RECOMMENDATIONS, REVIEW_STATUSES } from "../../../../../shared/validate.js";
+import { monthKey, nowIso, todayIso } from "../../../../../shared/dates.js";
+import { createTask } from "../../../../../shared/tasks.js";
+import { sanitizeHtml, htmlToText } from "./_shared/sanitize.js";
 
-// All leadership actions require L2+ (Team Leads and Leadership only).
-// Identity and team scope are derived server-side from the session.
+const ok = (extra = {}) => ({ ok: true, ...extra });
+const CONFIRMED = REVIEW_STATUSES.filter(s => s.startsWith('Confirmed '));
 
-async function getAccessibleFactions(userId, userLevel, isLst = false) {
-  // L3 and Lead Storytellers work with every faction → all of them, not team-scoped.
-  if (userLevel >= 3 || isLst) {
-    return query("SELECT * FROM factions WHERE archived = 0 ORDER BY name");
+// Factions the actor works with: everything for L3 and Lead Storytellers
+// (reads), the team's factions for L1/L2.
+function scopedFactions(actor) {
+  if (actor.level >= 3 || actor.isLeadStoryteller) return query("SELECT * FROM factions WHERE archived = 0 ORDER BY name");
+  return writableFactions(actor);
+}
+
+function leadershipVoters() {
+  return query("SELECT discord_id, display_name FROM staff WHERE clearance >= 3 AND discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY display_name");
+}
+
+/** Vote tally for one faction-month: { counts: {status: n}, total, confirmed, status }. */
+function tallyVotes(factionId, month) {
+  const rows = query("SELECT status, COUNT(*) AS c FROM leadership_personal_notes WHERE faction_id = ? AND review_month = ? AND status != '' GROUP BY status", [factionId, month]);
+  const counts = {};
+  let confirmed = 0, top = null;
+  for (const r of rows) {
+    counts[r.status] = r.c;
+    if (CONFIRMED.includes(r.status)) {
+      confirmed += r.c;
+      if (!top || r.c > top.c) top = { status: r.status, c: r.c };
+    }
   }
-  const user = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [userId]);
-  if (!user || !user.team_id) return [];
-  return query(`SELECT f.* FROM factions f
-    JOIN staff s ON f.lead_discord_id = s.discord_id
-    WHERE f.archived = 0 AND s.team_id = ?
-    ORDER BY f.name`, [user.team_id]);
+  const status = top && top.c * 2 > confirmed ? top.status : 'Pending Discussion';
+  return { counts, total: rows.reduce((s, r) => s + r.c, 0), confirmed, status };
+}
+
+/**
+ * Recompute faction_reviews.status for a faction-month from the votes. Raises
+ * a leadership task the first time the tally lands on Demote or Remove.
+ * Returns { status, review, changed }.
+ */
+async function deriveReviewStatus(actor, factionId, month) {
+  const { status } = tallyVotes(factionId, month);
+  const review = queryOne("SELECT * FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [factionId, month]);
+  if (!review) return { status, review: null, changed: false };
+  if (review.status === status) return { status, review, changed: false };
+  run("UPDATE faction_reviews SET status = ?, updated_at = ? WHERE id = ?", [status, nowIso(), review.id]);
+  logAudit(actor.id, actor.name, 'EDIT', 'review', review.id, review.faction_name, `Status derived: ${review.status} → ${status}`);
+  if (status === 'Confirmed Demote' || status === 'Confirmed Remove') {
+    const outcome = status.replace('Confirmed ', '');
+    const f = queryOne("SELECT id, name, tier FROM factions WHERE id = ?", [factionId]);
+    const desc = `${f?.name || review.faction_name} — apply the confirmed ${outcome.toLowerCase()} (review ${month})\n\nLeadership confirmed "${status}" for ${month}. ${outcome === 'Demote' ? `Demote the faction from Tier ${f?.tier ?? '?'} on the hub's Review tab.` : 'Archive the faction from the hub\'s Admin tab once the RP has concluded.'}\n${urls.faction(f?.name || review.faction_name, 'review')}`;
+    const dupe = queryOne("SELECT task_uid FROM tasks WHERE status = 'open' AND description LIKE ?", [`${f?.name || review.faction_name} — apply the confirmed ${outcome.toLowerCase()} (review ${month})%`]);
+    const leadership = getRole('fm_leadership');
+    if (!dupe && leadership) {
+      try { await createTask(actor, { desc, targetType: 'Role', targetId: leadership }, { via: 'review tally' }); }
+      catch (e) { console.error('[review] task for confirmed outcome:', e.message); }
+    }
+  }
+  return { status, review: { ...review, status }, changed: true };
 }
 
 // ══════════════════════════════════════════════
-// REVIEWS TAB
+// REVIEWS
 // ══════════════════════════════════════════════
-export async function getReviewData() {
-  const actor = await requireActor(2);
-  // All team leads can view every faction's review; editing stays scoped to
-  // own-team factions (enforced server-side in submitReview / editReview).
-  const factions = query("SELECT * FROM factions WHERE archived = 0 ORDER BY name");
-  const me = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [actor.id]);
-  const myTeamId = me?.team_id || null;
-  const currentMonth = new Date().toISOString().substring(0, 7);
-  const isLeadership = actor.level >= 3 && actor.rank === 'Management';
+
+/** One row per faction with everything the board and the hub need, in a handful of queries. */
+function reviewRows(actor, onlyFactionId = null) {
+  const month = monthKey();
+  const factions = query(`SELECT f.*, s.display_name AS lead_name, s.team_name AS lead_team_name, s.team_id AS lead_team_id
+    FROM factions f LEFT JOIN staff s ON s.discord_id = f.lead_discord_id
+    WHERE f.archived = 0 ${onlyFactionId ? 'AND f.id = ?' : ''} ORDER BY f.name`, onlyFactionId ? [onlyFactionId] : []);
+  if (!factions.length) return [];
+  const ids = factions.map(f => f.id);
+  const ph = ids.map(() => '?').join(',');
+  const scenes = {};
+  query(`SELECT faction_id,
+      SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS s30,
+      SUM(CASE WHEN created_at >= datetime('now','-60 days') AND created_at < datetime('now','-30 days') THEN 1 ELSE 0 END) AS s60,
+      SUM(CASE WHEN created_at >= datetime('now','-90 days') AND created_at < datetime('now','-60 days') THEN 1 ELSE 0 END) AS s90
+    FROM scene_logs WHERE faction_id IN (${ph}) GROUP BY faction_id`, ids).forEach(r => { scenes[r.faction_id] = r; });
+  const intel = {};
+  query(`SELECT faction_id, COUNT(*) AS c FROM intel_notes WHERE faction_id IN (${ph}) AND created_at >= datetime('now','-30 days') GROUP BY faction_id`, ids).forEach(r => { intel[r.faction_id] = r.c; });
+  const hist = {};
+  query(`SELECT faction_id, action_type, details, created_at FROM (
+      SELECT faction_id, action_type, details, created_at, ROW_NUMBER() OVER (PARTITION BY faction_id ORDER BY created_at DESC, id DESC) AS rn
+      FROM faction_history WHERE faction_id IN (${ph})) WHERE rn <= 5 ORDER BY created_at DESC`, ids)
+    .forEach(r => { (hist[r.faction_id] ||= []).push({ action_type: r.action_type, details: r.details, created_at: r.created_at }); });
+  const reviews = {};
+  query(`SELECT * FROM faction_reviews WHERE review_month = ? AND faction_id IN (${ph})`, [month, ...ids]).forEach(r => { reviews[r.faction_id] = r; });
+  const votes = {};
+  query(`SELECT faction_id, status, COUNT(*) AS c FROM leadership_personal_notes WHERE review_month = ? AND faction_id IN (${ph}) GROUP BY faction_id, status`, [month, ...ids])
+    .forEach(r => { (votes[r.faction_id] ||= {})[r.status || ''] = r.c; });
+  const myVotes = actor.level >= 3
+    ? new Set(query(`SELECT faction_id FROM leadership_personal_notes WHERE review_month = ? AND author_id = ? AND faction_id IN (${ph})`, [month, actor.id, ...ids]).map(r => r.faction_id))
+    : null;
+  const voterCount = actor.level >= 2 ? leadershipVoters().length : 0;
+  const writable = writableFactionIds(actor);
+  const canWrite = (id) => !actor.isLeadStoryteller && (writable === null || writable.has(id));
 
   return factions.map(f => {
-    const scenes30 = queryOne("SELECT COUNT(*) as c FROM scene_logs WHERE faction_id = ? AND created_at >= datetime('now', '-30 days')", [f.id])?.c || 0;
-    const scenes60 = queryOne("SELECT COUNT(*) as c FROM scene_logs WHERE faction_id = ? AND created_at >= datetime('now', '-60 days') AND created_at < datetime('now', '-30 days')", [f.id])?.c || 0;
-    const scenes90 = queryOne("SELECT COUNT(*) as c FROM scene_logs WHERE faction_id = ? AND created_at >= datetime('now', '-90 days') AND created_at < datetime('now', '-60 days')", [f.id])?.c || 0;
-    const noteCount = queryOne("SELECT COUNT(*) as c FROM intel_notes WHERE faction_id = ? AND created_at >= datetime('now', '-30 days')", [f.id])?.c || 0;
-    const recentHistory = query("SELECT action_type, details, created_at FROM faction_history WHERE faction_id = ? ORDER BY created_at DESC LIMIT 5", [f.id]);
-    const existingReview = queryOne("SELECT * FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [f.id, currentMonth]);
-    const lead = queryOne("SELECT display_name, team_name, team_id FROM staff WHERE discord_id = ?", [f.lead_discord_id]);
-    const hasMyNote = isLeadership
-      ? !!queryOne("SELECT id FROM leadership_personal_notes WHERE faction_id=? AND author_id=? AND review_month=?", [f.id, actor.id, currentMonth])
-      : null;
-
+    const sc = scenes[f.id] || {};
+    const review = reviews[f.id] || null;
+    const v = votes[f.id] || {};
+    const castVotes = Object.entries(v).filter(([s]) => CONFIRMED.includes(s));
+    const confirmedTotal = castVotes.reduce((s, [, c]) => s + c, 0);
+    const top = castVotes.sort((a, b) => b[1] - a[1])[0];
+    const derived = top && top[1] * 2 > confirmedTotal ? top[0] : 'Pending Discussion';
+    const notesRecorded = Object.values(v).reduce((s, c) => s + c, 0);
     return {
-      id: f.id,
-      name: f.name,
-      tier: f.tier,
-      teamName: lead?.team_name || '',
-      leadName: lead?.display_name || '',
-      mine: !!(myTeamId && lead?.team_id && lead.team_id === myTeamId),
-      scenes30, scenes60, scenes90,
+      id: f.id, name: f.name, tier: f.tier,
+      teamName: f.lead_team_name || '', leadName: f.lead_name || '',
+      teamId: f.lead_team_id || '',
+      mine: canWrite(f.id),
+      scenes30: sc.s30 || 0, scenes60: sc.s60 || 0, scenes90: sc.s90 || 0,
       forumPosts: f.forum_posts_30d || 0,
-      noteCount,
+      noteCount: intel[f.id] || 0,
       lastPromoted: f.last_promoted || 'Never',
-      recentHistory,
-      currentReview: existingReview || null,
-      hasMyNote,
+      recentHistory: hist[f.id] || [],
+      currentReview: review,
+      status: review ? review.status : derived,
+      tally: { counts: v, recorded: notesRecorded, voters: voterCount, derived },
+      hasMyNote: myVotes ? myVotes.has(f.id) : null,
+      feedbackSent: review?.feedback_sent_at ? { sent: true, by: review.feedback_sent_by, at: review.feedback_sent_at } : { sent: false },
+      staged: !!f.pending_promo,
     };
   });
 }
 
-export async function getReviewHistory(factionId) {
-  await requireActor(2);
-  // Review history is viewable by any team lead (editing stays scoped elsewhere).
-  return query("SELECT * FROM faction_reviews WHERE faction_id = ? ORDER BY review_month DESC LIMIT 12", [factionId]);
+export async function getReviewData() {
+  const actor = await requireActor(2, { allowLeadStoryteller: true });
+  return reviewRows(actor);
 }
 
+/** The same row for one faction (the hub's Review tab). */
+export async function getReviewDataFor(factionId) {
+  const actor = await requireActor(2, { allowLeadStoryteller: true });
+  const id = toInt(factionId);
+  if (!id) return null;
+  return reviewRows(actor, id)[0] || null;
+}
+
+export async function getReviewHistory(factionId) {
+  await requireActor(2, { allowLeadStoryteller: true });
+  return query("SELECT * FROM faction_reviews WHERE faction_id = ? ORDER BY review_month DESC LIMIT 12", [toInt(factionId)]);
+}
+
+/** Team lead recommendation for this month (create or update). */
 export async function submitReview(data) {
   const actor = await requireActor(2);
-  // Verify the faction is accessible
-  const accessible = await getAccessibleFactions(actor.id, actor.level);
-  if (!accessible.find(f => f.id === data.factionId)) {
-    return { ok: false, error: "Faction not in your scope" };
-  }
-
-  const currentMonth = new Date().toISOString().substring(0, 7);
-  const existing = queryOne("SELECT id FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [data.factionId, currentMonth]);
-
-  const isNew = !existing;
+  const d = data && typeof data === 'object' ? data : {};
+  const recommendation = oneOf(str(d.recommendation), REVIEW_RECOMMENDATIONS);
+  if (!recommendation) return fail(`Recommendation must be one of ${REVIEW_RECOMMENDATIONS.join(', ')}.`);
+  const feedback = str(d.feedback, { max: 4000 });
+  if (!feedback) return fail('Written feedback is required.');
+  const r = assertFactionWrite(actor, d.factionId);
+  if (r.error) return fail(r.error);
+  const f = r.faction;
+  const month = monthKey();
+  const existing = queryOne("SELECT id FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [f.id, month]);
+  let reviewId;
   if (existing) {
-    run("UPDATE faction_reviews SET recommendation=?, feedback=?, status='Pending Discussion', updated_at=datetime('now') WHERE id=?",
-      [data.recommendation, data.feedback, existing.id]);
-    logAudit(actor.id, actor.name, 'EDIT', 'review', existing.id, data.factionName, data.recommendation);
+    reviewId = existing.id;
+    run("UPDATE faction_reviews SET recommendation = ?, feedback = ?, faction_name = ?, updated_at = ? WHERE id = ?", [recommendation, feedback, f.name, nowIso(), reviewId]);
+    logAudit(actor.id, actor.name, 'EDIT', 'review', reviewId, f.name, recommendation);
   } else {
-    run("INSERT INTO faction_reviews (faction_id, faction_name, review_month, recommendation, feedback, reviewer_id, reviewer_name, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'Pending Discussion')",
-      [data.factionId, data.factionName, currentMonth, data.recommendation, data.feedback, actor.id, actor.name]);
-    logAudit(actor.id, actor.name, 'CREATE', 'review', null, data.factionName, data.recommendation);
+    const { status } = tallyVotes(f.id, month);
+    reviewId = Number(run("INSERT INTO faction_reviews (faction_id, faction_name, review_month, recommendation, feedback, reviewer_id, reviewer_name, submitted_by, submitted_by_id, team_id, team_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [f.id, f.name, month, recommendation, feedback, actor.id, actor.name, actor.name, actor.id, actor.teamId || '', actor.teamName || '', status, nowIso(), nowIso()]).lastInsertRowid);
+    logAudit(actor.id, actor.name, 'CREATE', 'review', reviewId, f.name, recommendation);
+    // First submission only: leadership needs to know a recommendation landed so they can vote.
+    await sendPing('review.submitted',
+      `📋 **Team lead review submitted** — **${f.name}** (${month})\n**Recommendation:** ${recommendation} · by ${actor.name}\nLeadership: add your note and vote before the 15th.\n${urls.faction(f.name, 'review')}`);
   }
-
-  // Only ping on first submission, not every save
-  if (isNew) {
-    const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id = ?", [data.factionId]);
-    if (faction?.lead_discord_id) {
-      await sendPing('review.submitted',
-        `<@${faction.lead_discord_id}> 📋 Feedback has been submitted for **${data.factionName}** for this month. Please incorporate it into your message to the faction on the 15th.\n<https://ecrpfm.com/fm/leadership/reviews>`
-      );
-    }
-  }
-
-  return { ok: true };
+  return ok({ id: reviewId });
 }
 
 export async function editReview(reviewId, data) {
   const actor = await requireActor(2);
-  const review = queryOne("SELECT * FROM faction_reviews WHERE id = ?", [reviewId]);
-  if (!review) return { ok: false, error: 'Review not found.' };
-  if (review.reviewer_id !== actor.id && actor.level < 3) return { ok: false, error: 'Not your review.' };
-  run("UPDATE faction_reviews SET recommendation=?, feedback=?, updated_at=datetime('now') WHERE id=?",
-    [data.recommendation, data.feedback, reviewId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'review', reviewId, review.faction_name, data.recommendation);
-  return { ok: true };
+  const review = queryOne("SELECT * FROM faction_reviews WHERE id = ?", [toInt(reviewId)]);
+  if (!review) return fail('Review not found.');
+  if (review.reviewer_id !== actor.id && actor.level < 3) return fail('Not your review.');
+  const d = data && typeof data === 'object' ? data : {};
+  const recommendation = oneOf(str(d.recommendation), REVIEW_RECOMMENDATIONS);
+  if (!recommendation) return fail(`Recommendation must be one of ${REVIEW_RECOMMENDATIONS.join(', ')}.`);
+  const feedback = str(d.feedback, { max: 4000 });
+  if (!feedback) return fail('Written feedback is required.');
+  if (!canWriteFaction(actor, review.faction_id)) return fail('That faction is outside your team.');
+  run("UPDATE faction_reviews SET recommendation = ?, feedback = ?, updated_at = ? WHERE id = ?", [recommendation, feedback, nowIso(), review.id]);
+  logAudit(actor.id, actor.name, 'EDIT', 'review', review.id, review.faction_name, recommendation);
+  return ok();
 }
 
 export async function deleteReview(reviewId) {
   const actor = await requireActor(2);
-  const review = queryOne("SELECT * FROM faction_reviews WHERE id = ?", [reviewId]);
-  if (!review) return { ok: false, error: 'Review not found.' };
-  if (review.reviewer_id !== actor.id && actor.level < 3) return { ok: false, error: 'Not your review.' };
-  run("DELETE FROM faction_reviews WHERE id = ?", [reviewId]);
-  logAudit(actor.id, actor.name, 'DELETE', 'review', reviewId, review.faction_name, '');
-  return { ok: true };
+  const review = queryOne("SELECT * FROM faction_reviews WHERE id = ?", [toInt(reviewId)]);
+  if (!review) return fail('Review not found.');
+  if (review.reviewer_id !== actor.id && actor.level < 3) return fail('Not your review.');
+  run("DELETE FROM faction_reviews WHERE id = ?", [review.id]);
+  logAudit(actor.id, actor.name, 'DELETE', 'review', review.id, review.faction_name, `${review.review_month} ${review.recommendation}`);
+  return ok();
 }
 
+/**
+ * "Confirm outcome" from the board: an L3 casting (or changing) their vote for
+ * the review's month. The review's status is then derived from the tally, so
+ * the result may still read 'Pending Discussion' until a majority agrees.
+ */
 export async function setReviewStatus(reviewId, status) {
-  const actor = await requireActor(2);
-  const review = queryOne("SELECT faction_name FROM faction_reviews WHERE id = ?", [reviewId]);
-  if (!review) return { ok: false };
-  run("UPDATE faction_reviews SET status=?, updated_at=datetime('now') WHERE id=?", [status, reviewId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'review', reviewId, review.faction_name, 'Status: ' + status);
-  return { ok: true };
+  const actor = await requireActor(3);
+  const st = oneOf(str(status), REVIEW_STATUSES);
+  if (!st) return fail(`Status must be one of ${REVIEW_STATUSES.join(', ')}.`);
+  const review = queryOne("SELECT * FROM faction_reviews WHERE id = ?", [toInt(reviewId)]);
+  if (!review) return fail('Review not found.');
+  const r = resolveFaction(review.faction_id);
+  if (r.error) return fail(r.error);
+  const f = r.faction;
+  const mine = queryOne("SELECT * FROM leadership_personal_notes WHERE faction_id = ? AND author_id = ? AND review_month = ?", [f.id, actor.id, review.review_month]);
+  const noteText = mine?.note || `Outcome vote recorded from the review board (${st}).`;
+  const noteId = upsertVote(actor, f, review.review_month, noteText, st);
+  const { status: derived } = await deriveReviewStatus(actor, f.id, review.review_month);
+  logAudit(actor.id, actor.name, mine ? 'EDIT' : 'CREATE', 'leadership_note', noteId, f.name, `Vote: ${st} (tally → ${derived})`);
+  return ok({ status: derived, vote: st });
 }
 
 // ══════════════════════════════════════════════
-// PERSONAL LEADERSHIP NOTES
+// LEADERSHIP VOTES / PERSONAL NOTES
 // ══════════════════════════════════════════════
-//
-// Written by FM Leadership (L3). READ by Team Leads too: the notes are the
-// leadership's feedback on a faction, and the lead who owns that faction is the
-// one who has to act on it — this month's in the summary, earlier months in
-// the History view. Writing and editing stay L3.
 
+function upsertVote(actor, faction, month, note, status) {
+  run(`INSERT INTO leadership_personal_notes (faction_id, faction_name, author_id, author_name, review_month, note, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(faction_id, author_id, review_month) DO UPDATE SET note = excluded.note, status = excluded.status, author_name = excluded.author_name, faction_name = excluded.faction_name`,
+    [faction.id, faction.name, actor.id, actor.name, month, note, status || '', nowIso()]);
+  return queryOne("SELECT id FROM leadership_personal_notes WHERE faction_id = ? AND author_id = ? AND review_month = ?", [faction.id, actor.id, month])?.id;
+}
+
+/** This month's votes on a faction, who still has to vote, the tally and the derived status. Read by L2+ (and LST). */
 export async function getFactionLeadershipSummary(factionId) {
-  await requireActor(2);
-  const currentMonth = new Date().toISOString().substring(0, 7);
-  const leaders = query("SELECT discord_id, display_name FROM staff WHERE clearance >= 3 AND rank = 'Management' ORDER BY display_name");
-  const notes = query(
-    "SELECT * FROM leadership_personal_notes WHERE faction_id = ? AND review_month = ? ORDER BY created_at ASC",
-    [factionId, currentMonth]
-  );
-  const submittedIds = new Set(notes.map(n => n.author_id));
-  const pending = leaders.filter(l => !submittedIds.has(l.discord_id));
-  return { notes, pending };
+  const actor = await requireActor(2, { allowLeadStoryteller: true });
+  const id = toInt(factionId);
+  const month = monthKey();
+  const leaders = leadershipVoters();
+  const notes = query("SELECT * FROM leadership_personal_notes WHERE faction_id = ? AND review_month = ? ORDER BY created_at ASC", [id, month]);
+  const submitted = new Set(notes.map(n => n.author_id));
+  const pending = leaders.filter(l => !submitted.has(l.discord_id));
+  const tally = tallyVotes(id, month);
+  return { notes, pending, tally, status: tally.status, mine: notes.find(n => n.author_id === actor.id) || null, month };
 }
 
 export async function getMyPersonalNotes(factionId) {
   const actor = await requireActor(3);
-  return query(
-    "SELECT * FROM leadership_personal_notes WHERE faction_id = ? AND author_id = ? ORDER BY created_at DESC",
-    [factionId, actor.id]
-  );
+  return query("SELECT * FROM leadership_personal_notes WHERE faction_id = ? AND author_id = ? ORDER BY review_month DESC, created_at DESC", [toInt(factionId), actor.id]);
 }
 
 export async function getAllLeadershipNotes(factionId) {
-  await requireActor(2);
-  return query(
-    "SELECT * FROM leadership_personal_notes WHERE faction_id = ? ORDER BY created_at DESC",
-    [factionId]
-  );
+  await requireActor(2, { allowLeadStoryteller: true });
+  return query("SELECT * FROM leadership_personal_notes WHERE faction_id = ? ORDER BY review_month DESC, created_at DESC", [toInt(factionId)]);
 }
 
+/** An L3's note + vote for this month (one per faction per author; writing again updates it). */
 export async function submitPersonalNote(factionId, factionName, note, status) {
   const actor = await requireActor(3);
-  if (!note?.trim()) return { ok: false, error: 'Note is empty.' };
-  const currentMonth = new Date().toISOString().substring(0, 7);
-  run(
-    "INSERT INTO leadership_personal_notes (faction_id, faction_name, author_id, author_name, review_month, note, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [factionId, factionName, actor.id, actor.name, currentMonth, note.trim(), status || '']
-  );
-  // Also sync status to the faction_reviews row so it shows on the row header
-  if (status) {
-    const existing = queryOne("SELECT id FROM faction_reviews WHERE faction_id=? AND review_month=?", [factionId, currentMonth]);
-    if (existing) run("UPDATE faction_reviews SET status=?, updated_at=datetime('now') WHERE id=?", [status, existing.id]);
+  const text = str(note, { max: 4000 });
+  if (!text) return fail('Note is empty.');
+  const st = status ? oneOf(str(status), REVIEW_STATUSES) : '';
+  if (status && !st) return fail(`Status must be one of ${REVIEW_STATUSES.join(', ')}.`);
+  const r = resolveFaction(factionId);
+  if (r.error) return fail(r.error);
+  const f = r.faction;
+  const month = monthKey();
+  const before = queryOne("SELECT id, status FROM leadership_personal_notes WHERE faction_id = ? AND author_id = ? AND review_month = ?", [f.id, actor.id, month]);
+  const noteId = upsertVote(actor, f, month, text, st);
+  const { status: derived } = await deriveReviewStatus(actor, f.id, month);
+  logAudit(actor.id, actor.name, before ? 'EDIT' : 'CREATE', 'leadership_note', noteId, f.name, (st ? st + ' — ' : '') + text.substring(0, 80));
+  if (!before || before.status !== st) {
+    await sendPing('review.leadership_note',
+      `${f.lead_discord_id ? `<@${f.lead_discord_id}> ` : ''}📝 **Leadership note ${before ? 'updated' : 'submitted'} for ${f.name}**${st ? ` · vote: ${st}` : ''} · tally: ${derived}\nPlease fold it into the faction's message before the 15th.\n${urls.faction(f.name, 'review')}`);
   }
-  logAudit(actor.id, actor.name, 'CREATE', 'leadership_note', null, factionName, (status ? status + ' — ' : '') + note.substring(0, 80));
-  const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id=?", [factionId]);
-  let msg = `📝 **Leadership feedback has been submitted for ${factionName}.** Please review it before the 15th.\n<https://ecrpfm.com/fm/leadership/reviews>`;
-  if (faction?.lead_discord_id) msg = `<@${faction.lead_discord_id}> ` + msg;
-  await sendPing('review.leadership_note', msg);
-  return { ok: true };
+  return ok({ id: noteId, status: derived, updated: !!before });
 }
 
 export async function editPersonalNote(noteId, note, status) {
   const actor = await requireActor(3);
-  const existing = queryOne("SELECT * FROM leadership_personal_notes WHERE id=? AND author_id=?", [noteId, actor.id]);
-  if (!existing) return { ok: false, error: 'Note not found or not yours.' };
-  run("UPDATE leadership_personal_notes SET note=?, status=? WHERE id=?", [note.trim(), status || '', noteId]);
-  // Sync status to faction_reviews if changed
-  if (status && status !== existing.status) {
-    const rev = queryOne("SELECT id FROM faction_reviews WHERE faction_id=? AND review_month=?", [existing.faction_id, existing.review_month]);
-    if (rev) run("UPDATE faction_reviews SET status=?, updated_at=datetime('now') WHERE id=?", [status, rev.id]);
-    const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id=?", [existing.faction_id]);
-    let msg = `📝 **Leadership feedback has been updated for ${existing.faction_name}.** Please review it before the 15th.\n<https://ecrpfm.com/fm/leadership/reviews>`;
-    if (faction?.lead_discord_id) msg = `<@${faction.lead_discord_id}> ` + msg;
-    await sendPing('review.leadership_note', msg);
+  const text = str(note, { max: 4000 });
+  if (!text) return fail('Note is empty.');
+  const st = status ? oneOf(str(status), REVIEW_STATUSES) : '';
+  if (status && !st) return fail(`Status must be one of ${REVIEW_STATUSES.join(', ')}.`);
+  const existing = queryOne("SELECT * FROM leadership_personal_notes WHERE id = ? AND author_id = ?", [toInt(noteId), actor.id]);
+  if (!existing) return fail('Note not found or not yours.');
+  run("UPDATE leadership_personal_notes SET note = ?, status = ? WHERE id = ?", [text, st, existing.id]);
+  const { status: derived } = await deriveReviewStatus(actor, existing.faction_id, existing.review_month);
+  logAudit(actor.id, actor.name, 'EDIT', 'leadership_note', existing.id, existing.faction_name, (st || '') + ' — ' + text.substring(0, 80));
+  if (st !== existing.status && existing.review_month === monthKey()) {
+    const f = queryOne("SELECT name, lead_discord_id FROM factions WHERE id = ?", [existing.faction_id]);
+    await sendPing('review.leadership_note',
+      `${f?.lead_discord_id ? `<@${f.lead_discord_id}> ` : ''}📝 **Leadership note updated for ${existing.faction_name}**${st ? ` · vote: ${st}` : ''} · tally: ${derived}\n${urls.faction(f?.name || existing.faction_name, 'review')}`);
   }
-  logAudit(actor.id, actor.name, 'EDIT', 'leadership_note', noteId, existing.faction_name, (status || '') + ' — ' + note.substring(0, 80));
-  return { ok: true };
+  return ok({ status: derived });
 }
 
 // ══════════════════════════════════════════════
 // AI FEEDBACK DRAFT + SEND TO FACTION
 // ══════════════════════════════════════════════
 
+async function openai(messages) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return fail('OpenAI API key not configured.');
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: 'gpt-4o-mini', messages, max_tokens: 500, temperature: 0.7 }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return fail(err.error?.message || `OpenAI error ${res.status}`);
+    }
+    const json = await res.json();
+    const draft = json.choices?.[0]?.message?.content?.trim();
+    return draft ? ok({ draft }) : fail('No response from AI.');
+  } catch (e) { return fail(e.message); }
+}
+
 export async function generateFeedbackDraft(factionId) {
   const actor = await requireActor(2);
-
-  const accessible = await getAccessibleFactions(actor.id, actor.level);
-  const faction = accessible.find(f => f.id === factionId);
-  if (!faction) return { ok: false, error: 'Faction not in your scope.' };
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, error: 'OpenAI API key not configured.' };
-
-  const currentMonth = new Date().toISOString().substring(0, 7);
-
-  const review = queryOne(
-    "SELECT recommendation, feedback FROM faction_reviews WHERE faction_id=? AND review_month=?",
-    [factionId, currentMonth]
-  );
-  const notes = query(
-    "SELECT author_name, note FROM leadership_personal_notes WHERE faction_id=? AND review_month=? ORDER BY created_at",
-    [factionId, currentMonth]
-  );
-
-  if (!review?.feedback?.trim() && notes.length === 0) {
-    return { ok: false, error: 'No feedback or leadership notes found for this faction yet. Write your review first.' };
-  }
-
-  const scenes30 = queryOne(
-    "SELECT COUNT(*) as c FROM scene_logs WHERE faction_id=? AND created_at >= datetime('now','-30 days')",
-    [factionId]
-  )?.c || 0;
-  const forumPosts = queryOne("SELECT forum_posts_30d FROM factions WHERE id=?", [factionId])?.forum_posts_30d || 0;
-
+  const r = assertFactionWrite(actor, factionId);
+  if (r.error) return fail(r.error);
+  const faction = r.faction;
+  const month = monthKey();
+  const review = queryOne("SELECT recommendation, feedback FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [faction.id, month]);
+  const notes = query("SELECT author_name, note FROM leadership_personal_notes WHERE faction_id = ? AND review_month = ? ORDER BY created_at", [faction.id, month]);
+  if (!review?.feedback?.trim() && notes.length === 0) return fail('No feedback or leadership notes found for this faction yet. Write your review first.');
+  const scenes30 = queryOne("SELECT COUNT(*) AS c FROM scene_logs WHERE faction_id = ? AND created_at >= datetime('now','-30 days')", [faction.id])?.c || 0;
+  const forumPosts = faction.forum_posts_30d || 0;
   const threadStatus = forumPosts === 0
     ? 'NO posts in the last 30 days — NOT meeting faction thread guidelines (demotion risk)'
-    : forumPosts < 3
-    ? `${forumPosts} post(s) in the last 30 days — faction thread activity is low`
+    : forumPosts < 3 ? `${forumPosts} post(s) in the last 30 days — faction thread activity is low`
     : `${forumPosts} posts in the last 30 days — faction thread is active`;
-
-  const lines = [
-    `Faction: ${faction.name} (Tier ${faction.tier})`,
-    `30-day scenes: ${scenes30}`,
-    `Faction thread activity: ${threadStatus}`,
-  ];
+  const lines = [`Faction: ${faction.name} (Tier ${faction.tier})`, `30-day scenes: ${scenes30}`, `Faction thread activity: ${threadStatus}`];
   if (review) {
     lines.push(`\nTeam Lead Recommendation: ${review.recommendation}`);
     if (review.feedback?.trim()) lines.push(`Team Lead Feedback:\n${review.feedback.trim()}`);
   }
-  if (notes.length > 0) {
-    lines.push('\nFM Leadership Notes:');
-    notes.forEach(n => lines.push(`- ${n.author_name}: ${n.note}`));
-  }
-
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a writer for Faction Management in a GTA RP server. You help craft casual, direct feedback messages to send to faction leads. Write from the perspective of Faction Management as a team — never use "I", always use "we" or "FM". Start the message with "Hello [Faction Name]." on its own line, then continue from there. Write in plain paragraphs only — no markdown, no asterisks, no bullet dashes. Keep it 2–4 paragraphs, under 300 words. Be conversational and straightforward, not corporate or overly formal. Be specific to the feedback provided. Always address faction thread activity — if the faction is not meeting thread guidelines, call it out clearly and explain it is a demotion factor. If they are meeting it, acknowledge it.',
-          },
-          {
-            role: 'user',
-            content: `Draft a message from Faction Management to send to this faction lead. Open with "Hello [Faction Name]." — replace [Faction Name] with the actual faction name. Keep the tone casual and direct. Always include a comment on their faction thread activity based on the data provided. Reference specific feedback points, give actionable suggestions where relevant, and write as if FM is speaking collectively.\n\n${lines.join('\n')}`,
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.7,
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      return { ok: false, error: err.error?.message || `OpenAI error ${res.status}` };
-    }
-    const json = await res.json();
-    const draft = json.choices?.[0]?.message?.content?.trim();
-    if (!draft) return { ok: false, error: 'No response from AI.' };
-    return { ok: true, draft };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+  if (notes.length) { lines.push('\nFM Leadership Notes:'); notes.forEach(n => lines.push(`- ${n.author_name}: ${n.note}`)); }
+  return openai([
+    { role: 'system', content: 'You are a writer for Faction Management in a GTA RP server. You help craft casual, direct feedback messages to send to faction leads. Write from the perspective of Faction Management as a team — never use "I", always use "we" or "FM". Start the message with "Hello [Faction Name]." on its own line, then continue from there. Write in plain paragraphs only — no markdown, no asterisks, no bullet dashes. Keep it 2–4 paragraphs, under 300 words. Be conversational and straightforward, not corporate or overly formal. Be specific to the feedback provided. Always address faction thread activity — if the faction is not meeting thread guidelines, call it out clearly and explain it is a demotion factor. If they are meeting it, acknowledge it.' },
+    { role: 'user', content: `Draft a message from Faction Management to send to this faction lead. Open with "Hello [Faction Name]." — replace [Faction Name] with the actual faction name. Keep the tone casual and direct. Always include a comment on their faction thread activity based on the data provided. Reference specific feedback points, give actionable suggestions where relevant, and write as if FM is speaking collectively.\n\n${lines.join('\n')}` },
+  ]);
 }
 
 export async function adjustFeedbackDraft(factionId, currentMessage, instruction) {
   const actor = await requireActor(2);
-  if (!currentMessage?.trim()) return { ok: false, error: 'No message to adjust.' };
-  if (!instruction?.trim()) return { ok: false, error: 'Please provide an adjustment instruction.' };
-
-  const accessible = await getAccessibleFactions(actor.id, actor.level);
-  if (!accessible.find(f => f.id === factionId)) return { ok: false, error: 'Faction not in your scope.' };
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, error: 'OpenAI API key not configured.' };
-
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a writer for Faction Management in a GTA RP server. You adjust existing feedback messages based on instructions. Write from FM\'s perspective — never use "I", always use "we" or "FM". Keep the opening greeting intact. Write in plain paragraphs only — no markdown, no asterisks, no bullet dashes. Preserve the tone and structure unless the instruction says otherwise.',
-          },
-          {
-            role: 'user',
-            content: `Adjust the following feedback message based on this instruction: "${instruction.trim()}"\n\nCurrent message:\n${currentMessage.trim()}`,
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.7,
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      return { ok: false, error: err.error?.message || `OpenAI error ${res.status}` };
-    }
-    const json = await res.json();
-    const draft = json.choices?.[0]?.message?.content?.trim();
-    if (!draft) return { ok: false, error: 'No response from AI.' };
-    return { ok: true, draft };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+  const message = str(currentMessage, { max: 6000 });
+  const instr = str(instruction, { max: 500 });
+  if (!message) return fail('No message to adjust.');
+  if (!instr) return fail('Please provide an adjustment instruction.');
+  const r = assertFactionWrite(actor, factionId);
+  if (r.error) return fail(r.error);
+  return openai([
+    { role: 'system', content: 'You are a writer for Faction Management in a GTA RP server. You adjust existing feedback messages based on instructions. Write from FM\'s perspective — never use "I", always use "we" or "FM". Keep the opening greeting intact. Write in plain paragraphs only — no markdown, no asterisks, no bullet dashes. Preserve the tone and structure unless the instruction says otherwise.' },
+    { role: 'user', content: `Adjust the following feedback message based on this instruction: "${instr}"\n\nCurrent message:\n${message}` },
+  ]);
 }
 
+function markSent(actor, review, how) {
+  run("UPDATE faction_reviews SET feedback_sent_at = ?, feedback_sent_by = ?, updated_at = ? WHERE id = ?", [nowIso(), actor.name, nowIso(), review.id]);
+  logAudit(actor.id, actor.name, 'CREATE', 'feedback_sent', review.id, review.faction_name, how);
+}
+
+/** Deliver this month's feedback to the faction's command channel and record it on the review. */
 export async function sendFeedbackToFaction(factionId, message) {
   const actor = await requireActor(2);
-  if (!message?.trim()) return { ok: false, error: 'Message is empty.' };
-
-  const accessible = await getAccessibleFactions(actor.id, actor.level);
-  if (!accessible.find(f => f.id === factionId)) {
-    return { ok: false, error: 'Faction not in your scope.' };
-  }
-
-  const faction = queryOne("SELECT name FROM factions WHERE id=?", [factionId]);
-  if (!faction) return { ok: false, error: 'Faction not found.' };
-
-  const config = queryOne(
-    "SELECT comms_channel_id FROM bot_server_configs WHERE faction_id=?",
-    [factionId]
-  );
-  if (!config?.comms_channel_id) {
-    return { ok: false, error: `${faction.name} has no comms channel configured.` };
-  }
-
-  const botToken = process.env.DISCORD_BOT_TOKEN;
-  if (!botToken) return { ok: false, error: 'Bot token not configured.' };
-
-  const monthName = new Date().toLocaleString('en-US', { month: 'long' });
+  const text = str(message, { max: 4000 });
+  if (!text) return fail('Message is empty.');
+  const r = assertFactionWrite(actor, factionId);
+  if (r.error) return fail(r.error);
+  const faction = r.faction;
+  const month = monthKey();
+  const review = queryOne("SELECT * FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [faction.id, month]);
+  if (!review) return fail("Submit this month's team lead review before sending feedback.");
+  const config = queryOne("SELECT comms_channel_id FROM bot_server_configs WHERE faction_id = ?", [faction.id]);
+  if (!config?.comms_channel_id) return fail(`${faction.name} has no comms channel configured.`);
+  if (!process.env.DISCORD_BOT_TOKEN) return fail('Bot token not configured.');
   const embed = {
-    title: `Monthly Feedback - ${monthName}`,
-    description: message.trim(),
-    color: 0xa07ef5,
-    footer: { text: `Sent by ${actor.name}` },
-    timestamp: new Date().toISOString(),
+    title: `Monthly Feedback - ${new Date().toLocaleString('en-US', { month: 'long' })}`,
+    description: text, color: 0xa07ef5, footer: { text: `Sent by ${actor.name}` }, timestamp: nowIso(),
   };
-
-  const res = await fetch(
-    `https://discord.com/api/v10/channels/${config.comms_channel_id}/messages`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ embeds: [embed] }),
-    }
-  );
-
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({}));
-    const detail = errBody.message || `HTTP ${res.status}`;
-    return { ok: false, error: `Discord delivery failed: ${detail}` };
-  }
-
-  run(
-    "INSERT INTO faction_public_messages (faction_id, faction_name, author_name, author_id, message, is_pinned) VALUES (?, ?, ?, ?, ?, 0)",
-    [factionId, faction.name, actor.name, actor.id, message.trim()]
-  );
-
-  // Notify FM Leadership that feedback has been delivered
-  await sendPing('review.feedback_sent',
-    `📨 **${actor.name}** has sent the monthly feedback message to **${faction.name}** via Faction Management comms.`
-  );
-
-  logAudit(actor.id, actor.name, 'CREATE', 'feedback_sent', null, faction.name, message.trim().substring(0, 100));
-  return { ok: true };
+  const delivered = await sendDiscord(config.comms_channel_id, '', [embed]);
+  if (!delivered) return fail('Discord delivery failed — check the bot can post in the faction comms channel.');
+  transaction(() => {
+    run("INSERT INTO faction_public_messages (faction_id, faction_name, author_name, author_id, message, is_pinned, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)",
+      [faction.id, faction.name, actor.name, actor.id, text, nowIso()]);
+    markSent(actor, review, `Sent via comms: ${text.substring(0, 100)}`);
+  });
+  await sendPing('review.feedback_sent', `📨 **${actor.name}** sent the ${month} feedback message to **${faction.name}** via Faction Management comms.\n${urls.faction(faction.name, 'review')}`);
+  return ok({ sentAt: nowIso(), by: actor.name });
 }
 
+/** Feedback was delivered outside the dashboard. Idempotent. */
 export async function markFeedbackSent(factionId) {
   const actor = await requireActor(2);
-  const accessible = await getAccessibleFactions(actor.id, actor.level);
-  if (!accessible.find(f => f.id === factionId)) return { ok: false, error: 'Faction not in your scope.' };
-  const faction = queryOne("SELECT name FROM factions WHERE id=?", [factionId]);
-  if (!faction) return { ok: false, error: 'Faction not found.' };
-  await sendPing('review.feedback_sent', `📨 **${actor.name}** has marked feedback as sent to **${faction.name}** (delivered manually outside the dashboard).`);
-  logAudit(actor.id, actor.name, 'CREATE', 'feedback_sent', null, faction.name, 'Marked as sent manually');
-  return { ok: true };
+  const r = assertFactionWrite(actor, factionId);
+  if (r.error) return fail(r.error);
+  const faction = r.faction;
+  const month = monthKey();
+  const review = queryOne("SELECT * FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [faction.id, month]);
+  if (!review) return fail("Submit this month's team lead review before marking feedback as sent.");
+  if (review.feedback_sent_at) return ok({ already: true, sentAt: review.feedback_sent_at, by: review.feedback_sent_by });
+  markSent(actor, review, 'Marked as sent manually');
+  await sendPing('review.feedback_sent', `📨 **${actor.name}** marked the ${month} feedback as sent to **${faction.name}** (delivered outside the dashboard).\n${urls.faction(faction.name, 'review')}`);
+  return ok({ sentAt: nowIso(), by: actor.name });
+}
+
+/** { sent, by, at } for this month, read from faction_reviews. */
+export async function getFeedbackStatus(factionId) {
+  await requireActor(2, { allowLeadStoryteller: true });
+  const review = queryOne("SELECT feedback_sent_at, feedback_sent_by FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [toInt(factionId), monthKey()]);
+  return review?.feedback_sent_at ? { sent: true, by: review.feedback_sent_by, at: review.feedback_sent_at } : { sent: false };
 }
 
 // ══════════════════════════════════════════════
-// QUEUE TAB
+// QUEUE (approvals)
 // ══════════════════════════════════════════════
+
 export async function getPendingQueue() {
-  const actor = await requireActor(2, {allowLeadStoryteller: true});
-  const factions = await getAccessibleFactions(actor.id, actor.level, actor.isLeadStoryteller);
-  const factionIds = factions.map(f => f.id);
-  if (factionIds.length === 0) return { rpChanges: [], deletions: [], promos: [] };
-
-  const placeholders = factionIds.map(() => '?').join(',');
-
-  const rpChanges = query(`SELECT e.*, f.name as faction_name FROM pending_executions e
-    JOIN factions f ON e.faction_id = f.id
-    WHERE e.faction_id IN (${placeholders}) AND e.status IN ('PENDING','APPROVED','RP_DONE')
-    ORDER BY e.created_at DESC`, factionIds);
-
-  const deletions = query(`SELECT d.* FROM deletion_requests d
-    WHERE d.status = 'PENDING'
-    ORDER BY d.created_at DESC LIMIT 50`);
-
-  const promos = factions.filter(f => f.pending_promo).map(f => ({
-    faction_id: f.id,
-    faction_name: f.name,
-    target_tier: f.pending_promo,
-    current_tier: f.tier,
-  }));
-
+  const actor = await requireActor(2, { allowLeadStoryteller: true });
+  const factions = scopedFactions(actor);
+  const ids = factions.map(f => f.id);
+  if (!ids.length) return { rpChanges: [], deletions: [], promos: [] };
+  const ph = ids.map(() => '?').join(',');
+  const rpChanges = query(`SELECT e.*, f.name AS faction_name FROM pending_executions e JOIN factions f ON e.faction_id = f.id
+    WHERE e.faction_id IN (${ph}) AND e.status IN ('PENDING','APPROVED','RP_DONE') ORDER BY e.created_at DESC`, ids);
+  const deletions = actor.level >= 3 || actor.isLeadStoryteller
+    ? query("SELECT * FROM deletion_requests WHERE status = 'PENDING' ORDER BY created_at DESC LIMIT 50")
+    : query("SELECT * FROM deletion_requests WHERE status = 'PENDING' AND discord_id = ? ORDER BY created_at DESC LIMIT 50", [actor.id]);
+  const authByFaction = {};
+  query(`SELECT fi.faction_id, i.name FROM faction_imports fi JOIN import_items i ON i.id = fi.item_id WHERE fi.permitted = 1 AND fi.faction_id IN (${ph})`, ids)
+    .forEach(r => { (authByFaction[r.faction_id] ||= []).push(r.name); });
+  const promos = [];
+  for (const f of factions) {
+    if (!f.pending_promo) continue;
+    let p = null;
+    try { p = JSON.parse(f.pending_promo); } catch { p = f.pending_promo; }
+    const tier = toInt(p && typeof p === 'object' ? p.tier : p, { min: 0, max: 9 });
+    const imports = p && typeof p === 'object' && Array.isArray(p.imports) ? p.imports : (authByFaction[f.id] || []);
+    promos.push({
+      faction_id: f.id, faction_name: f.name, current_tier: f.tier,
+      tier, imports,
+      newImports: imports.filter(n => !(authByFaction[f.id] || []).includes(n)),
+      target_tier: JSON.stringify({ tier, imports }),
+    });
+  }
   return { rpChanges, deletions, promos };
 }
 
 // ══════════════════════════════════════════════
-// PERFORMANCE TAB
+// PERFORMANCE
 // ══════════════════════════════════════════════
+
 export async function getTeamPerformance() {
   const actor = await requireActor(2);
-  let teamIds;
+  let teams;
   if (actor.level >= 3) {
-    teamIds = query("SELECT DISTINCT team_id, team_name FROM staff WHERE team_id != '' AND team_name != 'Game Affairs Management' ORDER BY team_name");
+    teams = query("SELECT team_id, team_name FROM teams WHERE team_name != 'Game Affairs Management' ORDER BY team_name");
   } else {
-    const user = queryOne("SELECT team_id, team_name FROM staff WHERE discord_id = ?", [actor.id]);
-    if (!user || !user.team_id) return [];
-    teamIds = [{ team_id: user.team_id, team_name: user.team_name }];
+    if (!actor.teamId) return [];
+    const t = queryOne("SELECT team_id, team_name FROM teams WHERE team_id = ?", [actor.teamId]);
+    teams = t ? [t] : [{ team_id: actor.teamId, team_name: actor.teamName || '' }];
   }
-
-  return teamIds.map(t => {
-    const staff = query("SELECT * FROM staff WHERE team_id = ?", [t.team_id]);
-    const factions = query("SELECT f.* FROM factions f JOIN staff s ON f.lead_discord_id = s.discord_id WHERE s.team_id = ? AND f.archived = 0", [t.team_id]);
-    const factionIds = factions.map(f => f.id);
-
-    let totalScenes30 = 0, totalScenes = 0, totalForum = 0;
-    if (factionIds.length > 0) {
-      const placeholders = factionIds.map(() => '?').join(',');
-      totalScenes30 = queryOne(`SELECT COUNT(*) as c FROM scene_logs WHERE faction_id IN (${placeholders}) AND created_at >= datetime('now','-30 days')`, factionIds)?.c || 0;
-      totalScenes = queryOne(`SELECT COUNT(*) as c FROM scene_logs WHERE faction_id IN (${placeholders})`, factionIds)?.c || 0;
-      totalForum = factions.reduce((sum, f) => sum + (f.forum_posts_30d || 0), 0);
-    }
-
-    const staffIds = staff.map(s => s.discord_id);
-    let openTasks = 0, completedTasks = 0;
-    if (staffIds.length > 0) {
-      const sph = staffIds.map(() => '?').join(',');
-      openTasks = queryOne(`SELECT COUNT(*) as c FROM tasks WHERE target_id IN (${sph}) OR claimed_by IN (${sph})`, [...staffIds, ...staffIds])?.c || 0;
-      completedTasks = queryOne(`SELECT COUNT(*) as c FROM task_log WHERE action = 'COMPLETED' AND actor IN (SELECT display_name FROM staff WHERE discord_id IN (${sph})) AND created_at >= datetime('now','-30 days')`, staffIds)?.c || 0;
-    }
-
-    const lead = staff.find(s => (s.rank || '').toLowerCase().includes('lead'));
-    const guideCount = staff.filter(s => !(s.rank || '').toLowerCase().includes('lead')).length;
-
+  if (!teams.length) return [];
+  const tph = teams.map(() => '?').join(',');
+  const tids = teams.map(t => t.team_id);
+  const staff = query(`SELECT discord_id, display_name, team_id, clearance FROM staff WHERE team_id IN (${tph}) AND discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1`, tids);
+  const factions = query(`SELECT f.id, f.forum_posts_30d, s.team_id FROM factions f JOIN staff s ON s.discord_id = f.lead_discord_id WHERE f.archived = 0 AND s.team_id IN (${tph})`, tids);
+  const fids = factions.map(f => f.id);
+  const sceneByFaction = {};
+  if (fids.length) {
+    query(`SELECT faction_id, COUNT(*) AS allc, SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS c30 FROM scene_logs WHERE faction_id IN (${fids.map(() => '?').join(',')}) GROUP BY faction_id`, fids)
+      .forEach(r => { sceneByFaction[r.faction_id] = r; });
+  }
+  const sids = staff.map(s => s.discord_id);
+  const openByStaff = {}, doneByStaff = {};
+  if (sids.length) {
+    const sph = sids.map(() => '?').join(',');
+    query(`SELECT who, COUNT(*) AS c FROM (
+        SELECT target_id AS who FROM tasks WHERE status = 'open' AND target_type = 'User' AND target_id IN (${sph})
+        UNION ALL
+        SELECT claimed_by AS who FROM tasks WHERE status = 'open' AND claimed_by IN (${sph}) AND NOT (target_type = 'User' AND target_id = claimed_by)
+      ) GROUP BY who`, [...sids, ...sids]).forEach(r => { openByStaff[r.who] = r.c; });
+    query(`SELECT completed_by_id AS who, COUNT(*) AS c FROM tasks WHERE status = 'completed' AND completed_by_id IN (${sph}) AND completed_at >= datetime('now','-30 days') GROUP BY completed_by_id`, sids)
+      .forEach(r => { doneByStaff[r.who] = r.c; });
+  }
+  return teams.map(t => {
+    const members = staff.filter(s => s.team_id === t.team_id);
+    const facs = factions.filter(f => f.team_id === t.team_id);
+    const scenes30 = facs.reduce((s, f) => s + (sceneByFaction[f.id]?.c30 || 0), 0);
+    const scenesAll = facs.reduce((s, f) => s + (sceneByFaction[f.id]?.allc || 0), 0);
+    const lead = members.find(s => Number(s.clearance) === 2);
     return {
-      teamId: t.team_id,
-      teamName: t.team_name,
+      teamId: t.team_id, teamName: t.team_name,
       leadName: lead?.display_name || 'Vacant',
-      guideCount,
-      factionCount: factions.length,
-      scenes30: totalScenes30,
-      scenesAll: totalScenes,
-      forumPosts30: totalForum,
-      openTasks,
-      completedTasks,
-      scenesPerFaction: factions.length > 0 ? (totalScenes30 / factions.length).toFixed(1) : '0',
+      guideCount: members.filter(s => Number(s.clearance) === 1).length,
+      factionCount: facs.length,
+      scenes30, scenesAll,
+      forumPosts30: facs.reduce((s, f) => s + (f.forum_posts_30d || 0), 0),
+      openTasks: members.reduce((s, m) => s + (openByStaff[m.discord_id] || 0), 0),
+      completedTasks: members.reduce((s, m) => s + (doneByStaff[m.discord_id] || 0), 0),
+      scenesPerFaction: facs.length ? (scenes30 / facs.length).toFixed(1) : '0',
     };
   });
 }
 
-// ══════════════════════════════════════════════
-// GUIDE ACTIVITY TAB
-// ══════════════════════════════════════════════
 export async function getGuideActivity() {
   const actor = await requireActor(2);
   let staffList;
   if (actor.level >= 3) {
-    staffList = query("SELECT * FROM staff WHERE discord_id != '' AND team_name != 'Game Affairs Management' ORDER BY team_name, rank, display_name");
+    staffList = query("SELECT * FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 AND team_name != 'Game Affairs Management' ORDER BY team_name, clearance DESC, display_name");
   } else {
-    const user = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [actor.id]);
-    if (!user || !user.team_id) return [];
-    staffList = query("SELECT * FROM staff WHERE team_id = ? AND discord_id != '' ORDER BY rank, display_name", [user.team_id]);
+    if (!actor.teamId) return [];
+    staffList = query("SELECT * FROM staff WHERE team_id = ? AND discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY clearance DESC, display_name", [actor.teamId]);
   }
-
-  return staffList.map(s => {
-    const scenes30 = queryOne(`
-      SELECT COUNT(*) as c FROM (
-        SELECT id FROM scene_logs WHERE author_id = ? AND created_at >= datetime('now','-30 days')
-        UNION
-        SELECT sl.id FROM scene_assistants sa JOIN scene_logs sl ON sa.scene_id = sl.id
-        WHERE sa.staff_id = ? AND sl.created_at >= datetime('now','-30 days')
-      )`, [s.discord_id, s.discord_id])?.c || 0;
-    const scenes60 = queryOne(`
-      SELECT COUNT(*) as c FROM (
-        SELECT id FROM scene_logs WHERE author_id = ? AND created_at >= datetime('now','-60 days') AND created_at < datetime('now','-30 days')
-        UNION
-        SELECT sl.id FROM scene_assistants sa JOIN scene_logs sl ON sa.scene_id = sl.id
-        WHERE sa.staff_id = ? AND sl.created_at >= datetime('now','-60 days') AND sl.created_at < datetime('now','-30 days')
-      )`, [s.discord_id, s.discord_id])?.c || 0;
-    const scenesAll = queryOne(`
-      SELECT COUNT(*) as c FROM (
-        SELECT id FROM scene_logs WHERE author_id = ?
-        UNION
-        SELECT sl.id FROM scene_assistants sa JOIN scene_logs sl ON sa.scene_id = sl.id WHERE sa.staff_id = ?
-      )`, [s.discord_id, s.discord_id])?.c || 0;
-    const notes30 = queryOne("SELECT COUNT(*) as c FROM intel_notes WHERE author = ? AND created_at >= datetime('now','-30 days')", [s.display_name])?.c || 0;
-    const tasksCompleted = queryOne("SELECT COUNT(*) as c FROM task_log WHERE actor = ? AND action = 'COMPLETED' AND created_at >= datetime('now','-30 days')", [s.display_name])?.c || 0;
-
-    return {
-      id: s.discord_id,
-      name: s.display_name,
-      team: s.team_name || '',
-      rank: s.rank || '',
-      scenes30, scenes60, scenesAll,
-      notes30,
-      tasksCompleted,
-    };
-  });
+  if (!staffList.length) return [];
+  const ids = staffList.map(s => s.discord_id);
+  const ph = ids.map(() => '?').join(',');
+  const scenes = {};
+  query(`SELECT who,
+      SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS s30,
+      SUM(CASE WHEN created_at >= datetime('now','-60 days') AND created_at < datetime('now','-30 days') THEN 1 ELSE 0 END) AS s60,
+      COUNT(*) AS sall
+    FROM (
+      SELECT author_id AS who, id, created_at FROM scene_logs WHERE author_id IN (${ph})
+      UNION
+      SELECT sa.staff_id AS who, sl.id, sl.created_at FROM scene_assistants sa JOIN scene_logs sl ON sl.id = sa.scene_id WHERE sa.staff_id IN (${ph})
+    ) GROUP BY who`, [...ids, ...ids]).forEach(r => { scenes[r.who] = r; });
+  const notes = {};
+  query(`SELECT author_id AS who, COUNT(*) AS c FROM intel_notes WHERE author_id IN (${ph}) AND created_at >= datetime('now','-30 days') GROUP BY author_id`, ids).forEach(r => { notes[r.who] = r.c; });
+  const tasks = {};
+  query(`SELECT completed_by_id AS who, COUNT(*) AS c FROM tasks WHERE status = 'completed' AND completed_by_id IN (${ph}) AND completed_at >= datetime('now','-30 days') GROUP BY completed_by_id`, ids).forEach(r => { tasks[r.who] = r.c; });
+  return staffList.map(s => ({
+    id: s.discord_id, name: s.display_name, team: s.team_name || '', rank: s.rank || '',
+    scenes30: scenes[s.discord_id]?.s30 || 0, scenes60: scenes[s.discord_id]?.s60 || 0, scenesAll: scenes[s.discord_id]?.sall || 0,
+    notes30: notes[s.discord_id] || 0,
+    tasksCompleted: tasks[s.discord_id] || 0,
+  }));
 }
 
 // ══════════════════════════════════════════════
-// MEETING NOTES TAB
+// MEETING NOTES
 // ══════════════════════════════════════════════
 // A meeting note targets a faction (default), an FM team, or a staff group.
 //   target_type 'faction' -> faction_id holds the faction; target_key ''
@@ -559,181 +573,142 @@ export async function getGuideActivity() {
 //   target_type 'group'   -> target_key = one of NOTE_GROUPS below
 // Staff groups are L3-only. `clause` is a constant SQL fragment (never user input).
 const NOTE_GROUPS = {
-  team_leads: { label: 'Team Leads',   clause: 'clearance = 2'        },
-  management: { label: 'FM Management', clause: "rank = 'Management'"  },
-  all_staff:  { label: 'All FM Staff',  clause: 'clearance >= 1'       },
+  team_leads: { label: 'Team Leads',    clause: 'clearance = 2'  },
+  management: { label: 'FM Management', clause: 'clearance >= 3' },
+  all_staff:  { label: 'All FM Staff',  clause: 'clearance >= 1' },
 };
+const NOTE_COLS = `n.id, n.faction_id, n.date, n.author, n.author_id, n.text AS content, n.created_at, n.meeting_type,
+  n.target_type, n.target_key, n.target_label, n.attendees_json, f.name AS faction_name`;
 
-// Can `actor` create/edit/delete a note for this target? Mirrors the read scope.
-async function assertTargetInScope(actor, { targetType, factionId, targetKey }) {
+function noteInScope(actor, { targetType, factionId, targetKey }) {
   if (targetType === 'team') {
-    if (!targetKey) return false;
-    if (!queryOne("SELECT team_id FROM teams WHERE team_id = ?", [targetKey])) return false;
-    if (actor.level >= 3) return true;
-    const me = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [actor.id]);
-    return !!me && me.team_id === targetKey;            // L2: own team only
+    if (!targetKey || !queryOne("SELECT team_id FROM teams WHERE team_id = ?", [targetKey])) return false;
+    return actor.level >= 3 || actor.teamId === targetKey;
   }
-  if (targetType === 'group') {
-    return actor.level >= 3 && !!NOTE_GROUPS[targetKey]; // groups are L3-only
-  }
-  // faction
-  const id = parseInt(factionId);
+  if (targetType === 'group') return actor.level >= 3 && !!NOTE_GROUPS[targetKey];
+  const id = toInt(factionId);
   if (!id) return false;
-  const accessible = await getAccessibleFactions(actor.id, actor.level);
-  return !!accessible.find(f => f.id === id);
+  const f = queryOne("SELECT id, archived FROM factions WHERE id = ?", [id]);
+  if (!f || f.archived) return false;
+  return canWriteFaction(actor, id);
+}
+
+function shapeNote(n) {
+  let attendeeIds = [];
+  try { attendeeIds = JSON.parse(n.attendees_json || '[]'); } catch {}
+  return {
+    ...n, content: sanitizeHtml(n.content), attendeeIds,
+    display_name: n.target_type === 'faction' ? (n.faction_name || 'Unknown faction') : (n.target_label || 'Meeting'),
+  };
 }
 
 export async function getMeetingNotes() {
-  const actor = await requireActor(1);
-  const cols = `n.id, n.faction_id, n.date, n.author, n.author_id, n.text as content,
-                n.created_at, n.meeting_type, n.target_type, n.target_key, n.target_label,
-                n.attendees_json, f.name as faction_name`;
+  const actor = await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
   let rows;
   if (actor.level >= 3) {
-    rows = query(`SELECT ${cols} FROM ooc_notes n
-      LEFT JOIN factions f ON n.faction_id = f.id
-      WHERE n.target_type != 'faction' OR f.archived = 0
-      ORDER BY n.created_at DESC LIMIT 100`);
+    rows = query(`SELECT ${NOTE_COLS} FROM ooc_notes n LEFT JOIN factions f ON n.faction_id = f.id
+      WHERE n.target_type != 'faction' OR f.archived = 0 ORDER BY n.created_at DESC LIMIT 100`);
   } else {
-    const user = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [actor.id]);
-    if (!user || !user.team_id) return [];
-    rows = query(`SELECT ${cols} FROM ooc_notes n
-      LEFT JOIN factions f ON n.faction_id = f.id
-      LEFT JOIN staff s ON f.lead_discord_id = s.discord_id
-      WHERE (n.target_type = 'faction' AND f.archived = 0 AND s.team_id = ?)
-         OR (n.target_type = 'team' AND n.target_key = ?)
-      ORDER BY n.created_at DESC LIMIT 100`, [user.team_id, user.team_id]);
+    const ids = writableFactionIds(actor);
+    const fids = ids ? [...ids] : [];
+    const parts = [];
+    const params = [];
+    if (fids.length) { parts.push(`(n.target_type = 'faction' AND f.archived = 0 AND n.faction_id IN (${fids.map(() => '?').join(',')}))`); params.push(...fids); }
+    if (actor.teamId) { parts.push("(n.target_type = 'team' AND n.target_key = ?)"); params.push(actor.teamId); }
+    if (!parts.length) return [];
+    rows = query(`SELECT ${NOTE_COLS} FROM ooc_notes n LEFT JOIN factions f ON n.faction_id = f.id WHERE ${parts.join(' OR ')} ORDER BY n.created_at DESC LIMIT 100`, params);
   }
-  return rows.map(n => {
-    let attendeeIds = [];
-    try { attendeeIds = JSON.parse(n.attendees_json || '[]'); } catch {}
-    return {
-      ...n,
-      attendeeIds,
-      display_name: n.target_type === 'faction'
-        ? (n.faction_name || 'Unknown faction')
-        : (n.target_label || 'Meeting'),
-    };
-  });
+  return rows.map(shapeNote);
+}
+
+/** One note by id (the full-page editor), scope-checked. null when out of scope. */
+export async function getMeetingNote(id) {
+  const actor = await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
+  const n = queryOne(`SELECT ${NOTE_COLS} FROM ooc_notes n LEFT JOIN factions f ON n.faction_id = f.id WHERE n.id = ?`, [toInt(id)]);
+  if (!n) return null;
+  if (actor.level < 3) {
+    if (n.target_type === 'team' && n.target_key !== actor.teamId) return null;
+    if (n.target_type === 'group') return null;
+    if (n.target_type === 'faction' && !canWriteFaction(actor, n.faction_id)) return null;
+  }
+  return shapeNote(n);
 }
 
 export async function saveMeetingNote(data) {
   const actor = await requireActor(1);
-  const targetType = data.targetType || 'faction';
-  const targetKey  = data.targetKey != null ? String(data.targetKey) : '';
-  const factionId  = targetType === 'faction' ? (parseInt(targetKey) || null) : null;
-  const storedKey  = targetType === 'faction' ? '' : targetKey;
+  const d = data && typeof data === 'object' ? data : {};
+  const targetType = oneOf(str(d.targetType) || 'faction', ['faction', 'team', 'group']);
+  if (!targetType) return fail('Target must be a faction, team or group.');
+  const targetKey = str(d.targetKey);
+  const factionId = targetType === 'faction' ? toInt(targetKey) : null;
+  const storedKey = targetType === 'faction' ? '' : targetKey;
+  if (targetType === 'faction' && !factionId) return fail('Faction is required.');
+  if (targetType !== 'faction' && !targetKey) return fail('A target is required.');
+  const content = sanitizeHtml(d.content);
+  if (!htmlToText(content)) return fail('The note is empty.');
+  if (!noteInScope(actor, { targetType, factionId, targetKey })) return fail('Target not in your scope.');
+  const attendees = (Array.isArray(d.attendeeIds) ? d.attendeeIds : []).map(String).filter(isSnowflake);
 
-  if (targetType === 'faction' && !factionId) return { ok: false, error: 'Faction is required' };
-  if (targetType !== 'faction' && !targetKey) return { ok: false, error: 'A target is required' };
-
-  if (!(await assertTargetInScope(actor, { targetType, factionId, targetKey }))) {
-    return { ok: false, error: 'Target not in your scope' };
-  }
-
-  // Denormalized label for team/group notes (faction notes resolve their name via join)
   let targetLabel = '';
-  if (targetType === 'team') {
-    targetLabel = queryOne("SELECT team_name FROM teams WHERE team_id = ?", [targetKey])?.team_name || '';
-  } else if (targetType === 'group') {
-    targetLabel = NOTE_GROUPS[targetKey]?.label || '';
-  }
+  if (targetType === 'team') targetLabel = queryOne("SELECT team_name FROM teams WHERE team_id = ?", [targetKey])?.team_name || '';
+  else if (targetType === 'group') targetLabel = NOTE_GROUPS[targetKey]?.label || '';
+  else targetLabel = queryOne("SELECT name FROM factions WHERE id = ?", [factionId])?.name || '';
 
-  const attendees = JSON.stringify(Array.isArray(data.attendeeIds) ? data.attendeeIds : []);
-  const today = new Date().toISOString().substring(0, 10);
-
-  if (data.id) {
-    const note = queryOne("SELECT faction_id, author_id, target_type, target_key FROM ooc_notes WHERE id = ?", [data.id]);
-    if (!note) return { ok: false, error: 'Note not found' };
-    // The note's existing target must also be in scope
-    if (!(await assertTargetInScope(actor, { targetType: note.target_type, factionId: note.faction_id, targetKey: note.target_key }))) {
-      return { ok: false, error: 'Note not in your scope' };
-    }
-    if (note.author_id !== actor.id && actor.level < 3) {
-      return { ok: false, error: 'Only the author or L3 can edit' };
-    }
-    run("UPDATE ooc_notes SET faction_id=?, target_type=?, target_key=?, target_label=?, text=?, attendees_json=? WHERE id=?",
-      [factionId, targetType, storedKey, targetLabel, data.content, attendees, data.id]);
-    logAudit(actor.id, actor.name, 'EDIT', 'meeting_note', data.id, '', '');
-  } else {
-    run("INSERT INTO ooc_notes (faction_id, date, author, author_id, text, meeting_type, attendees_json, target_type, target_key, target_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [factionId, today, actor.name, actor.id, data.content,
-       targetType === 'faction' ? 'faction_meeting' : `${targetType}_meeting`,
-       attendees, targetType, storedKey, targetLabel]);
-    logAudit(actor.id, actor.name, 'CREATE', 'meeting_note', null, '', '');
+  const id = toInt(d.id);
+  if (id) {
+    const note = queryOne("SELECT id, faction_id, author_id, target_type, target_key FROM ooc_notes WHERE id = ?", [id]);
+    if (!note) return fail('Note not found.');
+    if (!noteInScope(actor, { targetType: note.target_type, factionId: note.faction_id, targetKey: note.target_key }) && actor.level < 3) return fail('Note not in your scope.');
+    if (note.author_id !== actor.id && actor.level < 3) return fail('Only the author or leadership can edit this note.');
+    run("UPDATE ooc_notes SET faction_id = ?, target_type = ?, target_key = ?, target_label = ?, text = ?, attendees_json = ?, meeting_type = ? WHERE id = ?",
+      [factionId, targetType, storedKey, targetLabel, content, JSON.stringify(attendees), targetType === 'faction' ? 'faction_meeting' : `${targetType}_meeting`, id]);
+    logAudit(actor.id, actor.name, 'EDIT', 'meeting_note', id, targetLabel, `${targetType} meeting note edited (${attendees.length} attendees)`);
+    return ok({ id });
   }
-  return { ok: true };
+  const newId = Number(run("INSERT INTO ooc_notes (faction_id, date, author, author_id, text, created_at, meeting_type, attendees_json, target_type, target_key, target_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [factionId, todayIso(), actor.name, actor.id, content, nowIso(), targetType === 'faction' ? 'faction_meeting' : `${targetType}_meeting`, JSON.stringify(attendees), targetType, storedKey, targetLabel]).lastInsertRowid);
+  logAudit(actor.id, actor.name, 'CREATE', 'meeting_note', newId, targetLabel, `${targetType} meeting note (${attendees.length} attendees)`);
+  return ok({ id: newId });
 }
 
 export async function deleteMeetingNote(id) {
   const actor = await requireActor(1);
-  // Verify scope + author/L3 to delete
-  const note = queryOne("SELECT id, faction_id, author_id, target_type, target_key FROM ooc_notes WHERE id = ?", [id]);
-  if (!note) return { ok: false, error: "Note not found" };
-  if (!(await assertTargetInScope(actor, { targetType: note.target_type, factionId: note.faction_id, targetKey: note.target_key }))) {
-    return { ok: false, error: "Note not in your scope" };
+  const note = queryOne("SELECT id, faction_id, author_id, target_type, target_key, target_label FROM ooc_notes WHERE id = ?", [toInt(id)]);
+  if (!note) return fail('Note not found.');
+  if (actor.level < 3) {
+    if (!noteInScope(actor, { targetType: note.target_type, factionId: note.faction_id, targetKey: note.target_key })) return fail('Note not in your scope.');
+    if (note.author_id !== actor.id) return fail('Only the author or leadership can delete this note.');
   }
-  if (note.author_id !== actor.id && actor.level < 3) {
-    return { ok: false, error: "Only the author or L3 can delete" };
-  }
-  run("DELETE FROM ooc_notes WHERE id = ?", [id]);
-  logAudit(actor.id, actor.name, 'DELETE', 'meeting_note', id, '', '');
-  return { ok: true };
+  run("DELETE FROM ooc_notes WHERE id = ?", [note.id]);
+  logAudit(actor.id, actor.name, 'DELETE', 'meeting_note', note.id, note.target_label || (note.faction_id ? queryOne("SELECT name FROM factions WHERE id = ?", [note.faction_id])?.name : '') || '', `${note.target_type} meeting note deleted`);
+  return ok();
 }
 
-// Selectable targets for the Meeting Notes dropdown, scoped to the actor.
+/** Selectable targets for the Meeting Notes editor, scoped to the actor. */
 export async function getNoteTargets() {
-  const actor = await requireActor(1);
-  const factions = (await getAccessibleFactions(actor.id, actor.level))
-    .map(f => ({ id: f.id, name: f.name }));
-
+  const actor = await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
+  const factions = (actor.isEventTeam || actor.isLeadStoryteller) && actor.level < 1
+    ? []
+    : writableFactions(actor).map(f => ({ id: f.id, name: f.name }));
   let teams = [];
-  if (actor.level >= 3) {
-    teams = query("SELECT team_id, team_name FROM teams ORDER BY team_name");
-  } else {
-    const me = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [actor.id]);
-    if (me?.team_id) {
-      const t = queryOne("SELECT team_id, team_name FROM teams WHERE team_id = ?", [me.team_id]);
-      if (t) teams = [t];                                  // L2: own team only
-    }
-  }
-
-  const groups = actor.level >= 3
-    ? Object.entries(NOTE_GROUPS).map(([key, g]) => ({ key, label: g.label }))
-    : [];
-
+  if (actor.level >= 3) teams = query("SELECT team_id, team_name FROM teams ORDER BY team_name");
+  else if (actor.teamId) { const t = queryOne("SELECT team_id, team_name FROM teams WHERE team_id = ?", [actor.teamId]); if (t) teams = [t]; }
+  const groups = actor.level >= 3 ? Object.entries(NOTE_GROUPS).map(([key, g]) => ({ key, label: g.label })) : [];
   return { factions, teams, groups };
 }
 
-// Members to pre-fill the attendance list for a given target.
+/** Members to pre-fill the attendance list for a target. [] when out of scope. */
 export async function getAttendeesForTarget(targetType, targetKey) {
-  const actor = await requireActor(1);
-  const type = targetType || 'faction';
-  const key  = targetKey != null ? String(targetKey) : '';
-
-  const inScope = await assertTargetInScope(actor, {
-    targetType: type,
-    factionId: type === 'faction' ? key : null,
-    targetKey: key,
-  });
-  if (!inScope) return [];
-
+  const actor = await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
+  const type = oneOf(str(targetType) || 'faction', ['faction', 'team', 'group']);
+  const key = str(targetKey);
+  if (!type || !noteInScope(actor, { targetType: type, factionId: type === 'faction' ? key : null, targetKey: key })) return [];
   const members = (clause, params) => query(
-    `SELECT discord_id, display_name, rank FROM staff
-     WHERE ${clause} AND discord_id != '' AND discord_id NOT LIKE 'placeholder%'
-     ORDER BY clearance DESC, display_name ASC`, params);
-
+    `SELECT discord_id, display_name, rank FROM staff WHERE ${clause} AND discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY clearance DESC, display_name ASC`, params);
   if (type === 'team') return members('team_id = ?', [key]);
-  if (type === 'group') {
-    const g = NOTE_GROUPS[key];
-    return g ? members(g.clause, []) : [];
-  }
-  // faction: members of the faction lead's team (existing behavior)
-  const factionId = parseInt(key);
-  if (!factionId) return [];
-  const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id = ?", [factionId]);
+  if (type === 'group') { const g = NOTE_GROUPS[key]; return g ? members(g.clause, []) : []; }
+  const faction = queryOne("SELECT lead_discord_id FROM factions WHERE id = ?", [toInt(key)]);
   if (!faction?.lead_discord_id) return [];
   const leadTeamId = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [faction.lead_discord_id])?.team_id;
-  if (!leadTeamId) return [];
-  return members('team_id = ?', [leadTeamId]);
+  return leadTeamId ? members('team_id = ?', [leadTeamId]) : [];
 }

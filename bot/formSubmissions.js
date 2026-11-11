@@ -45,15 +45,38 @@
 
 import cron from 'node-cron';
 import { query, queryOne, run } from './lib/db.js';
-import { getPingRoute, getRole, pingChannel, pingMentions, pingRoleIds, pingEnabled } from './lib/pings.js';
+import { pingChannel, pingMentions, pingRoleIds, pingEnabled } from './lib/pings.js';
 import { logAudit } from './lib/audit.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
+import { requireStaff, replyEphemeral } from './lib/auth.js';
 import {
   nowStr, plusHours, plusDays,
   discordFetch, discordPost, discordPatch, hideThreadCard,
   OPEN_STATUS_TAGS, DECISION_STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
   TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers, rowPayload,
+  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
 } from './lib/formIntake.js';
+
+// Sheet ids/tabs and the links the setup checklist hands out come from the
+// environment (.env.example lists them); nothing identifying lives in code.
+const env = (k, d = '') => process.env[k] || d;
+// The production forms, so an unconfigured copy keeps polling the same sheets
+// (ids of link-viewable Google Sheets, not secrets); .env overrides them.
+const DEFAULT_SHEETS = {
+  rcf_application:   { id: '1_CWtU4LA-sH6IeD-rnCVq_PFcOo_e9rMZ1Pac6kDVMQ', gid: '' },
+  staff_application: { id: '1n485B947BGHbyf1U3xZd4V2wGAMPeK4DQZFBG6n2LCQ', gid: '1145131757' },
+  garage_request:    { id: '1JIZGWKHYik3cMul1L1J3a4ZLXNYWSTFiXz92wPFSHYo', gid: '' },
+  ci_application:    { id: '1ZgUuEPhXZow3m3i32w0mbk0mKZoWxJP5bAAPEqioW14', gid: '' },
+};
+const sheetFor = (key) => ({
+  id: env(`SHEET_${key.toUpperCase()}_ID`, DEFAULT_SHEETS[key]?.id || ''),
+  gid: env(`SHEET_${key.toUpperCase()}_GID`, DEFAULT_SHEETS[key]?.gid || ''),
+});
+const botInviteUrl = () => {
+  const id = env('DISCORD_CLIENT_ID');
+  return id ? `https://discord.com/oauth2/authorize?client_id=${id}&permissions=274877991936&integration_type=0&scope=bot+applications.commands` : '';
+};
+const link = (label, url, fallback) => (url ? `[${label}](${url})` : fallback);
 
 /**
  * The forms, and the little each one needs said about it.
@@ -76,16 +99,12 @@ const FORMS = [
     title: [/^faction name/i, /^faction leader name/i],
     contact: [/leader.*discord|discord.*(username|handle|tag)/i, /discord/i],
     color: 3447003,
-    sheet: { id: '1_CWtU4LA-sH6IeD-rnCVq_PFcOo_e9rMZ1Pac6kDVMQ', gid: '' },
+    get sheet() { return sheetFor(this.key); },
     // The one form that is decided before it is worked. Accept or Reject first;
     // an accepted faction then has to be set up before the item can close.
     workflow: 'decision',
-    // Roles that may work the setup checklist WITHOUT being pinged for it.
-    // FM Leadership owns an RCF application start to finish and is the only role
-    // it notifies; Game Affairs Management can pitch in proactively when help is
-    // wanted, which is an access grant, not an obligation. Keyed into
-    // discord_roles so a role re-created in Discord is a database edit.
-    setupAlsoAllow: ['game_affairs'],
+    // Game Affairs Management may work the setup checklist without being
+    // pinged for it: they are L3 on the staff roster, which is the gate.
     // Setup steps for an accepted faction. `label` goes on the button (keep it
     // short — Discord allows 80 characters and a cramped row is unreadable);
     // `detail` is the instruction shown in the embed, where links belong.
@@ -102,11 +121,11 @@ const FORMS = [
       { key: 'join_discord', prereq: true, label: "Join faction Discord",
         detail: "Join the recognized faction's Discord." },
       { key: 'invite_bot', prereq: true, label: 'Invite Meridian bot',
-        detail: 'Invite the Meridian bot to their Discord — [invite link](https://discord.com/oauth2/authorize?client_id=1441261070206636042&permissions=274877991936&integration_type=0&scope=bot+applications.commands)' },
+        get detail() { return `Invite the Meridian bot to their Discord — ${link('invite link', botInviteUrl(), 'ask whoever runs the bot for the invite link (DISCORD_CLIENT_ID is unset)')}`; } },
       { key: 'ecrp_roles', prereq: true, label: 'ECRP roles',
         detail: "Verify or create the **ECRP Guide** and **ECRP Management** roles in the faction's Discord." },
       { key: 'invite_hc', label: 'High Command → GA',
-        detail: 'Invite their High Command to the GA Discord — [invite link](https://discord.gg/FTDmuQqcDR)' },
+        get detail() { return `Invite their High Command to the GA Discord — ${link('invite link', env('GA_DISCORD_INVITE'), '(set GA_DISCORD_INVITE for the link)')}`; } },
       { key: 'dashboard', label: 'Add to Dashboard',
         detail: 'Configure the faction on the Meridian Dashboard: **Factions → Add Faction +**' },
       { key: 'f4_exists', label: 'F4 exists',
@@ -118,7 +137,7 @@ const FORMS = [
       { key: 'fm_team', label: 'Assign FM Team',
         detail: 'Assign the faction to an FM Team: **Meridian Dashboard → Staff**' },
       { key: 'notify_team', label: 'Notify FM Team',
-        detail: "Tell the team they're receiving a new faction, and advise them to send the [Initial Garage Request](https://docs.google.com/forms/d/e/1FAIpQLSe4Q_seUQf2IrkTKYhuaNTzTLXNCbhw6M8pUHvO1mpAWSiwRw/viewform) after their first OOC meeting." },
+        get detail() { return `Tell the team they're receiving a new faction, and advise them to send the ${link('Initial Garage Request', env('GARAGE_FORM_URL'), 'Initial Garage Request form')} after their first OOC meeting.`; } },
     ],
   },
   {
@@ -127,7 +146,7 @@ const FORMS = [
     title: [/^staff name|^name$/i],
     contact: [/^discord$/i, /discord/i],
     color: 15158332,
-    sheet: { id: '1n485B947BGHbyf1U3xZd4V2wGAMPeK4DQZFBG6n2LCQ', gid: '1145131757' },
+    get sheet() { return sheetFor(this.key); },
   },
   {
     key: 'garage_request',
@@ -139,7 +158,7 @@ const FORMS = [
     // character — which is who a garage is actually issued to anyway.
     contact: [/discord/i, /character.?s? name/i],
     color: 3547003,
-    sheet: { id: '1JIZGWKHYik3cMul1L1J3a4ZLXNYWSTFiXz92wPFSHYo', gid: '' },
+    get sheet() { return sheetFor(this.key); },
   },
   {
     key: 'ci_application',
@@ -153,7 +172,7 @@ const FORMS = [
     // record starts carrying a handle the day the form asks for one.
     contact: [/what is your discord|discord/i],
     color: 9807270,
-    sheet: { id: '1ZgUuEPhXZow3m3i32w0mbk0mKZoWxJP5bAAPEqioW14', gid: '' },
+    get sheet() { return sheetFor(this.key); },
   },
 ];
 
@@ -317,6 +336,8 @@ function checklistView(item, form) {
 
 async function pollForm(form) {
   const job = `form_poll.${form.key}`;
+  ensureIntakeSchema();
+  const source = `form:${form.key}`;
   const { rows, error } = await fetchSheetRows(form.sheet.id, form.sheet.gid);
   if (error) { recordSyncFail(job, error); return; }
   if (!rows.length) { recordSyncFail(job, 'the sheet returned no rows'); return; }
@@ -332,37 +353,42 @@ async function pollForm(form) {
     // First run: everything already in the sheet is history. Those rows predate
     // the feature and would otherwise arrive as a wall of threads, each with its
     // own ping and its own 48-hour nudge cycle.
+    markAllRowsSeen(source, header, data);
     run('UPDATE form_submission_state SET last_row = ?, initialized = 1 WHERE form_key = ?', [data.length, form.key]);
     console.log(`[FORMS] ${form.key} initialised at row ${data.length}; watching for new submissions`);
     recordSyncOk(job, `initialised at sheet row ${data.length}; no backfill`);
     return;
   }
 
-  let posted = 0;
-  for (let idx = state.last_row; idx < data.length; idx++) {
-    const sheetRow = idx + 2;   // 1-based, plus the header
+  let posted = 0, held = null;
+  const keys = rowKeys(header, data);
+  for (let idx = 0; idx < data.length; idx++) {
+    const key = keys[idx];
+    if (rowSeen(source, key)) continue;
+    const sheetRow = idx + 2;   // 1-based, plus the header — informational only
     try {
-      await postSubmission(form, header, data[idx], sheetRow);
+      const id = await postSubmission(form, header, data[idx], sheetRow, { key });
+      markRowSeen(source, key, sheetRow, id);
       posted++;
     } catch (e) {
-      const attempts = recordFailure(form.key, sheetRow, e);
+      const attempts = recordFailure(form.key, sheetRow, key, e);
       if (attempts < MAX_POST_ATTEMPTS) {
-        // Probably transient. Stop WITHOUT advancing, so this row is retried next
-        // cycle and submissions keep arriving in the order they were sent.
+        // Probably transient. Stop WITHOUT marking it seen, so this row is
+        // retried next cycle and submissions keep arriving in order.
         console.error(`[FORMS] ${form.key} row ${sheetRow} attempt ${attempts}/${MAX_POST_ATTEMPTS} failed, retrying next cycle:`, e.message);
-        // The job itself is working — it read the sheet and is holding position
-        // on purpose, so this stays a success with a note.
-        recordSyncOk(job, `holding at sheet row ${sheetRow}, attempt ${attempts}/${MAX_POST_ATTEMPTS}`);
-        return;
+        held = `holding at sheet row ${sheetRow}, attempt ${attempts}/${MAX_POST_ATTEMPTS}: ${e.message}`;
+        break;
       }
-      // Out of retries. Advance past it so everything queued behind it can still
+      // Out of retries. Mark it seen so everything queued behind it can still
       // post; the failure row stays behind for visibility.
       run('UPDATE form_submission_failures SET skipped = 1 WHERE form_key = ? AND sheet_row = ?', [form.key, sheetRow]);
+      markRowSeen(source, key, sheetRow);
       console.error(`[FORMS] ${form.key} row ${sheetRow} failed ${attempts}x — SKIPPING so the queue can drain. Not posted:`, e.message);
     }
-    run('UPDATE form_submission_state SET last_row = ? WHERE form_key = ?', [idx + 1, form.key]);
   }
-  recordSyncOk(job, posted ? `${posted} new submission(s) posted` : 'checked, nothing new');
+  run('UPDATE form_submission_state SET last_row = ? WHERE form_key = ?', [data.length, form.key]);
+  if (held) recordSyncFail(job, held);
+  else recordSyncOk(job, posted ? `${posted} new submission(s) posted` : 'checked, nothing new');
 }
 
 /**
@@ -370,15 +396,15 @@ async function pollForm(form) {
  * problem here must not itself decide a row's fate, so a failure to record
  * reports attempt 1 — which retries rather than skips.
  */
-function recordFailure(formKey, sheetRow, err) {
+function recordFailure(formKey, sheetRow, key, err) {
   const message = `${err.name || 'Error'}: ${err.message}`.slice(0, 300);
   try {
     run(
-      `INSERT INTO form_submission_failures (form_key, sheet_row, attempts, first_failed_at, last_failed_at, last_error)
-       VALUES (?, ?, 1, ?, ?, ?)
+      `INSERT INTO form_submission_failures (form_key, sheet_row, row_key, attempts, first_failed_at, last_failed_at, last_error)
+       VALUES (?, ?, ?, 1, ?, ?, ?)
        ON CONFLICT(form_key, sheet_row) DO UPDATE SET
-         attempts = attempts + 1, last_failed_at = excluded.last_failed_at, last_error = excluded.last_error`,
-      [formKey, sheetRow, nowStr(), nowStr(), message],
+         row_key = excluded.row_key, attempts = attempts + 1, last_failed_at = excluded.last_failed_at, last_error = excluded.last_error`,
+      [formKey, sheetRow, key, nowStr(), nowStr(), message],
     );
     return queryOne('SELECT attempts FROM form_submission_failures WHERE form_key = ? AND sheet_row = ?',
       [formKey, sheetRow])?.attempts || 1;
@@ -394,21 +420,21 @@ function recordFailure(formKey, sheetRow, err) {
  * dry run can be posted through this exact code path (rather than a second
  * renderer that would drift from it) without notifying anyone.
  */
-async function postSubmission(form, header, row, sheetRow, { silent = false } = {}) {
+async function postSubmission(form, header, row, sheetRow, { silent = false, key = rowKeys(header, [row])[0] } = {}) {
   const { title, contact } = identify(form, header, row);
 
   const payload = rowPayload(header, row);
 
   const submittedAt = valueByHeader(header, row, TIMESTAMP_HEADER)?.value || '';
 
-  // Claim the row BEFORE touching Discord. (form_key, sheet_row) is UNIQUE, so a
+  // Claim the row BEFORE touching Discord. (form_key, row_key) is UNIQUE, so a
   // retry after a half-finished post finds this record and resumes rather than
   // opening a second thread and then dying on the constraint. ack_message_id is
   // written last and checked first, so it doubles as the "posted in full" marker.
   const existing = queryOne(
-    'SELECT id, thread_id, ack_message_id FROM form_submissions WHERE form_key = ? AND sheet_row = ?',
-    [form.key, sheetRow]);
-  if (existing?.ack_message_id) return;
+    'SELECT id, thread_id, ack_message_id FROM form_submissions WHERE form_key = ? AND row_key = ?',
+    [form.key, key]);
+  if (existing?.ack_message_id) return existing.id;
 
   let recordId, threadId;
   if (existing) {
@@ -417,10 +443,10 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
     console.log(`[FORMS] resuming partially posted ${form.key} row ${sheetRow} (#${recordId})`);
   } else {
     const res = run(
-      `INSERT INTO form_submissions (form_key, sheet_row, title, contact, submitted_at, payload,
+      `INSERT INTO form_submissions (form_key, sheet_row, row_key, title, contact, submitted_at, payload,
          thread_id, due_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-      [form.key, sheetRow, title, contact, submittedAt, JSON.stringify(payload),
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      [form.key, freeSheetRow('form_submissions', sheetRow, 'AND form_key = ?', [form.key]), key, title, contact, submittedAt, JSON.stringify(payload),
        plusHours(REMINDER_HOURS), nowStr()],
     );
     recordId = res.lastInsertRowid;
@@ -495,7 +521,8 @@ async function postSubmission(form, header, row, sheetRow, { silent = false } = 
   console.log(`[FORMS] #${recordId} posted — ${form.key}: ${title} (row ${sheetRow})`);
 
   // Only now is the row fully posted, so an earlier failure record is stale.
-  run('DELETE FROM form_submission_failures WHERE form_key = ? AND sheet_row = ?', [form.key, sheetRow]);
+  run('DELETE FROM form_submission_failures WHERE form_key = ? AND (sheet_row = ? OR row_key = ?)', [form.key, sheetRow, key]);
+  return recordId;
 }
 
 /**
@@ -522,9 +549,11 @@ export async function postLatestRowForTest(formKey, wantRow = null, { accepted =
   // `wantRow` is the row number as the spreadsheet itself shows it.
   const sheetRow = wantRow ?? rows.length;
   if (sheetRow < 2 || sheetRow > rows.length) throw new Error(`row ${sheetRow} is not in the sheet`);
-  await postSubmission(form, rows[0], rows[sheetRow - 1], sheetRow, { silent: true });
-  const item = queryOne('SELECT id, title, thread_id FROM form_submissions WHERE form_key = ? AND sheet_row = ?',
-    [formKey, sheetRow]);
+  ensureIntakeSchema();
+  const key = rowKeys(rows[0], rows.slice(1))[sheetRow - 2];
+  const id = await postSubmission(form, rows[0], rows[sheetRow - 1], sheetRow, { silent: true, key });
+  markRowSeen(`form:${formKey}`, key, sheetRow, id);
+  const item = queryOne('SELECT id, title, thread_id FROM form_submissions WHERE id = ?', [id]);
 
   // Carry a decision-workflow preview through to its checklist stage, so the
   // half that only exists after acceptance can be seen and clicked without
@@ -583,6 +612,7 @@ async function checkReminders(form) {
   );
 
   let nudged = 0;
+  const failures = [];
   for (const item of due) {
     try {
       // A thread that auto-archived has to be reopened before it can be posted
@@ -610,8 +640,10 @@ async function checkReminders(form) {
         allowed_mentions: allowedMentions(nudgeKey(form.key)),
       });
     } catch (e) {
-      // One unreachable thread must not stop the others being chased.
+      // One unreachable thread must not stop the others being chased, but the
+      // failure is reported rather than swallowed.
       console.error(`[FORMS] nudge for #${item.id} failed:`, e.message);
+      failures.push(`#${item.id}: ${e.message.slice(0, 80)}`);
       continue;
     }
     // Roll the due date forward rather than only stamping the reminder, so an
@@ -620,86 +652,23 @@ async function checkReminders(form) {
       [nowStr(), plusHours(REMINDER_HOURS), item.id]);
     nudged++;
   }
-  recordSyncOk(job, nudged ? `${nudged} item(s) nudged` : 'checked, nothing due');
+  if (failures.length) recordSyncFail(job, `${failures.length} nudge(s) failed: ${failures.join(' | ')}`);
+  else recordSyncOk(job, nudged ? `${nudged} item(s) nudged` : 'checked, nothing due');
 }
 
 // ── Button handling (called from index.js) ─────────────────────────────────────
 
 /**
- * Who may work a form: whoever that form pings. Retargeting a form's mention in
- * Discord & Access therefore retargets who can action it — one list, not two.
- *
- * The route is read directly rather than through pingRoleIds() so that `enabled`
- * is ignored here: switching a form's intake off should stop new threads, not
- * strand the open ones with buttons nobody can press. An empty or unparseable
- * list falls back to FM Leadership, so a misconfigured route cannot lock
- * everyone out of an item that is already posted.
+ * Who may work a form: FM Leadership (L3) on the staff roster — the same gate
+ * the dashboard uses — which covers Game Affairs Management too (L3 by
+ * clearance). A form's ping route still decides who is NOTIFIED; who may press
+ * is the staff roster, so a retargeted ping cannot lock everyone out of an
+ * item that is already posted. Checked on every press.
  */
-function actionRoleIds(key) {
-  const route = getPingRoute(key);
-  let ids = [];
-  try {
-    const parsed = JSON.parse(route?.mention_roles || '[]');
-    if (Array.isArray(parsed)) ids = parsed.filter(Boolean).map(String);
-  } catch { ids = []; }
-  if (!ids.length) {
-    const fallback = getRole('fm_leadership');
-    if (fallback) ids = [fallback];
-  }
-  return ids;
-}
-
-/**
- * Which route governs a given press.
- *
- * On the decision forms the two halves are owned by different people: FM
- * Leadership decides whether to accept, and Game Affairs Management does the
- * setup and says when it is finished. So ticking and completing answer to the
- * setup route, and everything else to the form's own.
- */
-const isSetupPhase = (form, action) =>
-  form.workflow === 'decision' && (action === 'tick' || action === 'complete');
-
-function routeForAction(form, action) {
-  return isSetupPhase(form, action) ? setupKey(form.key) : routeKey(form.key);
-}
-
-/**
- * Everyone who may press a given button: the governing route's roles, plus — in
- * the setup phase only — the roles granted access without being pinged.
- *
- * The two are separate on purpose. A ping route's mention_roles is a list of
- * people to notify, and using it alone to mean "may press this" forces anyone
- * with access to also be paged for every single item.
- */
-function permittedRoleIds(form, action) {
-  const ids = actionRoleIds(routeForAction(form, action));
-  if (!isSetupPhase(form, action)) return ids;
-  const extra = (form.setupAlsoAllow || []).map((k) => getRole(k)).filter(Boolean);
-  return [...new Set([...ids, ...extra])];
-}
-
-/**
- * Checked on every press. A component interaction carries no command permissions
- * with it, so nothing else stands between a random member and these buttons.
- */
-function canAct(interaction, allowed) {
-  const held = interaction.member?.roles?.cache;
-  return !!held && allowed.some((id) => held.has(id));
-}
+const FORM_LEVEL = 3;
 
 const actorName = (interaction) => interaction.member?.displayName
   || interaction.user.globalName || interaction.user.username;
-
-/** How the roles that may act read in a refusal message. */
-function allowedRoleNames(interaction, allowed) {
-  const names = allowed
-    .map((id) => interaction.guild?.roles?.cache?.get(id)?.name)
-    .filter(Boolean);
-  // Not "the roles this form pings" — in the setup phase some roles may act
-  // without being pinged at all, so that phrasing would name the wrong set.
-  return names.length ? names.join(', ') : 'certain roles';
-}
 
 /**
  * Move a thread's status tag on, and optionally archive it.
@@ -715,10 +684,12 @@ function allowedRoleNames(interaction, allowed) {
  * channel's archived-thread list.
  */
 async function retitleThread(interaction, threadId, tag, { archive = false } = {}) {
-  const id = interaction.channel?.isThread?.() ? interaction.channel.id : threadId;
+  // The record's thread wins; the interaction's channel is only trusted when
+  // it IS that thread (BOT-26).
+  const id = threadId || (interaction.channel?.isThread?.() ? interaction.channel.id : null);
   if (!id) return;
   try {
-    const cached = interaction.channel?.isThread?.() ? interaction.channel : null;
+    const cached = interaction.channel?.isThread?.() && interaction.channel.id === String(id) ? interaction.channel : null;
     let name = cached?.name || null;
     let parentId = cached?.parentId || null;
     // One GET covers both, and the parent is only needed when we are archiving.
@@ -932,10 +903,11 @@ export async function handleFormModal(interaction) {
       return true;
     }
     const form = FORM_BY_KEY[item.form_key];
-    if (!form || !canAct(interaction, permittedRoleIds(form, 'reject'))) {
-      await interaction.reply({ content: 'You can no longer action this.', ephemeral: true });
+    if (!form) {
+      await interaction.reply({ content: 'This submission belongs to a form that is no longer configured.', ephemeral: true });
       return true;
     }
+    if (!await requireStaff(interaction, FORM_LEVEL)) return true;
     if (ENDED_STATUSES.includes(item.status) || item.status === 'accepted') {
       await interaction.reply({ content: `This submission is already ${item.status}.`, ephemeral: true });
       return true;
@@ -960,7 +932,7 @@ export async function handleFormButton(interaction) {
 
   const [, action, rawId, extra] = customId.split(':');
   const id = parseInt(rawId, 10);
-  if (!Number.isInteger(id)) return true;
+  if (!Number.isInteger(id)) { await replyEphemeral(interaction, 'This button is malformed.'); return true; }
 
   try {
     const item = loadItem(id);
@@ -973,14 +945,7 @@ export async function handleFormButton(interaction) {
       await interaction.reply({ content: 'This submission belongs to a form that is no longer configured.', ephemeral: true });
       return true;
     }
-    const allowed = permittedRoleIds(form, action);
-    if (!canAct(interaction, allowed)) {
-      await interaction.reply({
-        content: `Only ${allowedRoleNames(interaction, allowed)} can do that.`,
-        ephemeral: true,
-      });
-      return true;
-    }
+    if (!await requireStaff(interaction, FORM_LEVEL)) return true;
     // Checked once here rather than in each handler: every action below is a
     // state change, and every one of them is meaningless on a closed item.
     if (ENDED_STATUSES.includes(item.status)) {
@@ -1004,6 +969,13 @@ export async function handleFormButton(interaction) {
     }
     else if (action === 'tick') await handleTick(interaction, item, form, extra);
     else if (action === 'complete') {
+      // A decision form cannot be completed without a decision (BOT-8): the
+      // custom id is user-controlled, so the status is checked here, not only
+      // by which buttons were rendered.
+      if (form.workflow === 'decision' && item.status !== 'accepted') {
+        await interaction.reply({ content: 'This application has not been accepted yet — Accept or Reject it first.', ephemeral: true });
+        return true;
+      }
       // The button is rendered disabled until every box is ticked, but a stale
       // message can still be pressed, so the gate is enforced here too.
       const left = remainingSteps(item, form);
@@ -1015,6 +987,7 @@ export async function handleFormButton(interaction) {
     }
     else if (action === 'cancel') await handleEnd(interaction, item, form, 'cancelled');
     else if (action === 'snooze') await handleSnooze(interaction, item, form);
+    else await replyEphemeral(interaction, `Unknown form action "${action}".`);
   } catch (e) {
     console.error('[FORMS] button error:', e.message);
     if (!interaction.replied && !interaction.deferred) {
@@ -1047,7 +1020,10 @@ async function nudgeAll() {
   }
 }
 
+export { pollForm, checkReminders, FORMS };
+
 export function startFormSubmissions() {
+  for (const form of FORMS) if (!form.sheet.id) console.warn(`[FORMS] SHEET_${form.key.toUpperCase()}_ID is not set — ${form.key} will report a configuration error on every poll`);
   cron.schedule('*/15 * * * *', () => { pollAll(); }, { timezone: 'UTC' });
   cron.schedule('*/30 * * * *', () => { nudgeAll(); }, { timezone: 'UTC' });
 

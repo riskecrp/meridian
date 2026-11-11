@@ -12,19 +12,25 @@ import { useRun } from "./hooks.js";
 //  - compact (Home): Assigned / Created / Team tabs, capped, "View all →" link.
 //  - full (/v2/tasks): adds an All-server tab (L3) + search, uncapped.
 // Expandable rows + the full action set (claim, complete, unclaim, reassign,
-// request info, edit) via the existing guarded server actions.
-export default function TaskList({ auth, assigned, created, team, allServer, staffList, roleTargets, qaCounts, onRefresh, full = false, viewAllHref, initialTab = "assigned" }) {
+// request info, edit) via the guarded server actions. The buttons mirror the
+// gates in shared/tasks.js; the server remains the authority and any refusal
+// is shown in the row. Event Team / Lead Storyteller (no clearance) see the
+// list read-only.
+export default function TaskList({ auth, assigned, created, team, allServer, history, staffList, roleTargets, qaCounts, onRefresh, full = false, viewAllHref, initialTab = "assigned" }) {
   const [tab, setTab] = useState(initialTab);
   const [openUid, setOpenUid] = useState(null);
   const [form, setForm] = useState(null); // { uid, kind, text, target }
   const { busy, err, setErr, run: runAction } = useRun();
   const [q, setQ] = useState("");
+  const level = auth?.level || 0;
+  const canWrite = level >= 1;
 
   const TABS = [
     { id: "assigned", label: "Assigned", list: assigned },
     { id: "created", label: "Created by me", list: created },
     { id: "team", label: "Team", list: team },
     ...(allServer ? [{ id: "all", label: "All server", list: allServer }] : []),
+    ...(history ? [{ id: "history", label: "Completed", list: history }] : []),
   ];
   const active = TABS.find(t => t.id === tab) || TABS[0];
   let list = active.list || [];
@@ -63,41 +69,48 @@ export default function TaskList({ auth, assigned, created, team, allServer, sta
               {t.label} ({(t.list || []).length})
             </button>
           ))}
-          {viewAllHref && <Link href={viewAllHref} className="tab" style={{ color: "var(--iris)" }}>View all →</Link>}
+          {viewAllHref && <Link href={viewAllHref} className="tab" style={{ color: "var(--accent)" }}>View all →</Link>}
         </div>
       </div>
 
       {full && (
         <div style={{ padding: "10px 17px", borderBottom: "1px solid var(--line)" }}>
-          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter by text, target, claimer…"
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter by text, target, claimer…" aria-label="Filter tasks"
             style={{ width: "100%", background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 11px", fontSize: 13, color: "var(--ink-0)", outline: "none" }} />
         </div>
       )}
 
+      {err && !form && <div className="err" style={{ padding: "8px 2px" }}>{err}</div>}
+
       {list.length === 0 ? (
         <div className="empty">
-          {q.trim() ? "No tasks match your filter." : tab === "created" ? "You haven't created any open tasks." : tab === "team" ? "No team tasks." : tab === "all" ? "No tasks on the server." : "Nothing assigned to you."}
+          {q.trim() ? "No tasks match your filter." : tab === "created" ? "You haven't created any open tasks." : tab === "team" ? "No team tasks." : tab === "all" ? "No tasks on the server." : tab === "history" ? "No completed tasks yet." : "Nothing assigned to you."}
         </div>
       ) : list.slice(0, cap).map(t => {
         const claimed = t.claimed_by && t.claimed_by !== "None";
         const claimedByMe = t.claimed_by === auth.id;
         const leadershipScoped = t.targetLabel === "FM Leadership" || t.targetLabel === "Game Affairs";
-        const canEdit = t.created_by_id === auth.id || auth.level >= 2;
-        const canReassign = auth.level >= 2;
-        const canReqInfo = t.created_by_id && t.created_by_id !== auth.id;
-        const canUnclaim = claimed && (claimedByMe || auth.level >= 3);
-        const qa = qaCounts?.[t.task_uid];
+        const isCreator = !!t.created_by_id && t.created_by_id === auth.id;
         const isOpen = openUid === t.task_uid;
+        const open = (t.status || "open") === "open";
+        const canEdit = canWrite && open && (isCreator || level >= 2);
+        const canReassign = canWrite && open && level >= 2;
+        const canReqInfo = canWrite && t.created_by_id && !isCreator;
+        const canUnclaim = canWrite && open && claimed && (claimedByMe || level >= 3);
+        const canClaim = canWrite && open && !claimed;
+        const canComplete = canWrite && open;
+        const qa = qaCounts?.[t.task_uid];
+        const detailHref = `/v2/tasks/${encodeURIComponent(t.task_uid)}`;
 
         return (
           <div key={t.task_uid}>
             <div className={`row${isOpen ? " exp" : ""}`} onClick={() => { setOpenUid(isOpen ? null : t.task_uid); resetForm(); }}>
-              <span className={`stat-dot ${claimed ? "claimed" : "open"}`} />
+              <span className={`stat-dot ${!open ? "over" : claimed ? "claimed" : "open"}`} />
               <span className="desc">{t.description}</span>
-              {qa?.open > 0 && <span className="chip q-chip">{qa.open} Q</span>}
+              {qa?.open > 0 && <Link href={detailHref} className="chip q-chip" onClick={e => e.stopPropagation()} title="Open the Q&A thread">{qa.open} Q</Link>}
               {leadershipScoped && <span className="chip lock">🔒 {t.targetLabel}</span>}
               {!leadershipScoped && <span className="chip role">{t.targetLabel || "—"}</span>}
-              <span className="chip due">{claimed ? t.claimerName : "unclaimed"}</span>
+              <span className="chip due">{!open ? t.status : claimed ? t.claimerName : "unclaimed"}</span>
               <span className="caret">▼</span>
             </div>
 
@@ -107,18 +120,21 @@ export default function TaskList({ auth, assigned, created, team, allServer, sta
                 <div className="facts">
                   <span>By <b>{t.created_by_name || "System"}</b></span>
                   <span>For <b>{t.targetLabel || "—"}</b></span>
-                  <span><b style={{ color: claimed ? "var(--emerald)" : "var(--amber)" }}>{claimed ? `Claimed · ${t.claimerName}` : "Unclaimed"}</b></span>
+                  {t.teamContext && <span>Team <b>{t.teamContext}</b></span>}
+                  <span><b style={{ color: claimed ? "var(--good)" : "var(--amber)" }}>{claimed ? `Claimed · ${t.claimerName}` : "Unclaimed"}</b></span>
                   {qa?.total > 0 && <span><b>{qa.open > 0 ? `${qa.open} open Q` : `${qa.total} answered`}</b></span>}
+                  <Link href={detailHref} style={{ color: "var(--accent)" }} onClick={e => e.stopPropagation()}>Open task →</Link>
                 </div>
 
                 {!form && (
                   <div className="actbar">
-                    {!claimed && <button className="act primary" disabled={busy} onClick={() => run(() => claimMyTask(t.task_uid))}>Claim</button>}
-                    {canEdit && <button className="act" onClick={() => openForm(t.task_uid, "edit", t.description)}>Edit</button>}
-                    {canReassign && <button className="act warn" onClick={() => openForm(t.task_uid, "reassign")}>Reassign</button>}
-                    {canReqInfo && <button className="act" onClick={() => openForm(t.task_uid, "info")}>Request info</button>}
-                    {canUnclaim && <button className="act" onClick={() => openForm(t.task_uid, "unclaim")}>Unclaim</button>}
-                    <button className="act good" onClick={() => openForm(t.task_uid, "complete")}>Complete</button>
+                    {canClaim && <button className="act primary" disabled={busy} onClick={e => { e.stopPropagation(); run(() => claimMyTask(t.task_uid)); }}>Claim</button>}
+                    {canEdit && <button className="act" onClick={e => { e.stopPropagation(); openForm(t.task_uid, "edit", t.description); }}>Edit</button>}
+                    {canReassign && <button className="act warn" onClick={e => { e.stopPropagation(); openForm(t.task_uid, "reassign"); }}>Reassign</button>}
+                    {canReqInfo && <button className="act" onClick={e => { e.stopPropagation(); openForm(t.task_uid, "info"); }}>Request info</button>}
+                    {canUnclaim && <button className="act" onClick={e => { e.stopPropagation(); openForm(t.task_uid, "unclaim"); }}>Unclaim</button>}
+                    {canComplete && <button className="act good" onClick={e => { e.stopPropagation(); openForm(t.task_uid, "complete"); }}>Complete</button>}
+                    {!canWrite && <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Read-only.</span>}
                   </div>
                 )}
 
@@ -133,7 +149,7 @@ export default function TaskList({ auth, assigned, created, team, allServer, sta
                     </div>
                     {form.kind === "reassign" && (
                       <TargetSelect className="" value={form.target} onChange={v => setForm({ ...form, target: v })}
-                        roleTargets={roleTargets} staffList={staffList} level={auth.level}
+                        roleTargets={roleTargets} staffList={staffList} level={level}
                         gateLeadership includeGameAffairs />
                     )}
                     <textarea rows={form.kind === "reassign" ? 2 : 3} value={form.text}

@@ -77,7 +77,9 @@ a small Linux server — it's a standard Node.js project, nothing exotic. You
 need:
 
 - this repo,
-- a database backup (unzipped, placed at `data/meridian.db`),
+- a database backup (unzipped, placed at `data/meridian.db`) — or none at all:
+  `node scripts/bootstrap.mjs` builds an empty database with every table,
+  ping route and the peds catalogue, ready for a first login,
 - your own Discord bot application from https://discord.com/developers
   (bot token + OAuth credentials — the dashboard's login *is* Discord),
 - a `.env` filled in from `.env.example` — put your own Discord user ID in
@@ -86,12 +88,17 @@ need:
 - a small server (2 GB memory is enough) and a domain — or just a laptop with
   `BASE_URL=http://localhost:3000` to try it out.
 
-Then: `npm install` in the repo root, `bot/`, and `dashboard/`; build the site
-with `npm run build` inside `dashboard/`; run `node bot/index.js` and
+Then: `npm install` in the repo root, `bot/`, and `dashboard/`; apply any
+pending database changes with `node scripts/migrate.mjs` (an existing backup)
+or build a fresh one with `node scripts/bootstrap.mjs`; build the site with
+`npm run build` inside `dashboard/`; run `node bot/index.js` and
 `dashboard/start.sh` as services (ready-made service files are in `deploy/`).
-Discord IDs for roles and channels live in the database and in `.env`, so
+Discord ids for roles and channels live in the database (Admin → Discord &
+Access, Admin → Pings) and the guild, owner and form-sheet ids in `.env`, so
 pointing the bot at a different Discord server means updating those — budget a
-careful afternoon for that part.
+careful afternoon for that part. `node scripts/test/run.mjs` exercises every
+server action and bot handler against a throwaway seeded database and is the
+quickest way to confirm a copy works.
 
 ## Building something new instead
 
@@ -109,27 +116,37 @@ Day-to-day reference — only relevant with access to the box it runs on.
 
 | Path | What |
 |---|---|
-| `dashboard/` | the website (Next.js; current UI under `src/app/v2/`, legacy under `src/app/fm/`) |
+| `dashboard/` | the website (Next.js 16; the UI under `src/app/v2/`, server actions under `src/app/fm/**/actions.js`; old `/fm` links redirect) |
 | `bot/` | the Discord bot (discord.js: commands, schedulers, message capture) |
 | `shared/` | database + Discord helpers used by both |
 | `schema.sql` | reference list of every table (regenerated, not hand-edited) |
 | `migrations/` | numbered database changes, applied once each by `scripts/migrate.mjs` |
-| `scripts/` | `deploy.sh`, `backup.sh`, `migrate.mjs`, `export-csv.sh`, `smoke.mjs` |
+| `scripts/` | `deploy.sh`, `backup.sh`, `migrate.mjs`, `bootstrap.mjs`, `schema-dump.mjs`, `export-csv.sh`, `smoke.mjs`, `test/` |
 | `deploy/` | service files (installed copies live in `/etc/systemd/system/`) |
 | `data/` | live database + nightly backups — **never in git** |
 
 - **Deploy a change:** `cd /opt/meridian && ./scripts/deploy.sh` — runs the
-  smoke test first (aborts safely if anything's broken), then pulls, migrates,
-  builds, restarts. Flags: `--dashboard`, `--bot`, `--no-pull`. Never run two
+  smoke test and the functional tests first (aborts safely if anything's
+  broken), then pulls, migrates, builds, restarts. Flags: `--dashboard`, `--bot`, `--no-pull`. Never run two
   site builds at once on this box — it runs out of memory.
 - **Smoke test alone:** `node scripts/smoke.mjs` (exit 0 = safe to restart).
   It checks every bot file loads and migrations apply — all against a throwaway
   database copy, never the live one.
-- **Migrations:** add `migrations/NNN_short_name.sql`, run
-  `node scripts/migrate.mjs`, then regenerate the reference:
-  `sqlite3 data/meridian.db .schema > schema.sql`.
+- **Tests:** `node scripts/test/run.mjs [filter]` builds a seeded throwaway
+  database and runs `scripts/test/cases/*.test.mjs` against it (server actions
+  at every clearance level, bot handlers with fake interactions). Never touches
+  the live file.
+- **Migrations:** add `migrations/NNN_short_name.sql` (plain SQL) or
+  `NNN_short_name.mjs` (`export default function (db) {…}` for data rewrites),
+  run `node scripts/migrate.mjs`, then regenerate the reference:
+  `node scripts/schema-dump.mjs > schema.sql`.
+- **Conventions the code now relies on:** dates are ISO (`shared/dates.js`),
+  tasks live in `shared/tasks.js`, the RP-change pipeline in
+  `shared/rpChanges.js`, pings in `shared/pings.js`, faction write scoping in
+  `shared/access.js`; the dashboard and the bot import the same modules.
 - **Backups:** nightly timer produces `data/backups/meridian-<date>.db.gz`
-  (14 kept on the box, plus an off-box copy pulled daily). The latest one is
+  (14 kept on the box, plus an off-box copy pulled daily) and then prunes
+  message, keyword, member and session logs older than 180 days. The latest one is
   downloadable by leadership at `https://ecrpfm.com/api/backup` (unlisted;
   downloads are recorded in the audit log).
 - **Exports on the box:** `./scripts/export-csv.sh` with no `DATABASE_PATH`

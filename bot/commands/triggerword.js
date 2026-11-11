@@ -1,24 +1,12 @@
 import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
 import { query, queryOne, run } from '../lib/db.js';
-import { logAudit, actorOf } from '../lib/audit.js';
-import { getRole } from '../lib/pings.js';
+import { logAudit } from '../lib/audit.js';
+import { requireStaff } from '../lib/auth.js';
 
 // Discord twin of the dashboard's keyword manager (Member Log page / api/keywords):
-// same table, same normalisation (trimmed, lower-cased), same audience. The
-// dashboard lets Level 3 in — FM Leadership, Game Affairs Management, Founder,
-// Executive Admin — so this does too, by the same discord_roles keys, plus the
-// bot owner. setDefaultMemberPermissions only hides the command from the
-// menu; the role check below is the real gate.
-const L3_ROLE_KEYS = ['fm_leadership', 'game_affairs', 'founder', 'executive_admin'];
-const RISK_DISCORD_ID = process.env.RISK_DISCORD_ID || '738214924760907907';
-
-function allowed(interaction) {
-  if (interaction.user.id === RISK_DISCORD_ID) return true;
-  const roles = interaction.member?.roles?.cache;
-  if (!roles) return false;
-  return L3_ROLE_KEYS.some(k => { const id = getRole(k); return id && roles.has(id); });
-}
-
+// same table, same normalisation (trimmed, lower-cased), same audience — L3 by
+// the staff roster (owners are L3 by definition). setDefaultMemberPermissions
+// only hides the command from the menu; requireStaff is the real gate.
 const norm = s => String(s ?? '').trim().toLowerCase();
 
 export default {
@@ -46,22 +34,20 @@ export default {
   },
 
   async execute(interaction) {
-    if (!allowed(interaction)) {
-      await interaction.reply({ content: '❌ Only FM Leadership, Game Affairs Management, Founders or Executive Admins can manage trigger words.', ephemeral: true });
-      return;
-    }
+    const actor = await requireStaff(interaction, 3);
+    if (!actor) return;
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'add') {
-      const phrase = norm(interaction.options.getString('phrase'));
+      const phrase = norm(interaction.options.getString('phrase')).slice(0, 200);
       if (!phrase) { await interaction.reply({ content: '❌ Phrase required.', ephemeral: true }); return; }
       const existing = queryOne("SELECT id FROM server_log_keywords WHERE phrase = ? COLLATE NOCASE", [phrase]);
       if (existing) {
         await interaction.reply({ content: `ℹ️ **${phrase}** is already a trigger word.`, ephemeral: true });
         return;
       }
-      run("INSERT OR IGNORE INTO server_log_keywords (phrase) VALUES (?)", [phrase]);
-      logAudit(interaction.user.id, actorOf(interaction), 'CREATE', 'trigger_word', phrase, phrase, 'added via /triggerword');
+      const ins = run("INSERT OR IGNORE INTO server_log_keywords (phrase) VALUES (?)", [phrase]);
+      logAudit(actor.id, actor.name, 'CREATE', 'trigger_word', Number(ins.lastInsertRowid), phrase, 'added via /triggerword');
       const total = queryOne("SELECT COUNT(*) AS n FROM server_log_keywords")?.n ?? 0;
       await interaction.reply({ content: `✅ Added trigger word **${phrase}**. Alerts fire on any message or edit containing it (${total} trigger word${total === 1 ? '' : 's'} active).`, ephemeral: true });
       return;
@@ -75,7 +61,7 @@ export default {
         return;
       }
       run("DELETE FROM server_log_keywords WHERE id = ?", [existing.id]);
-      logAudit(interaction.user.id, actorOf(interaction), 'DELETE', 'trigger_word', phrase, phrase, 'removed via /triggerword');
+      logAudit(actor.id, actor.name, 'DELETE', 'trigger_word', existing.id, phrase, 'removed via /triggerword');
       await interaction.reply({ content: `✅ Removed trigger word **${phrase}**.`, ephemeral: true });
       return;
     }

@@ -47,7 +47,6 @@
 
 * { box-sizing: border-box; }
 body { background: var(--bg-0); color: var(--fg-0); font-size: 14px; font-family: 'Plus Jakarta Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-::selection { background: var(--accent); color: white; }
 
 /* ── TYPOGRAPHY VARS ── */
 :root {
@@ -62,19 +61,10 @@ body { background: var(--bg-0); color: var(--fg-0); font-size: 14px; font-family
   grid-template-columns: 1fr;
   align-items: start;
 }
-@media (min-width: 1024px) {
-  .fm-dashboard {
-    grid-template-columns: 1fr 340px;
-  }
-}
 
 /* ── MONO DATA ELEMENTS ── */
 .mono { font-family: var(--font-mono); }
 
-/* Scrollbar */
-.scr::-webkit-scrollbar { width: 4px; }
-.scr::-webkit-scrollbar-track { background: transparent; }
-.scr::-webkit-scrollbar-thumb { background: var(--fg-4); border-radius: 2px; }
 
 /* Reusable surface classes */
 .surface {
@@ -226,7 +216,7 @@ aside nav a.nav-active:hover {
 
 /* ── MAIN CONTENT AREA ── */
 /* Vivid ambient gradient — glass cards need visible content beneath them */
-main {
+main:not(.v2-main) {
   background-image:
     radial-gradient(ellipse 65% 55% at 12% -8%, rgba(160,126,245,0.28) 0%, transparent 60%),
     radial-gradient(ellipse 45% 55% at 88% 108%, rgba(110,70,200,0.18) 0%, transparent 60%),
@@ -235,50 +225,50 @@ main {
 
 /* ── GLOBAL GLASS TRIGGER ── */
 /* --bg-1 is now semi-transparent. Adding backdrop-filter here makes ALL inline-styled cards glass. */
-main [style*="var(--bg-1)"],
-main [style*="var(--bg-2)"] {
+main:not(.v2-main) [style*="var(--bg-1)"],
+main:not(.v2-main) [style*="var(--bg-2)"] {
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
 }
 
 /* ── ALL BUTTONS ── */
-button {
+button:not(.v2-root *) {
   transition: all 0.2s ease !important;
 }
-button:active {
+button:not(.v2-root *):active {
   transform: scale(0.97) !important;
 }
 
 /* ── PRIMARY / ACCENT BUTTONS (colored backgrounds) ── */
-main button:not([style*="transparent"]):not([style*="none"]) {
+main:not(.v2-main) button:not([style*="transparent"]):not([style*="none"]) {
   position: relative;
 }
 
 /* ── INPUTS, TEXTAREAS, SELECTS ── */
-main input, main textarea, main select {
+main:not(.v2-main) input, main:not(.v2-main) textarea, main:not(.v2-main) select {
   box-shadow: inset 0 2px 6px rgba(0,0,0,0.35) !important;
   transition: all 0.18s ease !important;
   border-radius: 10px !important;
 }
-main input:focus, main textarea:focus, main select:focus {
+main:not(.v2-main) input:focus, main:not(.v2-main) textarea:focus, main:not(.v2-main) select:focus {
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.2), 0 0 0 3px rgba(160,126,245,0.25), 0 0 12px rgba(160,126,245,0.15) !important;
   border-color: var(--accent) !important;
   outline: none !important;
 }
-[data-theme="light"] main input, [data-theme="light"] main textarea, [data-theme="light"] main select {
+[data-theme="light"] main:not(.v2-main) input, [data-theme="light"] main:not(.v2-main) textarea, [data-theme="light"] main:not(.v2-main) select {
   box-shadow: inset 0 2px 4px rgba(0,0,0,0.05) !important;
 }
 
 /* ── TABLES ── */
-main table {
+main:not(.v2-main) table {
   box-shadow: var(--shadow-md);
   border-radius: 8px;
   overflow: hidden;
 }
-main thead tr {
+main:not(.v2-main) thead tr {
   position: relative;
 }
-main thead tr::after {
+main:not(.v2-main) thead tr::after {
   content: '';
   position: absolute;
   bottom: 0;
@@ -287,21 +277,21 @@ main thead tr::after {
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--accent-bg), transparent);
 }
-main tbody tr {
+main:not(.v2-main) tbody tr {
   transition: background 0.15s ease;
 }
-main tbody tr:hover {
+main:not(.v2-main) tbody tr:hover {
   background: rgba(160,126,245,0.08) !important;
 }
 
 /* ── H1, H2 HEADINGS ── */
-main h1 {
+main:not(.v2-main) h1 {
   font-family: var(--font-display);
   text-shadow: 0 2px 4px rgba(0,0,0,0.3);
   position: relative;
 }
-main h1 { margin-bottom: 16px !important; padding-bottom: 8px !important; }
-main h1::after {
+main:not(.v2-main) h1 { margin-bottom: 16px !important; padding-bottom: 8px !important; }
+main:not(.v2-main) h1::after {
   content: '';
   position: absolute;
   bottom: -12px;
@@ -312,11 +302,10 @@ main h1::after {
   border-radius: 3px;
   box-shadow: 0 0 10px rgba(99,102,241,0.3);
 }
-[data-theme="light"] main h1 {
+[data-theme="light"] main:not(.v2-main) h1 {
   text-shadow: none;
 }
-main h1 { margin-bottom: 16px !important; padding-bottom: 8px !important; }
-[data-theme="light"] main h1::after {
+[data-theme="light"] main:not(.v2-main) h1::after {
   box-shadow: none;
 }
 
@@ -327,17 +316,17 @@ main h1 { margin-bottom: 16px !important; padding-bottom: 8px !important; }
 .scr::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
 /* ── MODAL OVERLAYS — Glassmorphism ── */
-div[style*="backdrop-filter"] {
+div[style*="backdrop-filter"]:not(.v2-root *) {
   background: rgba(5,5,10,0.75) !important;
   backdrop-filter: blur(32px) saturate(180%) !important;
   -webkit-backdrop-filter: blur(32px) saturate(180%) !important;
 }
 
 /* ── LINKS ── */
-main a {
+main:not(.v2-main) a {
   transition: all 0.2s ease;
 }
-main a:hover {
+main:not(.v2-main) a:hover {
   text-shadow: 0 0 8px rgba(99,102,241,0.3);
 }
 
@@ -394,19 +383,19 @@ span[style*="animate-pulse"]::before, .animate-pulse[style*="border-radius: 50%"
 }
 
 /* ── TOOLTIP HOVER STATES ── */
-[title] {
+[title]:not(.v2-root *) {
   cursor: help;
 }
 
 /* ── KANBAN DRAG FEEDBACK ── */
-[draggable="true"] {
+[draggable="true"]:not(.v2-root *) {
   transition: transform 0.15s, box-shadow 0.15s !important;
 }
-[draggable="true"]:hover {
+[draggable="true"]:not(.v2-root *):hover {
   box-shadow: var(--shadow-md) !important;
   transform: translateY(-1px);
 }
-[draggable="true"]:active {
+[draggable="true"]:not(.v2-root *):active {
   box-shadow: var(--shadow-lg) !important;
   transform: scale(1.02);
   z-index: 50;
@@ -414,16 +403,16 @@ span[style*="animate-pulse"]::before, .animate-pulse[style*="border-radius: 50%"
 }
 
 /* ── DETAILS/SUMMARY ELEMENTS ── */
-details {
+details:not(.v2-root *) {
   transition: all 0.2s ease;
 }
-details[open] {
+details:not(.v2-root *)[open] {
   box-shadow: var(--shadow-md);
 }
-details summary {
+details:not(.v2-root *) summary {
   transition: background 0.15s ease;
 }
-details summary:hover {
+details:not(.v2-root *) summary:hover {
   background: var(--accent-bg) !important;
 }
 
@@ -446,11 +435,11 @@ details summary:hover {
 }
 
 /* ── GLOBAL MICRO-INTERACTIONS ── */
-img { transition: filter 0.3s ease; }
-img:hover { filter: brightness(1.05); }
+img:not(.v2-root *) { transition: filter 0.3s ease; }
+img:not(.v2-root *):hover { filter: brightness(1.05); }
 
 /* ── SEPARATOR POLISH ── */
-hr, [style*="border-top: 1px"], [style*="borderTop: 1px"] {
+hr:not(.v2-root *), [style*="border-top: 1px"]:not(.v2-root *), [style*="borderTop: 1px"]:not(.v2-root *) {
   border-image: linear-gradient(90deg, transparent 0%, var(--border-h) 20%, var(--border-h) 80%, transparent 100%) 1 !important;
 }
 
@@ -594,4 +583,49 @@ hr, [style*="border-top: 1px"], [style*="borderTop: 1px"] {
 }
 @media (prefers-reduced-motion: reduce) {
   .sk-bar { animation: none; }
+}
+
+/* ══════════════════════════════════════════════════════
+   v2 SHELL — tokens v2.css references but never defines, and the phone-width
+   top bar. Scoped to .v2-root so nothing here touches /fm. (Belongs in
+   v2/v2.css once that file is next edited; kept here so the root stylesheet
+   and the v2 shell ship together.)
+   ══════════════════════════════════════════════════════ */
+.v2-root { --warn: var(--amber); --warn-bg: var(--amber-bg); --iris: var(--accent); --emerald: var(--good); }
+.v2-root .tn-burger { display: none; flex-shrink: 0; }
+.v2-root .tn-mobile-only { display: none; }
+.v2-root .restricted { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .v2-root .view { padding-left: 16px; padding-right: 16px; }
+  .v2-root .topnav-inner { padding: 0 12px; gap: 6px; }
+  .v2-root .tn-right { gap: 5px; }
+  .v2-root .tn-user { padding-left: 0; }
+  .v2-root .cols { grid-template-columns: 1fr; gap: 24px; }
+  .v2-root .metrics { gap: 18px; }
+}
+@media (max-width: 480px) {
+  /* Hamburger: the nav becomes a drop-down panel; search moves into it; the
+     right cluster keeps only + New, the bell, theme and the avatar. */
+  .v2-root .tn-burger { display: grid; }
+  .v2-root .tn-links { display: none; }
+  .v2-root .topnav.menu-open .tn-links {
+    display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+    position: absolute; left: 0; right: 0; top: 100%; padding: 8px 10px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line-2);
+    box-shadow: 0 12px 28px rgba(0,0,0,.18); overflow: visible; max-height: calc(100vh - 54px); overflow-y: auto;
+  }
+  .v2-root .topnav.menu-open .tn-links .tn-i { padding: 10px 12px; font-size: 14px; width: 100%; justify-content: flex-start; }
+  .v2-root .topnav.menu-open .tn-links > div { display: flex; width: 100%; }
+  .v2-root .topnav.menu-open .tn-mobile-only { display: inline-flex; }
+  .v2-root .topnav-inner { height: 50px; }
+  .v2-root .tn-brand .mk-img { width: 22px; height: 22px; }
+  .v2-root .tn-right .search { display: none; }
+  .v2-root .tn-right .tn-new { padding: 0 9px !important; }
+  .v2-root .tn-user .who { display: none; }
+  .v2-root .page-head h1 { font-size: 19px; }
+  .v2-root .row { flex-wrap: wrap; row-gap: 4px; }
+  .v2-root .row .desc { flex-basis: 100%; }
+  .v2-root .hub-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .v2-root .hub-tab { white-space: nowrap; }
+  .v2-root .dtable { display: block; overflow-x: auto; }
 }

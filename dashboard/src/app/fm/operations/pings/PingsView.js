@@ -265,9 +265,12 @@ function PingRow({ route, channels, roles, deadChannels, onSaved, toast, hideCha
 function ChannelSection({ channelId, channels, primary, confidential, roles, deadChannels, onSaved, toast }) {
   const [moveTo, setMoveTo] = useState('');
   const [busy, setBusy] = useState(false);
-  const chan = channels.find(c => c.id === channelId);
+  // `chan` is undefined whenever the Discord directory could not be loaded (no
+  // token, outage) — the section still renders, headed by the raw id.
+  const chan = channels.find(c => c.id === channelId) || null;
   const homeGuild = channels.find(c => c.guildId)?.guildName;
   const nowhere = !channelId;
+  const heading = nowhere ? 'Not going anywhere' : chan ? `#${chan.name}` : `channel ${channelId}`;
 
   const doMove = async () => {
     setBusy(true);
@@ -282,9 +285,10 @@ function ChannelSection({ channelId, channels, primary, confidential, roles, dea
     <div style={S.sect}>
       <div style={S.sectHead}>
         <span style={{ ...S.chanName, color: nowhere ? 'var(--red)' : 'var(--fg-0)' }}>
-          {nowhere ? 'Not going anywhere' : `#${chan.name}`}
+          {heading}
         </span>
-        {!nowhere && chan.guildName !== homeGuild && <span style={S.guildTag}>in {chan.guildName}</span>}
+        {!nowhere && chan && chan.guildName !== homeGuild && <span style={S.guildTag}>in {chan.guildName}</span>}
+        {!nowhere && !chan && <span style={S.guildTag}>name unavailable — Discord directory not loaded</span>}
         <span style={S.count}>
           {primary.length} ping{primary.length === 1 ? '' : 's'}
           {confidential.length > 0 && ` · ${confidential.length} more when leadership-only`}

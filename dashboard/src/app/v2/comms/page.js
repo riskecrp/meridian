@@ -2,7 +2,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
-import { getAnnouncementTargets, sendAnnouncement, sendICCommunication, uploadToImgbb, getAnnouncementHistory } from "../../fm/communications/actions.js";
+import { getAnnouncementTargets, sendAnnouncement, sendICCommunication, uploadToImgbb, getAnnouncementHistory, getFactionICThread } from "../../fm/communications/actions.js";
 
 const tierBand = (t) => (t >= 7 ? "hi" : t >= 4 ? "mid" : "lo");
 const CH_OPTS = [{ v: "command", l: "Command" }, { v: "faction", l: "Faction-wide" }, { v: "both", l: "Both" }];
@@ -68,18 +68,19 @@ function Recipients({ targets, ct, setCt, selected, setSelected, isL3 }) {
   );
 }
 
-function Result({ r }) {
+// Outcome box. ok means at least one delivery landed; a send where nothing was
+// delivered comes back ok:false with the per-faction reasons, and is shown red.
+function Result({ r, ic = false }) {
   if (!r) return null;
+  const mirrorNote = r.mirrored ? (ic ? " · filed in the FM IC log" : r.postedToFM ? " · posted in FM Discord" : " · copied to the FM log") : "";
   return (
     <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 8, background: r.ok ? "var(--good-bg)" : "var(--rose-bg)", border: `1px solid ${r.ok ? "color-mix(in srgb,var(--good) 30%,transparent)" : "color-mix(in srgb,var(--rose) 30%,transparent)"}` }}>
-      {r.ok ? <>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--good)" }}>
-          {r.total > 0 && `✓ Sent to ${r.sent} of ${r.total} ${r.channelLabel || ""} channel${r.total !== 1 ? "s" : ""}`}
-          {r.postedToFM && `${r.total > 0 ? " · " : "✓ "}Posted in FM Discord`}
-          {r.link !== undefined && r.total > 0 ? " · link copied to FM IC channel" : ""}
-        </div>
-        {r.failed?.length > 0 && <div style={{ fontSize: 11, color: "var(--rose)", marginTop: 3 }}>Failed: {r.failed.map(f => `${f.name} (${f.reason || f.status})`).join(", ")}</div>}
-      </> : <div style={{ fontSize: 12.5, color: "var(--rose)" }}>✗ {r.error}</div>}
+      {r.ok
+        ? <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--good)" }}>
+            {r.fmOnly ? "✓ Posted in FM Discord" : `✓ Sent to ${r.sent} of ${r.total} ${r.channelLabel || ""} channel${r.total !== 1 ? "s" : ""}${mirrorNote}`}
+          </div>
+        : <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--rose)" }}>✗ {r.error}</div>}
+      {r.failed?.length > 0 && <div style={{ fontSize: 11, color: "var(--rose)", marginTop: 3 }}>Failed: {r.failed.map(f => `${f.name} (${f.reason || f.error || f.status})`).join(", ")}</div>}
     </div>
   );
 }
@@ -101,9 +102,16 @@ function V2Comms() {
   const tab = COMMS_TABS.includes(tabParam) ? tabParam : "announce";
   const LABELS = { announce: "Announcement", ic: "IC Communication", history: "Send History" };
 
-  useEffect(() => { if (!auth?.loading && (auth?.level >= 1 || auth?.isLeadStoryteller)) getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); }); }, [auth?.loading]);
+  // Policy 6: Comms is a Team Lead (L2+) area. Below that nothing loads, so the
+  // spinner stops and the page says so instead of hanging.
+  useEffect(() => {
+    if (auth?.loading) return;
+    if (!(auth?.level >= 2)) { setLoading(false); return; }
+    getAnnouncementTargets().then(t => { setTargets(t || []); setLoading(false); }).catch(() => setLoading(false));
+  }, [auth?.loading, auth?.level]);
   if (auth?.loading || loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok) return <div className="view" style={{ color: "var(--ink-3)" }}>Not authorized.</div>;
+  if (auth.level < 2) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead access (L2) required. Announcements and IC communications to faction Discords are sent by team leads and leadership.</div>;
 
   return (
     <div className="view">
@@ -127,12 +135,13 @@ function Announce({ targets, isL3 }) {
   const canSend = message.trim() && (selected.size > 0 || (isL3 && postToFM));
   const send = async () => { setSending(true); setResult(null); const r = await sendAnnouncement([...selected], message, postToFM, ct); setSending(false); setResult(r); if (r.ok) { setMessage(""); setSelected(new Set()); setPostToFM(false); } };
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 32, alignItems: "start" }}>
+    <div className="comms-cols">
       <div>
         <div className="card"><div className="hd"><div className="t">Message</div></div>
           <div className="codeblock" style={{ color: "var(--ink-1)", marginBottom: 10 }}><b style={{ color: "var(--ink-0)" }}>A Message from Faction Management</b>{message.trim() ? `\n\n${message.trim()}` : "\n\nYour message will appear here…"}</div>
           <textarea className="filter-inp" rows={8} placeholder="Type your announcement…" value={message} onChange={e => setMessage(e.target.value)} />
           {isL3 && <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 12.5, color: "var(--ink-1)" }}><input type="checkbox" checked={postToFM} onChange={e => setPostToFM(e.target.checked)} /> Also post in FM Discord <span style={{ color: "var(--ink-3)", fontSize: 11 }}>— pings @Faction Management</span></label>}
+          <div style={{ marginTop: 8, fontSize: 10.5, color: "var(--ink-3)" }}>Every send is copied to the FM announcements log with its delivery report.</div>
           <div style={{ marginTop: 12 }}>
             <button className="btn" disabled={sending || !canSend} onClick={send} style={{ opacity: sending || !canSend ? 0.45 : 1 }}>
               {sending ? "Sending…" : (() => { const p = [selected.size > 0 && `${selected.size} faction${selected.size !== 1 ? "s" : ""} · ${chLabel(ct)}`, postToFM && "FM Discord"].filter(Boolean); return p.length ? `Send → ${p.join("  +  ")}` : "Send"; })()}
@@ -168,7 +177,7 @@ function IC({ targets, isL3 }) {
   const send = async () => { setSending(true); setResult(null); const r = await sendICCommunication([...selected], link, message, ct); setSending(false); setResult(r); if (r.ok && r.sent > 0) { setLink(""); setMessage(""); setSelected(new Set()); } };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 32, alignItems: "start" }}>
+    <div className="comms-cols">
       <div>
         <div className="card">
           <div className="hd"><div className="t">Image <span style={{ color: "var(--rose)" }}>*</span></div></div>
@@ -186,10 +195,10 @@ function IC({ targets, isL3 }) {
         <div className="card">
           <div className="hd"><div className="t">Message <span style={{ color: "var(--ink-3)", fontWeight: 400, textTransform: "none" }}>(optional)</span></div></div>
           <textarea className="filter-inp" rows={4} placeholder="Optional accompanying message…" value={message} onChange={e => setMessage(e.target.value)} style={{ marginTop: 6 }} />
-          <div className="codeblock" style={{ color: "var(--ink-1)", marginTop: 10 }}><b style={{ color: "var(--ink-0)" }}>A Message from Meridian</b>{message.trim() ? `\n\n${message.trim()}` : ""}{link.trim() ? "\n\n[image renders here]" : "\n\nPaste a link above to attach an image"}</div>
-          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 6 }}>FM IC channel receives: link only</div>
+          <div className="codeblock" style={{ color: "var(--ink-1)", marginTop: 10 }}><b style={{ color: "var(--ink-0)" }}>A Message from Meridian</b>{message.trim() ? `\n\n${message.trim()}` : ""}{link.trim() ? "\n\n[image renders here]" : "\n\nUpload an image above to attach it"}</div>
+          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 6 }}>FM IC log channel receives: the image, the caption and which factions it reached or failed.</div>
           <div style={{ marginTop: 12 }}><button className="btn" disabled={sending || !link.trim() || !selected.size} onClick={send} style={{ opacity: sending || !link.trim() || !selected.size ? 0.45 : 1 }}>{sending ? "Sending…" : `Send → ${selected.size} faction${selected.size !== 1 ? "s" : ""} · ${chLabel(ct)}`}</button></div>
-          <Result r={result} />
+          <Result r={result} ic />
         </div>
       </div>
       <Recipients targets={targets} ct={ct} setCt={setCt} selected={selected} setSelected={setSelected} isL3={isL3} />
@@ -205,20 +214,63 @@ function History({ auth, targets }) {
   const [kind, setKind] = useState("announcement");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const canSeeAll = auth.level >= 3 || auth.isLeadStoryteller;
-  const load = () => { setLoading(true); getAnnouncementHistory(kind).then(h => { setRows(h || []); setLoading(false); }).catch(() => setLoading(false)); };
+  const canSeeAll = auth.level >= 3;
+  const load = () => { if (kind === "thread") return; setLoading(true); getAnnouncementHistory(kind).then(h => { setRows(h || []); setLoading(false); }).catch(() => setLoading(false)); };
   useEffect(() => { load(); }, [kind]);
   return (
     <>
       <div className="sub-tabs" style={{ marginBottom: 14 }}>
         <button className={`tab${kind === "announcement" ? " on" : ""}`} onClick={() => setKind("announcement")}>Announcements</button>
         <button className={`tab${kind === "ic" ? " on" : ""}`} onClick={() => setKind("ic")}>IC</button>
+        <button className={`tab${kind === "thread" ? " on" : ""}`} onClick={() => setKind("thread")}>IC by faction</button>
       </div>
-      {!canSeeAll && <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 8 }}>Showing memos you sent.</div>}
-      {loading ? <div className="empty">Loading…</div> : rows.length === 0 ? <div className="empty">Nothing sent yet.</div> : (
-        <div className="card">{rows.map(r => <HistRow key={r.id} row={r} targets={targets} onRetried={load} />)}</div>
-      )}
+      {kind === "thread" ? <ICThread targets={targets} /> : <>
+        {!canSeeAll && <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 8 }}>Showing memos you sent.</div>}
+        {loading ? <div className="empty">Loading…</div> : rows.length === 0 ? <div className="empty">Nothing sent yet.</div> : (
+          <div className="card">{rows.map(r => <HistRow key={r.id} row={r} targets={targets} onRetried={load} />)}</div>
+        )}
+      </>}
     </>
+  );
+}
+
+// The IC memos one faction has actually received (faction_ic_messages — one
+// row per faction per successful send), newest first. Pick a faction from the
+// ones you can message.
+function ICThread({ targets }) {
+  const [fid, setFid] = useState(targets?.[0]?.faction_id || "");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [img, setImg] = useState(null);
+  useEffect(() => {
+    if (!fid) { setRows([]); return; }
+    setLoading(true);
+    getFactionICThread(fid).then(r => { setRows(r || []); setLoading(false); }).catch(() => setLoading(false));
+  }, [fid]);
+  const options = [...(targets || [])].sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    <div className="card">
+      <div className="hd">
+        <div className="t">IC thread</div>
+        <select className="filter-inp" style={{ maxWidth: 260 }} value={fid} onChange={e => setFid(Number(e.target.value) || "")}>
+          {!options.length && <option value="">No factions configured</option>}
+          {options.map(t => <option key={t.faction_id} value={t.faction_id}>{t.name} (T{t.tier})</option>)}
+        </select>
+      </div>
+      {loading ? <div className="empty">Loading…</div> : !fid ? <div className="empty">Pick a faction.</div> : rows.length === 0 ? <div className="empty">No IC memos have reached this faction yet.</div> : rows.map(m => (
+        <div key={m.id} className="comms-row comms-row-3">
+          <div style={{ fontSize: 12, color: "var(--ink-1)", fontWeight: 500 }}>{fmtSent(m.created_at)}</div>
+          <div style={{ fontSize: 12, color: "var(--ink-2)", wordBreak: "break-word" }}>{m.author_name || "—"}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{(m.message || "").trim() || "(image communication — no caption)"}</div>
+            {m.link && <div style={{ marginTop: 4 }}>
+              <button className="act" style={{ padding: "2px 8px" }} onClick={() => setImg(img === m.id ? null : m.id)}>{img === m.id ? "Hide image" : "View image"}</button>
+              {img === m.id && <div style={{ marginTop: 6 }}><img src={m.link} alt="IC" onError={e => e.target.style.display = "none"} style={{ maxWidth: "100%", maxHeight: 320, borderRadius: 8, border: "1px solid var(--line)" }} /><a href={m.link} target="_blank" rel="noreferrer" style={{ display: "block", marginTop: 4, fontSize: 10, color: "var(--ink-3)" }}>Open original ↗</a></div>}
+            </div>}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -246,18 +298,20 @@ function HistRow({ row, targets, onRetried }) {
       const ct = d.channel_type === "Faction-wide" ? "faction" : "command";
       if (hasChan(t, ct)) byCt[ct].add(t.config_id); else unmatched++;
     });
-    let sent = 0, total = 0;
+    // The resend carries the original message text (and image link for IC)
+    // unchanged; only the recipient list shrinks to the failed factions.
+    let sent = 0, total = 0, errs = [];
     for (const ct of ["command", "faction"]) {
       const ids = [...byCt[ct]];
       if (!ids.length) continue;
       const r = isICRow
-        ? await (sendICCommunication(ids, row.link, row.message || "", ct).catch(() => ({ ok: false })))
-        : await (sendAnnouncement(ids, row.message || "", false, ct).catch(() => ({ ok: false })));
-      if (r?.ok) { sent += r.sent || 0; total += r.total || ids.length; }
-      else total += ids.length;
+        ? await (sendICCommunication(ids, row.link, row.message || "", ct).catch(e => ({ ok: false, error: e?.message || "Send failed" })))
+        : await (sendAnnouncement(ids, row.message || "", false, ct).catch(e => ({ ok: false, error: e?.message || "Send failed" })));
+      sent += r?.sent || 0; total += r?.total || ids.length;
+      if (!r?.ok && r?.error) errs.push(r.error);
     }
     setRetrying(false);
-    setRetryMsg(`Resent ${sent}/${total}${unmatched ? ` · ${unmatched} no longer configured` : ""}`);
+    setRetryMsg(`Resent ${sent}/${total}${unmatched ? ` · ${unmatched} no longer configured` : ""}${errs.length ? ` · ${errs.join("; ")}` : ""}`);
     onRetried?.();
   };
   const isIC = row.kind === "ic";
@@ -271,7 +325,7 @@ function HistRow({ row, targets, onRetried }) {
   const showChan = row.channel_type === "both";
   const lines = (fmOnly && (row.deliveries || []).length === 0) ? [{ id: "fm", faction_name: "Faction Management", channel_type: "FM Discord", ok: row.sent_count > 0, error: "" }] : (row.deliveries || []);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "150px 80px 1fr 260px", gap: 14, padding: "14px 0", borderBottom: "1px solid var(--line)", alignItems: "start" }}>
+    <div className="comms-row comms-row-4">
       <div><div style={{ fontSize: 12, color: "var(--ink-1)", fontWeight: 500 }}>{fmtSent(row.created_at)}</div><div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 2 }}>{meta.sub}</div></div>
       <div style={{ fontSize: 12, color: "var(--ink-2)", wordBreak: "break-word" }}>{row.author_name || "—"}</div>
       <div style={{ minWidth: 0 }}>
@@ -288,7 +342,7 @@ function HistRow({ row, targets, onRetried }) {
         {!fmOnly && !isIC && row.posted_to_fm ? <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 3 }}>+ also posted to Faction Management</div> : null}
         {exp && <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>{lines.length === 0 ? <span style={{ fontSize: 11, color: "var(--ink-3)" }}>No delivery records.</span> : lines.map(d => <div key={d.id} style={{ fontSize: 11, color: d.ok ? "var(--good)" : "var(--rose)" }}>{d.ok ? "✓" : "✗"} {d.faction_name}{showChan && d.channel_type ? ` (${d.channel_type})` : ""}{!d.ok && d.error ? `: ${d.error}` : ""}</div>)}</div>}
         {canRetry && !retryMsg && <button className="act" style={{ marginTop: 6, color: "var(--amber)" }} disabled={retrying} onClick={retryFailed}>{retrying ? "Resending…" : `Retry failed (${failed.length})`}</button>}
-        {retryMsg && <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: "var(--good)" }}>✓ {retryMsg}</div>}
+        {retryMsg && <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: retryMsg.startsWith("Resent 0/") ? "var(--rose)" : "var(--good)" }}>{retryMsg.startsWith("Resent 0/") ? "✗" : "✓"} {retryMsg}</div>}
       </div>
     </div>
   );

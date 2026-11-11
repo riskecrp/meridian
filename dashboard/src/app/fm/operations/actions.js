@@ -1,12 +1,43 @@
 "use server";
+import { revalidatePath } from "next/cache";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendPing, pingChannel, taskComponents, rpComponents } from "../../../lib/pings.js";
+import { sendPing, pingChannel } from "../../../lib/pings.js";
+import { getRole } from "../../../lib/discord.js";
 import { requireActor } from "../../../lib/requireActor.js";
-import { today } from "../../../lib/format.js";
-import { GAME_AFFAIRS_ID, isOwner } from "../../../lib/constants.js";
+import { isOwner } from "../../../lib/constants.js";
+import { resolveFaction } from "../../../lib/access.js";
+import { TIER_DEFAULTS, getEffectiveLimits, fleetState, checkFleetAdd } from "../../../lib/fleet.js";
+import * as rp from "../../../../../shared/rpChanges.js";
+import * as tasks from "../../../../../shared/tasks.js";
+import { str, toInt, toNum, isSnowflake, fail, PROPERTY_TYPES } from "../../../../../shared/validate.js";
+import { todayIso, nowIso } from "../../../../../shared/dates.js";
 
 // All Operations actions are L3-only unless explicitly noted otherwise.
+// Mutations validate first and return { ok:false, error } — SQLite never throws
+// into the browser from here.
+
+function bump(...paths) {
+  for (const p of ['/fm/operations', '/fm/dashboard', '/v2/leadership', '/v2/admin', ...paths]) {
+    try { revalidatePath(p); } catch {}
+  }
+}
+
+/**
+ * A faction by id, or by name (exact, then case-insensitive). The global
+ * property / bot-config pickers still send names, and a typo must become an
+ * error rather than a silent unassign. Archived factions are refused unless
+ * `allowArchived`.
+ */
+function findFaction(idOrName, { allowArchived = false } = {}) {
+  const v = idOrName == null ? '' : String(idOrName).trim();
+  if (!v) return { error: 'Faction not found.' };
+  let r = resolveFaction(v, { allowArchived: true });
+  let f = r.faction || queryOne("SELECT * FROM factions WHERE LOWER(name) = LOWER(?)", [v]);
+  if (!f) return { error: `No faction called "${v}".` };
+  if (f.archived && !allowArchived) return { error: `${f.name} is archived; restore it before making changes.`, faction: f };
+  return { faction: f };
+}
 
 // ── ANALYTICS ──
 export async function getAnalytics() {
@@ -17,44 +48,116 @@ export async function getAnalytics() {
 }
 
 // ── PROPERTIES ──
+// Reads stay global (L2+, Event Team and Lead Storytellers may look). Writes are
+// L3: policy 4 makes Event Team read-only here, and policy 16 sends a faction's
+// own property changes through the RP-change queue (change_type PROPERTY).
 export async function getGlobalProperties() {
   await requireActor(2, {allowEventTeam: true, allowLeadStoryteller: true});
-  return query("SELECT p.id, p.date_given, COALESCE(f.name,'') as faction, p.address, p.property_type as type, p.is_hq, p.confiscated, p.date_confiscated, p.confiscated_by, p.current_owner, p.notes FROM properties p LEFT JOIN factions f ON p.faction_id=f.id ORDER BY p.address");
+  return query(`SELECT p.id, p.date_given, COALESCE(f.name,'') AS faction, p.faction_id, COALESCE(f.archived, 0) AS faction_archived,
+                       p.address, p.property_type AS type, p.is_hq, p.confiscated, p.date_confiscated, p.confiscated_by, p.current_owner, p.notes,
+                       CASE WHEN p.confiscated = 1 THEN 'CONFISCATED' WHEN p.faction_id IS NULL THEN 'UNASSIGNED' WHEN COALESCE(f.archived,0) = 1 THEN 'ARCHIVED' ELSE 'ACTIVE' END AS status
+                FROM properties p LEFT JOIN factions f ON p.faction_id = f.id ORDER BY p.address`);
 }
+
+function propertyType(v, isHQ) {
+  const t = str(v);
+  if (isHQ) return 'HQ';
+  if (!t || t === 'HQ') return 'Property';
+  return PROPERTY_TYPES.includes(t) ? t : t.slice(0, 40);
+}
+
+/** One HQ per faction: flag `propId` and un-flag the faction's others (HQ type follows the flag). */
+function makeSoleHQ(factionId, propId) {
+  if (!factionId) return;
+  run("UPDATE properties SET is_hq = 0, property_type = CASE WHEN property_type = 'HQ' THEN 'Property' ELSE property_type END, updated_at = ? WHERE faction_id = ? AND id != ? AND is_hq = 1", [nowIso(), factionId, propId]);
+}
+
 export async function addGlobalProperty(data) {
-  const actor = await requireActor(3, {allowEventTeam: true});
-  const fac = data.faction ? queryOne("SELECT id FROM factions WHERE name=?", [data.faction]) : null;
-  run("INSERT INTO properties (date_given, faction_id, address, property_type, is_hq, current_owner, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [new Date().toISOString().split('T')[0], fac?.id||null, data.address, data.type||'Property', data.isHQ?1:0, data.owner||'', data.notes||'']);
-  logAudit(actor.id, actor.name, 'CREATE', 'property', null, data.address, '');
-  return { ok: true };
+  const actor = await requireActor(3);
+  data = data && typeof data === 'object' ? data : {};
+  const address = str(data.address, { max: 200 });
+  if (!address) return fail('An address is required.');
+  let faction = null;
+  if (str(data.faction) || data.factionId) {
+    const r = findFaction(data.factionId || data.faction);
+    if (r.error) return fail(r.error);
+    faction = r.faction;
+  }
+  const isHQ = !!data.isHQ && !!faction;
+  const type = propertyType(data.type, isHQ);
+  const id = Number(run("INSERT INTO properties (date_given, faction_id, address, property_type, is_hq, current_owner, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [faction ? todayIso() : null, faction?.id || null, address, type, isHQ ? 1 : 0, str(data.owner, { max: 100 }), str(data.notes, { max: 2000 })]).lastInsertRowid);
+  if (isHQ) makeSoleHQ(faction.id, id);
+  if (faction) {
+    run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by) VALUES (?, ?, 'PROPERTY_ADDED', ?, ?)",
+      [faction.id, faction.name, `${isHQ ? 'HQ' : type}: ${address}`, actor.name]);
+  }
+  logAudit(actor.id, actor.name, 'CREATE', 'property', id, address, faction ? `Assigned to ${faction.name}${isHQ ? ' (HQ)' : ''}` : 'Unassigned');
+  bump('/fm/operations/properties');
+  return { ok: true, id };
 }
+
 export async function editPropertyDetail(propId, data) {
-  const actor = await requireActor(3, {allowEventTeam: true});
-  run("UPDATE properties SET address=?, property_type=?, is_hq=?, current_owner=?, notes=?, updated_at=datetime('now') WHERE id=?",
-    [data.address, data.type || 'Property', data.isHQ ? 1 : 0, data.owner ?? '', data.notes ?? '', propId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'property', propId, data.address || '', 'Updated property');
+  const actor = await requireActor(3);
+  data = data && typeof data === 'object' ? data : {};
+  const row = queryOne("SELECT * FROM properties WHERE id = ?", [toInt(propId)]);
+  if (!row) return fail('Property not found.');
+  // Partial objects keep the other fields.
+  const address = data.address === undefined ? row.address : str(data.address, { max: 200 });
+  if (!address) return fail('An address is required.');
+  const isHQ = data.isHQ === undefined ? !!row.is_hq : !!data.isHQ;
+  if (isHQ && !row.faction_id) return fail('Assign the property to a faction before making it the HQ.');
+  const type = data.type === undefined && data.isHQ === undefined ? row.property_type : propertyType(data.type === undefined ? row.property_type : data.type, isHQ);
+  const owner = data.owner === undefined ? row.current_owner : str(data.owner, { max: 100 });
+  const notes = data.notes === undefined ? row.notes : str(data.notes, { max: 2000 });
+  run("UPDATE properties SET address = ?, property_type = ?, is_hq = ?, current_owner = ?, notes = ?, updated_at = ? WHERE id = ?",
+    [address, type, isHQ ? 1 : 0, owner, notes, nowIso(), row.id]);
+  if (isHQ) makeSoleHQ(row.faction_id, row.id);
+  logAudit(actor.id, actor.name, 'EDIT', 'property', row.id, address, `Updated property${isHQ && !row.is_hq ? ' — now the HQ' : ''}`);
+  bump('/fm/operations/properties');
   return { ok: true };
 }
-export async function assignProperty(propId, factionName) {
-  const actor = await requireActor(3, {allowEventTeam: true});
-  const fac = queryOne("SELECT id FROM factions WHERE name=?", [factionName]);
-  run("UPDATE properties SET faction_id=?, date_given=?, confiscated=0, date_confiscated=NULL, confiscated_by=NULL, updated_at=datetime('now') WHERE id=?",
-    [fac?.id, new Date().toISOString().split('T')[0], propId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'property', propId, '', 'Assigned to '+factionName);
+
+/** `factionRef` may be an id or a name; a miss is an error, never an unassign. */
+export async function assignProperty(propId, factionRef) {
+  const actor = await requireActor(3);
+  const row = queryOne("SELECT * FROM properties WHERE id = ?", [toInt(propId)]);
+  if (!row) return fail('Property not found.');
+  const r = findFaction(factionRef);
+  if (r.error) return fail(r.error);
+  const faction = r.faction;
+  run("UPDATE properties SET faction_id = ?, date_given = ?, confiscated = 0, date_confiscated = NULL, confiscated_by = NULL, is_hq = 0, property_type = CASE WHEN property_type = 'HQ' THEN 'Property' ELSE property_type END, updated_at = ? WHERE id = ?",
+    [faction.id, todayIso(), nowIso(), row.id]);
+  run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by) VALUES (?, ?, 'PROPERTY_ADDED', ?, ?)",
+    [faction.id, faction.name, `Assigned: ${row.address}`, actor.name]);
+  logAudit(actor.id, actor.name, 'EDIT', 'property', row.id, row.address, `Assigned to ${faction.name}`);
+  bump('/fm/operations/properties');
   return { ok: true };
 }
+
 export async function confiscateProperty(propId) {
-  const actor = await requireActor(3, {allowEventTeam: true});
-  run("UPDATE properties SET faction_id=NULL, confiscated=1, date_confiscated=?, confiscated_by=?, updated_at=datetime('now') WHERE id=?",
-    [new Date().toISOString().split('T')[0], actor.name, propId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'property', propId, '', 'Confiscated');
+  const actor = await requireActor(3);
+  const row = queryOne("SELECT p.*, f.name AS faction_name FROM properties p LEFT JOIN factions f ON f.id = p.faction_id WHERE p.id = ?", [toInt(propId)]);
+  if (!row) return fail('Property not found.');
+  if (row.confiscated) return fail('Already confiscated.');
+  run("UPDATE properties SET faction_id = NULL, is_hq = 0, property_type = CASE WHEN property_type = 'HQ' THEN 'Property' ELSE property_type END, confiscated = 1, date_confiscated = ?, confiscated_by = ?, updated_at = ? WHERE id = ?",
+    [todayIso(), actor.name, nowIso(), row.id]);
+  if (row.faction_id) {
+    run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by) VALUES (?, ?, 'PROPERTY_CONFISCATED', ?, ?)",
+      [row.faction_id, row.faction_name || '', row.address, actor.name]);
+  }
+  logAudit(actor.id, actor.name, 'EDIT', 'property', row.id, row.address, `Confiscated${row.faction_name ? ` from ${row.faction_name}` : ''}`);
+  bump('/fm/operations/properties');
   return { ok: true };
 }
+
 export async function deleteProperty(propId) {
-  const actor = await requireActor(3, {allowEventTeam: true});
-  run("DELETE FROM properties WHERE id=?", [propId]);
-  logAudit(actor.id, actor.name, 'DELETE', 'property', propId, '', '');
+  const actor = await requireActor(3);
+  const row = queryOne("SELECT id, address FROM properties WHERE id = ?", [toInt(propId)]);
+  if (!row) return fail('Property not found.');
+  run("DELETE FROM properties WHERE id = ?", [row.id]);
+  logAudit(actor.id, actor.name, 'DELETE', 'property', row.id, row.address, '');
+  bump('/fm/operations/properties');
   return { ok: true };
 }
 
@@ -65,14 +168,20 @@ export async function getMdbAccessRoles() {
 }
 export async function addMdbAccessRole(data) {
   const actor = await requireActor(3);
-  run("INSERT OR IGNORE INTO mdb_access_roles (role_id, role_name) VALUES (?,?)", [data.role_id.trim(), data.role_name?.trim()||'']);
-  logAudit(actor.id, actor.name, 'CREATE', 'mdb_role', null, data.role_name||data.role_id, '');
+  data = data && typeof data === 'object' ? data : {};
+  const roleId = str(data.role_id);
+  if (!isSnowflake(roleId)) return fail('That is not a Discord role id.');
+  const r = run("INSERT OR IGNORE INTO mdb_access_roles (role_id, role_name) VALUES (?, ?)", [roleId, str(data.role_name, { max: 100 })]);
+  if (!r.changes) return fail('That role is already on the list.');
+  logAudit(actor.id, actor.name, 'CREATE', 'mdb_role', Number(r.lastInsertRowid), str(data.role_name) || roleId, roleId);
   return { ok: true };
 }
 export async function deleteMdbAccessRole(id) {
   const actor = await requireActor(3);
-  run("DELETE FROM mdb_access_roles WHERE id=?", [id]);
-  logAudit(actor.id, actor.name, 'DELETE', 'mdb_role', id, '', '');
+  const row = queryOne("SELECT * FROM mdb_access_roles WHERE id = ?", [toInt(id)]);
+  if (!row) return fail('Not found.');
+  run("DELETE FROM mdb_access_roles WHERE id = ?", [row.id]);
+  logAudit(actor.id, actor.name, 'DELETE', 'mdb_role', row.id, row.role_name || row.role_id, '');
   return { ok: true };
 }
 
@@ -84,61 +193,97 @@ export async function getBotServerConfigs() {
   const watchRoles = query(`SELECT * FROM bot_watch_roles ORDER BY role_name`);
   return servers.map(s => ({ ...s, watchRoles: watchRoles.filter(r => r.config_id === s.id) }));
 }
+// Optional snowflake field: '' when blank, error text when malformed.
+function optSnowflake(v, label) {
+  const s = str(v);
+  if (!s) return { value: '' };
+  return isSnowflake(s) ? { value: s } : { error: `${label} is not a Discord id.` };
+}
+function botConfigFields(data) {
+  const out = {};
+  for (const [k, label] of [['access_role_id', 'Access role'], ['comms_channel_id', 'Comms channel'], ['faction_channel_id', 'Faction channel']]) {
+    const r = optSnowflake(data[k], label);
+    if (r.error) return { error: r.error };
+    out[k] = r.value;
+  }
+  out.guild_name = str(data.guild_name, { max: 100 });
+  out.access_role_name = str(data.access_role_name, { max: 100 });
+  out.comms_channel_name = str(data.comms_channel_name, { max: 100 });
+  out.faction_channel_name = str(data.faction_channel_name, { max: 100 });
+  out.faction_id = null;
+  if (str(data.faction) || data.faction_id) {
+    const f = findFaction(data.faction_id || data.faction, { allowArchived: true });
+    if (f.error) return { error: f.error };
+    out.faction_id = f.faction.id;
+  }
+  return { fields: out };
+}
 export async function addBotServerConfig(data) {
   const actor = await requireActor(3);
-  const existing = queryOne("SELECT id FROM bot_server_configs WHERE guild_id=?", [data.guild_id.trim()]);
+  data = data && typeof data === 'object' ? data : {};
+  const guildId = str(data.guild_id);
+  if (!isSnowflake(guildId)) return fail('A Discord server id is required.');
+  const existing = queryOne("SELECT id FROM bot_server_configs WHERE guild_id=?", [guildId]);
   if (existing) return { ok: false, error: 'Server already configured.' };
-  const fac = data.faction ? queryOne("SELECT id FROM factions WHERE name=?", [data.faction]) : null;
+  const v = botConfigFields(data);
+  if (v.error) return fail(v.error);
+  const f = v.fields;
   const result = run(
     "INSERT INTO bot_server_configs (guild_id, guild_name, faction_id, access_role_id, access_role_name, comms_channel_id, comms_channel_name, faction_channel_id, faction_channel_name) VALUES (?,?,?,?,?,?,?,?,?)",
-    [data.guild_id.trim(), data.guild_name?.trim()||'', fac?.id||null,
-     data.access_role_id?.trim()||'', data.access_role_name?.trim()||'',
-     data.comms_channel_id?.trim()||'', data.comms_channel_name?.trim()||'',
-     data.faction_channel_id?.trim()||'', data.faction_channel_name?.trim()||'']);
-  logAudit(actor.id, actor.name, 'CREATE', 'bot_config', null, data.guild_name||data.guild_id, '');
-  const newId = result.lastInsertRowid;
-  const guildId = data.guild_id.trim();
-  const guildName = data.guild_name?.trim() || guildId;
+    [guildId, f.guild_name, f.faction_id, f.access_role_id, f.access_role_name, f.comms_channel_id, f.comms_channel_name, f.faction_channel_id, f.faction_channel_name]);
+  const newId = Number(result.lastInsertRowid);
+  logAudit(actor.id, actor.name, 'CREATE', 'bot_config', newId, f.guild_name || guildId, '');
+  const guildName = f.guild_name || guildId;
   backfillGuildPings(guildId, guildName, newId, []).catch(e => console.error('[BACKFILL]', e.message));
-  return { ok: true };
+  return { ok: true, id: newId };
 }
 export async function updateBotServerConfig(id, data) {
   const actor = await requireActor(3);
-  const fac = data.faction ? queryOne("SELECT id FROM factions WHERE name=?", [data.faction]) : null;
-  const facId = data.faction ? (fac?.id || null) : null;
+  data = data && typeof data === 'object' ? data : {};
+  const row = queryOne("SELECT * FROM bot_server_configs WHERE id = ?", [toInt(id)]);
+  if (!row) return fail('Server config not found.');
+  const v = botConfigFields(data);
+  if (v.error) return fail(v.error);
+  const f = v.fields;
   run(`UPDATE bot_server_configs SET guild_name=?, faction_id=?, access_role_id=?, access_role_name=?,
        comms_channel_id=?, comms_channel_name=?, faction_channel_id=?, faction_channel_name=? WHERE id=?`,
-    [data.guild_name?.trim()||'', facId, data.access_role_id?.trim()||'', data.access_role_name?.trim()||'',
-     data.comms_channel_id?.trim()||'', data.comms_channel_name?.trim()||'',
-     data.faction_channel_id?.trim()||'', data.faction_channel_name?.trim()||'', id]);
-  logAudit(actor.id, actor.name, 'EDIT', 'bot_config', id, data.guild_name||'', '');
+    [f.guild_name, f.faction_id, f.access_role_id, f.access_role_name, f.comms_channel_id, f.comms_channel_name, f.faction_channel_id, f.faction_channel_name, row.id]);
+  logAudit(actor.id, actor.name, 'EDIT', 'bot_config', row.id, f.guild_name || row.guild_id, '');
   return { ok: true };
 }
 export async function deleteBotServerConfig(id) {
   const actor = await requireActor(3);
-  run("DELETE FROM bot_watch_roles WHERE config_id=?", [id]);
-  run("DELETE FROM bot_server_configs WHERE id=?", [id]);
-  logAudit(actor.id, actor.name, 'DELETE', 'bot_config', id, '', '');
+  const row = queryOne("SELECT * FROM bot_server_configs WHERE id = ?", [toInt(id)]);
+  if (!row) return fail('Server config not found.');
+  transaction(() => {
+    run("DELETE FROM bot_watch_roles WHERE config_id=?", [row.id]);
+    run("DELETE FROM bot_server_configs WHERE id=?", [row.id]);
+  });
+  logAudit(actor.id, actor.name, 'DELETE', 'bot_config', row.id, row.guild_name || row.guild_id, '');
   return { ok: true };
 }
 export async function addBotWatchRole(data) {
   const actor = await requireActor(3);
-  run("INSERT INTO bot_watch_roles (config_id, role_id, role_name) VALUES (?,?,?)",
-    [data.config_id, data.role_id.trim(), data.role_name?.trim()||'']);
-  logAudit(actor.id, actor.name, 'CREATE', 'bot_watch_role', null, data.role_name||data.role_id, '');
+  data = data && typeof data === 'object' ? data : {};
+  const roleId = str(data.role_id);
+  if (!isSnowflake(roleId)) return fail('That is not a Discord role id.');
+  const cfg = queryOne("SELECT id, guild_id, guild_name FROM bot_server_configs WHERE id = ?", [toInt(data.config_id)]);
+  if (!cfg) return fail('Server config not found.');
+  if (queryOne("SELECT 1 FROM bot_watch_roles WHERE config_id = ? AND role_id = ?", [cfg.id, roleId])) return fail('That role is already monitored.');
+  const roleName = str(data.role_name, { max: 100 });
+  const ins = run("INSERT INTO bot_watch_roles (config_id, role_id, role_name) VALUES (?,?,?)", [cfg.id, roleId, roleName]);
+  logAudit(actor.id, actor.name, 'CREATE', 'bot_watch_role', Number(ins.lastInsertRowid), roleName || roleId, `Server ${cfg.guild_name || cfg.guild_id}`);
   // Backfill last 150 messages for this specific new role in the background
-  const cfg = queryOne("SELECT guild_id, guild_name FROM bot_server_configs WHERE id = ?", [data.config_id]);
-  if (cfg) {
-    const newRole = [{ role_id: data.role_id.trim(), role_name: data.role_name?.trim() || '' }];
-    backfillGuildPings(cfg.guild_id, cfg.guild_name, data.config_id, newRole)
-      .catch(e => console.error('[BACKFILL]', e.message));
-  }
+  backfillGuildPings(cfg.guild_id, cfg.guild_name, cfg.id, [{ role_id: roleId, role_name: roleName }])
+    .catch(e => console.error('[BACKFILL]', e.message));
   return { ok: true };
 }
 export async function deleteBotWatchRole(id) {
   const actor = await requireActor(3);
-  run("DELETE FROM bot_watch_roles WHERE id=?", [id]);
-  logAudit(actor.id, actor.name, 'DELETE', 'bot_watch_role', id, '', '');
+  const row = queryOne("SELECT * FROM bot_watch_roles WHERE id = ?", [toInt(id)]);
+  if (!row) return fail('Watch role not found.');
+  run("DELETE FROM bot_watch_roles WHERE id=?", [row.id]);
+  logAudit(actor.id, actor.name, 'DELETE', 'bot_watch_role', row.id, row.role_name || row.role_id, '');
   return { ok: true };
 }
 // ── IMPORTS ──
@@ -157,25 +302,60 @@ export async function getGlobalImports() {
     })
   };
 }
+function importFields(data, row = {}) {
+  const name = data.name === undefined ? row.name : str(data.name, { max: 100 });
+  if (!name) return { error: 'A name is required.' };
+  return { fields: {
+    name,
+    category: data.category === undefined ? (row.category || 'General') : (str(data.category, { max: 50 }) || 'General'),
+    tier: data.tier === undefined ? (row.tier ?? '1') : String(toInt(data.tier, { min: 0, max: 9, def: toInt(row.tier, { def: 1 }) })),
+    price: data.price === undefined ? (row.price || '') : str(data.price, { max: 50 }),
+    import_time: data.importTime === undefined ? (row.import_time || '') : str(data.importTime, { max: 50 }),
+    shipment_power: data.shipmentPower === undefined ? (row.shipment_power || '') : str(data.shipmentPower, { max: 50 }),
+  } };
+}
 export async function addImportItem(data) {
-  const actor = await requireActor(3, {allowEventTeam: true});
-  run("INSERT INTO import_items (name, category, tier, price, import_time, shipment_power) VALUES (?, ?, ?, ?, ?, ?)",
-    [data.name, data.category||'General', data.tier||'1', data.price||'', data.importTime||'', data.shipmentPower||'']);
-  logAudit(actor.id, actor.name, 'CREATE', 'import_item', null, data.name, '');
-  return { ok: true };
+  const actor = await requireActor(3);
+  const v = importFields(data && typeof data === 'object' ? data : {});
+  if (v.error) return fail(v.error);
+  const f = v.fields;
+  const ins = run("INSERT INTO import_items (name, category, tier, price, import_time, shipment_power) VALUES (?, ?, ?, ?, ?, ?)",
+    [f.name, f.category, f.tier, f.price, f.import_time, f.shipment_power]);
+  logAudit(actor.id, actor.name, 'CREATE', 'import_item', Number(ins.lastInsertRowid), f.name, `T${f.tier} ${f.category}`);
+  return { ok: true, id: Number(ins.lastInsertRowid) };
 }
 export async function editImportItem(id, data) {
-  const actor = await requireActor(3, {allowEventTeam: true});
+  const actor = await requireActor(3);
+  const row = queryOne("SELECT * FROM import_items WHERE id = ?", [toInt(id)]);
+  if (!row) return fail('Import item not found.');
+  const v = importFields(data && typeof data === 'object' ? data : {}, row);
+  if (v.error) return fail(v.error);
+  const f = v.fields;
   run("UPDATE import_items SET name=?, category=?, tier=?, price=?, import_time=?, shipment_power=? WHERE id=?",
-    [data.name, data.category, data.tier, data.price||'', data.importTime||'', data.shipmentPower||'', id]);
-  logAudit(actor.id, actor.name, 'EDIT', 'import_item', id, data.name, '');
+    [f.name, f.category, f.tier, f.price, f.import_time, f.shipment_power, row.id]);
+  logAudit(actor.id, actor.name, 'EDIT', 'import_item', row.id, f.name, '');
   return { ok: true };
 }
-export async function deleteImportItem(itemId) {
-  const actor = await requireActor(3, {allowEventTeam: true});
-  run("DELETE FROM import_items WHERE id=?", [itemId]);
-  logAudit(actor.id, actor.name, 'DELETE', 'import_item', itemId, '', '');
-  return { ok: true };
+export async function deleteImportItem(itemId, opts) {
+  const actor = await requireActor(3);
+  const row = queryOne("SELECT * FROM import_items WHERE id = ?", [toInt(itemId)]);
+  if (!row) return fail('Import item not found.');
+  const losing = query(`SELECT f.id, f.name FROM faction_imports fi JOIN factions f ON f.id = fi.faction_id
+                        WHERE fi.item_id = ? AND fi.permitted = 1 ORDER BY f.name`, [row.id]);
+  if (losing.length && !(opts && opts.confirmRevoke === true)) {
+    return fail(`"${row.name}" is permitted to ${losing.length} faction${losing.length === 1 ? '' : 's'} (${losing.map(f => f.name).join(', ')}). Confirm that you want to revoke it from all of them.`, { needsConfirm: true, factions: losing.map(f => f.name) });
+  }
+  transaction(() => {
+    for (const f of losing) {
+      run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by, created_at) VALUES (?, ?, 'IMPORT_REVOKED', ?, ?, ?)",
+        [f.id, f.name, `Import "${row.name}" (T${row.tier}) removed from the catalog — permission revoked`, actor.name, nowIso()]);
+    }
+    run("DELETE FROM faction_imports WHERE item_id = ?", [row.id]);
+    run("DELETE FROM import_items WHERE id = ?", [row.id]);
+  });
+  logAudit(actor.id, actor.name, 'DELETE', 'import_item', row.id, row.name,
+    losing.length ? `Revoked from ${losing.length} faction(s): ${losing.map(f => f.name).join(', ')}` : 'No faction had it');
+  return { ok: true, revoked: losing.map(f => f.name) };
 }
 
 // ── DELETION REQUESTS ──
@@ -183,130 +363,94 @@ export async function getPendingDeletions() {
   await requireActor(3);
   return query("SELECT * FROM deletion_requests WHERE status='PENDING' ORDER BY created_at DESC");
 }
+const DELETION_TABLES = { scene_log: 'scene_logs', intel_note: 'intel_notes', ooc_note: 'ooc_notes', member: 'faction_members' };
 export async function resolveDeletion(reqId, approve) {
   const actor = await requireActor(3);
-  const req = queryOne("SELECT * FROM deletion_requests WHERE id=?", [reqId]);
-  if (!req) return { ok: false };
-  if (approve && req.target_row_id) {
-    const tables = { scene_log:'scene_logs', intel_note:'intel_notes', ooc_note:'ooc_notes', task:'tasks', member:'faction_members' };
-    const tbl = tables[req.content_type];
-    if (tbl) run(`DELETE FROM ${tbl} WHERE id=?`, [req.target_row_id]);
+  const req = queryOne("SELECT * FROM deletion_requests WHERE id=?", [toInt(reqId)]);
+  if (!req) return fail('Deletion request not found.');
+  if (req.status !== 'PENDING') return fail(`Already ${String(req.status).toLowerCase()}.`);
+  let detail = '';
+  if (approve) {
+    if (req.content_type === 'task') {
+      // Tasks are never hard-deleted (policy 10): a deletion request removes it from view.
+      const r = run("UPDATE tasks SET status = 'removed', updated_at = ? WHERE task_uid = ? OR id = ?", [nowIso(), String(req.target_row_id || ''), toInt(req.target_row_id, { def: -1 })]);
+      detail = r.changes ? 'Task removed from view' : 'Task was already gone';
+    } else {
+      const tbl = DELETION_TABLES[req.content_type];
+      if (!tbl) return fail(`Deletion requests for "${req.content_type}" cannot be approved from here.`);
+      if (!req.target_row_id) return fail('This request names no record to delete.');
+      const r = run(`DELETE FROM ${tbl} WHERE id=?`, [req.target_row_id]);
+      detail = r.changes ? `Deleted ${tbl} #${req.target_row_id}` : `${tbl} #${req.target_row_id} was already gone`;
+    }
   }
-  run("UPDATE deletion_requests SET status=?, resolved_by=?, resolved_at=datetime('now') WHERE id=?",
-    [approve?'APPROVED':'REJECTED', actor.name, reqId]);
-  logAudit(actor.id, actor.name, approve?'APPROVE':'REJECT', 'deletion_request', reqId, req.content_type, '');
+  run("UPDATE deletion_requests SET status=?, resolved_by=?, resolved_at=? WHERE id=?",
+    [approve ? 'APPROVED' : 'REJECTED', actor.name, nowIso(), req.id]);
+  logAudit(actor.id, actor.name, approve ? 'APPROVE' : 'REJECT', 'deletion_request', req.id, req.content_type, detail);
+  bump();
   return { ok: true };
 }
 
 // ── PENDING RP CHANGES ──
+// The pipeline itself lives in shared/rpChanges.js (the bot's rpc:* buttons call
+// the same functions). These are thin wrappers: gate → shared → revalidate.
 export async function getPendingExecutions() {
   await requireActor(3);
-  return query("SELECT pe.id, pe.date, pe.status, f.name as faction, pe.execution_type as type, pe.turf, pe.old_value, pe.new_value, pe.requested_by, pe.deny_reason, pe.rp_note, (SELECT GROUP_CONCAT(n.name || ' (' || n.npc_type || ')', ', ') FROM npcs n WHERE n.turf=pe.turf AND n.npc_type=pe.old_value) as npcDetails FROM pending_executions pe JOIN factions f ON pe.faction_id=f.id WHERE pe.status IN ('PENDING','APPROVED','RP_DONE') ORDER BY pe.created_at DESC");
+  return rp.pendingExecutions();
 }
-export async function deleteRPChange(execId) {
+export async function deleteRPChange(execId, reason) {
   const actor = await requireActor(3);
-  const exec = queryOne("SELECT pe.*, f.name as faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id=f.id WHERE pe.id=?", [execId]);
-  if (!exec) return { ok: false, error: 'Not found' };
-  run("DELETE FROM pending_executions WHERE id=?", [execId]);
-  logAudit(actor.id, actor.name, 'DELETE', 'rp_change', execId, exec.faction_name, `Deleted ${exec.execution_type} request`);
-  return { ok: true };
+  const r = await rp.deleteRPChange(actor, execId, reason);
+  if (r.ok) bump('/fm/operations/analytics');
+  return r;
 }
 
 export async function approveRPChange(execId) {
   const actor = await requireActor(3);
-  const exec = queryOne("SELECT pe.*, f.name as faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id=f.id WHERE pe.id=?", [execId]);
-  if (!exec) return { ok: false };
-  run("UPDATE pending_executions SET status='APPROVED', approver_id=? WHERE id=?", [actor.id, execId]);
-  run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by) VALUES (?,?,'RP_CHANGE_APPROVED',?,?)",
-    [exec.faction_id, exec.faction_name, `${exec.execution_type}: ${exec.old_value} → ${exec.new_value}`, actor.name]);
-  logAudit(actor.id, actor.name, 'APPROVE', 'rp_change', execId, exec.faction_name, `Approved ${exec.execution_type}`);
-  if (exec.requester_id) {
-    await sendPing('rp.approved.requester',
-      `<@${exec.requester_id}> ✅ Your RP change request for **${exec.faction_name}** has been approved — **${exec.old_value} → ${exec.new_value}**. Schedule and run the scene, then press **Confirm RP done** here or under Leadership → Approvals.`,
-      { components: rpComponents(execId, 'approved') });
-  }
-  return { ok: true };
+  const r = await rp.approveRPChange(actor, execId);
+  if (r.ok) bump('/fm/operations/analytics');
+  return r;
 }
 
 export async function denyRPChange(execId, reason) {
   const actor = await requireActor(3);
-  const exec = queryOne("SELECT pe.*, f.name as faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id=f.id WHERE pe.id=?", [execId]);
-  if (!exec) return { ok: false };
-  run("UPDATE pending_executions SET status='DENIED', deny_reason=? WHERE id=?", [reason || '', execId]);
-  logAudit(actor.id, actor.name, 'REJECT', 'rp_change', execId, exec.faction_name, reason || '');
-  if (exec.requester_id) {
-    await sendPing('rp.denied.requester',
-      `<@${exec.requester_id}> ❌ Your RP change request for **${exec.faction_name}** was denied.\n**Reason:** ${reason || 'No reason provided.'}\nPlease respond with additional context and resubmit via your dashboard.`);
-  }
-  return { ok: true };
+  const r = await rp.denyRPChange(actor, execId, reason);
+  if (r.ok) bump('/fm/operations/analytics');
+  return r;
 }
 
+// Level 0 = any signed-in staffer: the shared function checks requester identity.
 export async function resubmitRPChange(execId, note) {
-  const actor = await requireActor(1);
-  const exec = queryOne("SELECT pe.*, f.name as faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id=f.id WHERE pe.id=?", [execId]);
-  if (!exec) return { ok: false };
-  if (exec.requester_id !== actor.id) return { ok: false, error: 'Not your request.' };
-  run("UPDATE pending_executions SET status='PENDING', rp_note=?, deny_reason='' WHERE id=?", [note || '', execId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'rp_change', execId, exec.faction_name, 'Resubmitted');
-  await sendPing('rp.resubmitted',
-    `🔄 **RP Change Resubmitted** — **${exec.faction_name}**\n**Type:** ${exec.execution_type}\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Requested By:** ${exec.requested_by}${note ? `\n**Additional Context:** ${note}` : ''}`,
-    { components: rpComponents(execId, 'pending') });
-  return { ok: true };
+  const actor = await requireActor(0);
+  const r = await rp.resubmitRPChange(actor, execId, note);
+  if (r.ok) bump('/fm/operations/analytics');
+  return r;
 }
 
 export async function markRPDone(execId, note) {
-  const actor = await requireActor(1);
-  const exec = queryOne("SELECT pe.*, f.name as faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id=f.id WHERE pe.id=?", [execId]);
-  if (!exec) return { ok: false };
-  if (exec.requester_id !== actor.id && actor.level < 3) return { ok: false, error: 'Not your request.' };
-  run("UPDATE pending_executions SET status='RP_DONE', rp_note=? WHERE id=?", [note || '', execId]);
-  logAudit(actor.id, actor.name, 'EDIT', 'rp_change', execId, exec.faction_name, 'RP marked done');
-  await sendPing('rp.done',
-    `🎬 **RP Scene Complete** — **${exec.faction_name}**\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Confirmed By:** ${actor.name}${note ? `\n**Note:** ${note}` : ''}\n\nReady to execute the ${exec.execution_type} change — press **Execute…** here or use Leadership → Approvals.`,
-    { components: rpComponents(execId, 'done') });
-  return { ok: true };
+  const actor = await requireActor(0);
+  const r = await rp.markRPDone(actor, execId, note);
+  if (r.ok) bump('/fm/operations/analytics');
+  return r;
 }
 
+// Requesters include Event Team / Lead Storytellers (requestRPChange allows them),
+// so they must be able to see and act on their own requests.
 export async function getMyRPRequests() {
-  const actor = await requireActor(1);
-  return query(
-    `SELECT pe.*, f.name as faction_name FROM pending_executions pe
-     JOIN factions f ON pe.faction_id=f.id
-     WHERE pe.requester_id=? AND pe.status NOT IN ('EXECUTED')
-     ORDER BY pe.created_at DESC`,
-    [actor.id]
-  );
+  const actor = await requireActor(0);
+  return rp.myRequests(actor.id);
+}
+
+/** What Execute would rewrite — shown before the commit on both surfaces. */
+export async function getRPExecutionPreview(execId, data) {
+  await requireActor(3);
+  return rp.executionPreview(execId, data || {});
 }
 
 export async function executeRPChange(execId, data) {
   const actor = await requireActor(3);
-  const exec = queryOne("SELECT pe.*, f.name as faction_name FROM pending_executions pe JOIN factions f ON pe.faction_id=f.id WHERE pe.id=?", [execId]);
-  if (!exec) return { ok: false };
-  if (exec.execution_type === 'NPC' && data.npcName && data.npcPos) {
-    const npc = queryOne("SELECT id FROM npcs WHERE turf=? AND npc_type=?", [exec.turf, exec.old_value]);
-    if (npc) run("UPDATE npcs SET name=?, position=?, npc_type=?, updated_at=datetime('now') WHERE id=?",
-      [data.npcName, data.npcPos, exec.new_value, npc.id]);
-  } else if (exec.execution_type === 'HQ') {
-    // Clear HQ flag on old address, update/insert new address as HQ
-    run("UPDATE properties SET is_hq=0, updated_at=datetime('now') WHERE faction_id=? AND address=?", [exec.faction_id, exec.old_value]);
-    const existing = queryOne("SELECT id FROM properties WHERE faction_id=? AND address=?", [exec.faction_id, exec.new_value]);
-    if (existing) {
-      run("UPDATE properties SET is_hq=1, updated_at=datetime('now') WHERE id=?", [existing.id]);
-    } else {
-      run("INSERT INTO properties (address, faction_id, property_type, is_hq) VALUES (?, ?, 'Property', 1)", [exec.new_value, exec.faction_id]);
-    }
-  }
-  run("UPDATE pending_executions SET status='EXECUTED' WHERE id=?", [execId]);
-  run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by) VALUES (?,?,'RP_CHANGE_EXECUTED',?,?)",
-    [exec.faction_id, exec.faction_name, `${exec.execution_type}: ${exec.old_value} → ${exec.new_value}`, actor.name]);
-  logAudit(actor.id, actor.name, 'APPROVE', 'rp_change', execId, exec.faction_name, exec.execution_type);
-  await sendPing('rp.executed',
-    `✅ **RP Change Executed** — **${exec.faction_name}**\n**Type:** ${exec.execution_type}\n**Change:** ${exec.old_value} → ${exec.new_value}\n**Executed By:** ${actor.name}${exec.execution_type === 'NPC' && data.npcName ? `\n**New NPC:** ${data.npcName}` : ''}`);
-  if (exec.requester_id) {
-    await sendPing('rp.executed.requester',
-      `<@${exec.requester_id}> ✅ Your RP change for **${exec.faction_name}** has been executed — **${exec.old_value} → ${exec.new_value}**.`);
-  }
-  return { ok: true };
+  const r = await rp.executeRPChange(actor, execId, data || {});
+  if (r.ok) bump('/fm/operations/analytics', '/fm/operations/properties', '/fm/storytelling/network', '/v2/story');
+  return r;
 }
 
 // ── AUDIT LOG ──
@@ -318,20 +462,23 @@ export async function executeRPChange(execId, data) {
  * so the first sign of a broken sync was stale numbers days later.
  */
 export async function getSyncStatus() {
-  await requireActor(3, {allowEventTeam: true});
+  await requireActor(3);
   return query("SELECT * FROM sync_status ORDER BY label, job");
 }
 
 export async function getAuditLog(limit) {
-  await requireActor(3, {allowEventTeam: true});
-  return query("SELECT * FROM site_audit_log ORDER BY timestamp DESC LIMIT ?", [limit || 200]);
+  await requireActor(3);
+  return query("SELECT * FROM site_audit_log ORDER BY timestamp DESC LIMIT ?", [toInt(limit, { min: 1, max: 1000, def: 200 })]);
 }
 export async function deleteAuditLogEntry(entryId) {
-  const actor = await requireActor(3, {allowEventTeam: true});
+  const actor = await requireActor(3);
   // An audit trail you can prune isn't an audit trail — owner only (2026-08-04).
-  if (!isOwner(actor.id) && !isOwner(actor._realId)) return { ok: false, error: 'Owner only' };
-  run("DELETE FROM site_audit_log WHERE id = ?", [entryId]);
-  logAudit(actor.id, actor.name, 'DELETE', 'audit_log', entryId, '', 'Audit entry pruned');
+  if (!isOwner(actor.id) && !isOwner(actor._realId)) return fail('Owner only');
+  const id = toInt(entryId);
+  if (!id) return fail('Audit entry not found.');
+  const res = run("DELETE FROM site_audit_log WHERE id = ?", [id]);
+  if (!res.changes) return fail('Audit entry not found.');
+  logAudit(actor.id, actor.name, 'DELETE', 'audit_log', id, '', 'Audit entry pruned');
   return { ok: true };
 }
 
@@ -344,175 +491,145 @@ export async function getFactionNames() {
 // ══════════════════════════════════════════════
 // LEADERSHIP WORKSPACE
 // ══════════════════════════════════════════════
+// Tasks delegate to shared/tasks.js (the one lifecycle, also used by the bot);
+// the workspace list keeps its "addressed to me / my team / leadership" filter
+// on top of the shared visibility rule.
 export async function getLeadershipTasks() {
   const actor = await requireActor(3);
-  const discordId = actor.id;
-  const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'game_affairs'")?.role_id || '';
-  const leadRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_lead'")?.role_id || '';
-  const staff = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [discordId]);
-  const teamId = staff?.team_id || '';
-
-  const allTasks = query("SELECT * FROM tasks ORDER BY created_at DESC");
-  return allTasks.filter(t => {
-    if (t.target_id === discordId) return true;
-    if (t.claimed_by === discordId) return true;
-    if (t.target_type === 'Role' && (t.target_id === leadershipRoleId || t.target_id === gameAffairsRoleId || t.target_id === leadRoleId || t.target_id === teamId)) return true;
-    return false;
-  }).map(t => {
-    const claimer = t.claimed_by !== 'None' ? (queryOne("SELECT display_name FROM staff WHERE discord_id = ?", [t.claimed_by])?.display_name || t.claimed_by) : 'Unclaimed';
-    return { ...t, claimerName: claimer };
-  });
+  const r = tasks.roleIds();
+  const mine = new Set([actor.id, actor.teamId, r.leadership, r.gameAffairs, r.lead].filter(Boolean));
+  return tasks.visibleTasks(actor)
+    .filter(t => mine.has(t.target_id) || t.claimed_by === actor.id)
+    .map(t => tasks.decorate(t));
 }
 
 export async function getLeadershipReminders() {
   const actor = await requireActor(3);
   const discordId = actor.id;
-  const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'game_affairs'")?.role_id || '';
-  const leadRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_lead'")?.role_id || '';
-  const staff = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [discordId]);
-  const teamId = staff?.team_id || '';
-
+  const ids = new Set([getRole('fm_leadership'), getRole('game_affairs'), getRole('fm_team_lead'), actor.teamId].filter(Boolean));
   const all = query("SELECT * FROM reminders WHERE status IN ('ACTIVE','WARNED') ORDER BY epoch_ms");
+  const names = new Map(query("SELECT discord_id, display_name FROM staff").map(s => [s.discord_id, s.display_name]));
   return all.filter(r => {
     if (r.author_id === discordId) return true;
     const roleMatch = r.target_tag?.match(/<@&(\d+)>/);
     const userMatch = r.target_tag?.match(/<@(\d+)>/);
     if (userMatch && userMatch[1] === discordId) return true;
-    if (roleMatch && (roleMatch[1] === leadershipRoleId || roleMatch[1] === gameAffairsRoleId || roleMatch[1] === leadRoleId || roleMatch[1] === teamId)) return true;
+    if (roleMatch && ids.has(roleMatch[1])) return true;
     return false;
-  }).map(r => {
-    const authorStaff = queryOne("SELECT display_name FROM staff WHERE discord_id = ?", [r.author_id]);
-    return { ...r, authorName: authorStaff?.display_name || r.author_id, epochMs: parseInt(r.epoch_ms) };
-  });
+  }).map(r => ({ ...r, authorName: names.get(r.author_id) || r.author_id, epochMs: parseInt(r.epoch_ms) }));
 }
 
 export async function createLeadershipTask(data) {
   const actor = await requireActor(3);
-  const uid = Date.now().toString();
-  const dt = new Date().toISOString();
-  const nextReminder = data.enableDM ? (Date.now() + 86400000).toString() : null;
-  run("INSERT INTO tasks (task_uid, description, target_id, target_type, claimed_by, created_by_id, created_by_name, next_reminder, created_at) VALUES (?, ?, ?, ?, 'None', ?, ?, ?, ?)",
-    [uid, data.desc, data.targetId, data.targetType, actor.id, actor.name, nextReminder, dt]);
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('CREATED', ?, ?, ?, ?, ?)",
-    [actor.name, uid, data.desc, data.targetType + ': ' + data.targetId, dt]);
-  logAudit(actor.id, actor.name, 'CREATE', 'task', null, data.desc.substring(0,50), 'Leadership task');
-  const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsId = GAME_AFFAIRS_ID;
-  const isLeadershipRank = (id) => !!queryOne("SELECT discord_id FROM staff WHERE discord_id = ? AND (LOWER(rank) LIKE '%leadership%' OR LOWER(rank) LIKE '%management%')", [id]);
-  const creatorIsLeadership = isLeadershipRank(actor.id);
-  const assigneeIsLeadership = (data.targetType === 'Role' && (data.targetId === leadershipRoleId || data.targetId === gameAffairsId))
-    || (data.targetType === 'User' && isLeadershipRank(data.targetId));
-  const tag = data.targetType === 'Role' ? '<@&' + data.targetId + '>' : '<@' + data.targetId + '>';
-  await sendPing('task.assigned', '📋 **NEW TASK ASSIGNED** | ' + tag + '\n**Task:** ' + (data.desc || '').substring(0, 300) + '\n**Assigned By:** ' + actor.name, { alt: creatorIsLeadership && assigneeIsLeadership, components: taskComponents(uid) });
-  return { ok: true };
+  data = data && typeof data === 'object' ? data : {};
+  const r = await tasks.createTask(actor, { desc: data.desc, targetType: data.targetType, targetId: data.targetId, enableDM: !!data.enableDM }, { via: 'Leadership workspace' });
+  if (r.ok) bump('/fm/leadership', '/v2/tasks');
+  return r;
 }
 
 export async function createLeadershipReminder(data) {
   const actor = await requireActor(3);
+  data = data && typeof data === 'object' ? data : {};
+  const message = str(data.message, { max: 1000 });
+  if (!message) return fail('A message is required.');
+  const epochMs = toInt(data.epochMs);
+  if (!epochMs || epochMs < Date.now() - 60000) return fail('Pick a time in the future.');
+  const targetType = data.targetType === 'User' ? 'User' : 'Role';
+  const targetId = str(data.targetId);
+  if (!isSnowflake(targetId) && !queryOne("SELECT 1 FROM teams WHERE team_id = ?", [targetId])) return fail('Pick a target.');
+  if (targetType === 'User' && !queryOne("SELECT 1 FROM staff WHERE discord_id = ?", [targetId])) return fail('That person is not on the staff roster.');
   const uuid = Math.random().toString(36).substring(2, 8);
-  const targetTag = data.targetType === 'Role' ? '<@&' + data.targetId + '>' : '<@' + data.targetId + '>';
-  const leadershipRoleId2 = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const gameAffairsId2 = GAME_AFFAIRS_ID;
-  const routeToLeadership2 = data.targetType === 'Role' && (data.targetId === leadershipRoleId2 || data.targetId === gameAffairsId2);
-  const ch = pingChannel('event.created', { alt: routeToLeadership2, ignoreEnabled: true });
+  const targetTag = targetType === 'Role' ? `<@&${targetId}>` : `<@${targetId}>`;
+  const routeToLeadership = targetType === 'Role' && (targetId === getRole('fm_leadership') || targetId === getRole('game_affairs'));
+  const ch = pingChannel('event.created', { alt: routeToLeadership, ignoreEnabled: true });
   run("INSERT INTO reminders (uuid, author_id, channel_id, message, epoch_ms, readable_time, repeat_rule, target_tag, status) VALUES (?, ?, ?, ?, ?, ?, 'None', ?, 'ACTIVE')",
-    [uuid, actor.id, ch, data.message, data.epochMs.toString(), new Date(data.epochMs).toISOString(), targetTag]);
-  logAudit(actor.id, actor.name, 'CREATE', 'reminder', null, data.message.substring(0,50), '');
-  const epoch = Math.floor(data.epochMs / 1000);
-  const embeds = [{ title: '📌 ' + (data.eventType || 'Event') + ' Scheduled', description: '**Time:** <t:' + epoch + ':F> (<t:' + epoch + ':R>)' + (data.note ? '\n**Details:** ' + data.note : '') + '\n\n*Via Meridian Dashboard*', color: 0x5865F2 }];
-  await sendPing('event.created', targetTag, { alt: routeToLeadership2, embeds });
-  return { ok: true };
+    [uuid, actor.id, ch, message, String(epochMs), new Date(epochMs).toISOString(), targetTag]);
+  logAudit(actor.id, actor.name, 'CREATE', 'reminder', uuid, message.substring(0, 50), `${targetType} ${targetId} at ${new Date(epochMs).toISOString()}`);
+  const epoch = Math.floor(epochMs / 1000);
+  const note = str(data.note, { max: 500 });
+  const embeds = [{ title: '📌 ' + (str(data.eventType, { max: 50 }) || 'Event') + ' Scheduled', description: '**Time:** <t:' + epoch + ':F> (<t:' + epoch + ':R>)' + (note ? '\n**Details:** ' + note : '') + '\n\n*Via Meridian Dashboard*', color: 0x5865F2 }];
+  await sendPing('event.created', targetTag, { alt: routeToLeadership, embeds });
+  bump('/fm/leadership');
+  return { ok: true, uuid };
 }
 
 export async function claimLeadershipTask(taskUid, enableDM) {
   const actor = await requireActor(3);
-  run("UPDATE tasks SET claimed_by = ? WHERE task_uid = ?", [actor.id, taskUid]);
-  if (enableDM) run("UPDATE tasks SET next_reminder = ? WHERE task_uid = ?", [(Date.now() + 86400000).toString(), taskUid]);
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('CLAIMED', ?, ?, '', 'Claimed', ?)",
-    [actor.name + ' (' + actor.id + ')', taskUid, new Date().toISOString()]);
-  logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, 'Claimed');
-  return { ok: true };
+  const r = await tasks.claimTask(actor, taskUid, { via: 'Leadership workspace' });
+  if (r.ok && enableDM) run("UPDATE tasks SET next_reminder = ? WHERE task_uid = ?", [String(Date.now() + 86400000), taskUid]);
+  if (r.ok) bump('/fm/leadership', '/v2/tasks');
+  return r;
 }
 
-export async function completeLeadershipTask(taskUid) {
+export async function completeLeadershipTask(taskUid, note) {
   const actor = await requireActor(3);
-  const task = queryOne("SELECT description, target_id, target_type, created_by_id FROM tasks WHERE task_uid = ?", [taskUid]);
-  run("DELETE FROM tasks WHERE task_uid = ?", [taskUid]);
-  run("INSERT INTO task_log (action, actor, task_uid, description, target, created_at) VALUES ('COMPLETED', ?, ?, ?, 'Done', ?)",
-    [actor.name, taskUid, task?.description || '', new Date().toISOString()]);
-  logAudit(actor.id, actor.name, 'DELETE', 'task', null, taskUid, 'Completed');
-
+  const task = tasks.getTask(taskUid);
+  const r = await tasks.completeTask(actor, taskUid, note, { via: 'Leadership workspace' });
+  if (!r.ok) return r;
+  bump('/fm/leadership', '/v2/tasks');
   if (task?.created_by_id === 'promotion-bot') {
     // Promotion bot tasks go to the team lead channel, not the global channel.
     const factionName = task.description.split(' — ')[0].trim();
     const fac = factionName ? queryOne("SELECT lead_discord_id, pending_promo FROM factions WHERE name = ?", [factionName]) : null;
     const leadPing = fac?.lead_discord_id ? `<@${fac.lead_discord_id}> ` : '';
-
-    let importsLine = '';
+    let payload = null;
     if (fac?.pending_promo) {
-      try {
-        const payload = JSON.parse(fac.pending_promo);
-        const tier = payload.tier;
-        const imports = Array.isArray(payload.imports) ? payload.imports : [];
-        importsLine = imports.length > 0
-          ? `\n**Approved imports (${imports.length}):** ${imports.join(', ')}`
-          : '\nNo weapon imports were approved.';
-        await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}** → Tier ${tier}\nStaged by: ${actor.name}${importsLine}`);
-      } catch {
-        await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}**\nStaged by: ${actor.name}`);
-      }
+      try { payload = JSON.parse(fac.pending_promo); } catch { payload = null; }
+      // Older rows stored just the tier number, not an object.
+      if (payload !== null && typeof payload !== 'object') payload = { tier: payload };
+    }
+    if (payload) {
+      const tierLine = payload.tier != null ? ` → Tier ${payload.tier}` : '';
+      const imports = Array.isArray(payload.imports) ? payload.imports : [];
+      const importsLine = imports.length > 0 ? `\n**Approved imports (${imports.length}):** ${imports.join(', ')}` : '\nNo weapon imports were approved.';
+      await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}**${tierLine}\nStaged by: ${actor.name}${importsLine}`);
     } else {
       await sendPing('promo.staged', `${leadPing}📋 **Pending Promotion** — **${factionName}**\nReviewed by: ${actor.name}`);
     }
-  } else if (task && task.created_by_id && task.created_by_id !== actor.id) {
-    const leadershipRoleId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-    const gameAffairsId = GAME_AFFAIRS_ID;
-    const isLeadershipRank = (id) => !!queryOne("SELECT discord_id FROM staff WHERE discord_id = ? AND (LOWER(rank) LIKE '%leadership%' OR LOWER(rank) LIKE '%management%')", [id]);
-    const creatorIsLeadership = isLeadershipRank(task.created_by_id);
-    const assigneeIsLeadership = (task.target_type === 'Role' && (task.target_id === leadershipRoleId || task.target_id === gameAffairsId))
-      || (task.target_type === 'User' && isLeadershipRank(task.target_id));
-    await sendPing('task.completed.creator', `✅ <@${task.created_by_id}> — your task "${task.description}" has been completed by **${actor.name}**.`, { alt: creatorIsLeadership && assigneeIsLeadership });
   }
-  return { ok: true };
+  return r;
 }
 
 export async function editLeadershipTask(taskUid, newDesc) {
   const actor = await requireActor(3);
-  run("UPDATE tasks SET description = ? WHERE task_uid = ?", [newDesc, taskUid]);
-  logAudit(actor.id, actor.name, 'EDIT', 'task', null, taskUid, newDesc.substring(0,100));
-  return { ok: true };
+  const r = await tasks.editTask(actor, taskUid, newDesc);
+  if (r.ok) bump('/fm/leadership', '/v2/tasks');
+  return r;
 }
 
 export async function deleteLeadershipReminder(uuid) {
   const actor = await requireActor(3);
-  run("DELETE FROM reminders WHERE uuid = ?", [uuid]);
-  logAudit(actor.id, actor.name, 'DELETE', 'reminder', null, uuid, '');
+  const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [str(uuid)]);
+  if (!r) return fail('Reminder not found.');
+  run("DELETE FROM reminders WHERE uuid = ?", [r.uuid]);
+  logAudit(actor.id, actor.name, 'DELETE', 'reminder', r.uuid, (r.message || '').slice(0, 50), '');
+  bump('/fm/leadership');
   return { ok: true };
 }
 
 export async function snoozeLeadershipReminder(uuid) {
-  await requireActor(3);
-  const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [uuid]);
-  if (!r) return { ok: false };
-  const newTime = parseInt(r.epoch_ms) + 3600000;
+  const actor = await requireActor(3);
+  const r = queryOne("SELECT * FROM reminders WHERE uuid = ?", [str(uuid)]);
+  if (!r) return fail('Reminder not found.');
+  const newTime = (parseInt(r.epoch_ms) || Date.now()) + 3600000;
   run("UPDATE reminders SET epoch_ms = ?, readable_time = ?, status = 'ACTIVE' WHERE uuid = ?",
-    [newTime.toString(), new Date(newTime).toISOString(), uuid]);
-  return { ok: true };
+    [newTime.toString(), new Date(newTime).toISOString(), r.uuid]);
+  logAudit(actor.id, actor.name, 'EDIT', 'reminder', r.uuid, (r.message || '').slice(0, 50), `Snoozed 1h → ${new Date(newTime).toISOString()}`);
+  bump('/fm/leadership');
+  return { ok: true, epochMs: newTime };
 }
 
 export async function getStaffForWorkspace() {
   await requireActor(3);
-  return query("SELECT discord_id, display_name, team_id, team_name, rank FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' ORDER BY display_name");
+  return query("SELECT discord_id, display_name, team_id, team_name, rank, clearance FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND active = 1 ORDER BY display_name");
 }
 
 export async function getRoleTargetsForWorkspace() {
   await requireActor(3);
-  const leadershipId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_leadership'")?.role_id || '';
-  const leadId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_lead'")?.role_id || '';
-  const allFmId = queryOne("SELECT role_id FROM discord_roles WHERE key = 'fm_team_guide'")?.role_id || '';
-  const teams = query("SELECT DISTINCT team_id, team_name FROM staff WHERE team_id != '' AND team_name != 'Game Affairs Management'");
+  const leadershipId = getRole('fm_leadership');
+  const leadId = getRole('fm_team_lead');
+  const allFmId = getRole('fm_team_guide');
+  const teams = query("SELECT team_id, team_name FROM teams WHERE team_name != 'Game Affairs Management' ORDER BY team_name");
   return { leadershipId, leadId, allFmId, teams };
 }
 
@@ -548,9 +665,13 @@ export async function getArchivedFactions() {
 
 export async function restoreFaction(id) {
   const actor = await requireActor(3);
-  run("UPDATE factions SET archived=0, archived_at='' WHERE id=?", [id]);
-  const f = queryOne("SELECT name FROM factions WHERE id=?", [id]);
-  logAudit(actor.id, actor.name, 'RESTORE', 'faction', id, f?.name || '', 'Restored from archive');
+  const f = queryOne("SELECT id, name, archived FROM factions WHERE id=?", [toInt(id)]);
+  if (!f) return fail('Faction not found.');
+  if (!f.archived) return fail(`${f.name} is not archived.`);
+  run("UPDATE factions SET archived=0, archived_at='', updated_at=? WHERE id=?", [nowIso(), f.id]);
+  run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by) VALUES (?, ?, 'RESTORED', 'Restored from archive', ?)", [f.id, f.name, actor.name]);
+  logAudit(actor.id, actor.name, 'RESTORE', 'faction', f.id, f.name, 'Restored from archive');
+  bump('/fm/factions', '/v2/factions');
   return { ok: true };
 }
 
@@ -727,38 +848,19 @@ export async function getAvailableChannels() {
 // ══════════════════════════════════════════════
 // FLEET TRACKING
 // ══════════════════════════════════════════════
-const TIER_DEFAULTS = {
-  1: { types: 0, total: 0, garages: 1, stipend: 0 },
-  2: { types: 1, total: 5, garages: 1, stipend: 4000 },
-  3: { types: 2, total: 10, garages: 1, stipend: 8000 },
-  4: { types: 4, total: 15, garages: 2, stipend: 12000 },
-  5: { types: 5, total: 18, garages: 2, stipend: 14400 },
-  6: { types: 6, total: 21, garages: 2, stipend: 16800 },
-  7: { types: 8, total: 24, garages: 3, stipend: 19200 },
-  8: { types: 9, total: 27, garages: 3, stipend: 21600 },
-  9: { types: 10, total: 30, garages: 3, stipend: 24000 },
-};
+// Limits, the tier table and the "can I add this" check live in lib/fleet.js
+// (shared with the vehicle catalog and v2). A type is a distinct vehicle name;
+// adding a name the faction already has merges into that row.
 
-function getEffectiveLimits(factionId, tier) {
-  const override = queryOne("SELECT max_types, max_total, max_garages, override_reason, overridden_by, overridden_at FROM faction_fleet_config WHERE faction_id = ?", [factionId]);
-  const defaults = TIER_DEFAULTS[tier] || TIER_DEFAULTS[1];
-  if (override) {
-    return {
-      maxTypes: override.max_types ?? defaults.types,
-      maxTotal: override.max_total ?? defaults.total,
-      maxGarages: override.max_garages ?? defaults.garages,
-      isOverridden: true,
-      overrideReason: override.override_reason,
-      overriddenBy: override.overridden_by,
-      overriddenAt: override.overridden_at,
-    };
-  }
-  return {
-    maxTypes: defaults.types,
-    maxTotal: defaults.total,
-    maxGarages: defaults.garages,
-    isOverridden: false,
-  };
+function activeFaction(factionId) {
+  const f = queryOne("SELECT id, name, tier, archived FROM factions WHERE id = ?", [toInt(factionId)]);
+  if (!f) return { error: 'Faction not found.' };
+  if (f.archived) return { error: `${f.name} is archived; restore it before changing its fleet.` };
+  return { faction: f };
+}
+
+function fleetHistory(factionId, details, actor) {
+  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, ?)", [factionId, details, actor.name, nowIso()]);
 }
 
 export async function getFleetOverview() {
@@ -766,14 +868,13 @@ export async function getFleetOverview() {
   const factions = query("SELECT id, name, tier FROM factions WHERE archived = 0 ORDER BY name");
   return factions.map(f => {
     const limits = getEffectiveLimits(f.id, f.tier);
-    const vehicles = query("SELECT * FROM faction_fleet_vehicles WHERE faction_id = ? ORDER BY vehicle_name", [f.id]);
+    const { vehicles, typeCount, total } = fleetState(f.id);
     const garages = query("SELECT * FROM faction_fleet_garages WHERE faction_id = ? ORDER BY name", [f.id]);
-    const totalQuantity = vehicles.reduce((sum, v) => sum + v.quantity, 0);
     const defaults = TIER_DEFAULTS[f.tier] || TIER_DEFAULTS[1];
     return {
       id: f.id, name: f.name, tier: f.tier,
-      vehicles, garages, totalQuantity,
-      typeCount: vehicles.length,
+      vehicles, garages, totalQuantity: total,
+      typeCount,
       limits,
       defaults: { types: defaults.types, total: defaults.total, garages: defaults.garages, stipend: defaults.stipend },
     };
@@ -782,7 +883,7 @@ export async function getFleetOverview() {
 
 export async function getVehicleCatalog(query_str) {
   await requireActor(3);
-  const q = (query_str || '').toLowerCase();
+  const q = str(query_str).toLowerCase();
   if (!q) {
     return query("SELECT vehicle_name FROM fleet_vehicle_catalog ORDER BY use_count DESC, vehicle_name LIMIT 30").map(r => r.vehicle_name);
   }
@@ -791,126 +892,158 @@ export async function getVehicleCatalog(query_str) {
 
 export async function addFleetVehicle(factionId, vehicleName, quantity, notes) {
   const actor = await requireActor(3);
-  const faction = queryOne("SELECT name, tier FROM factions WHERE id = ?", [factionId]);
-  if (!faction) return { ok: false, error: "Faction not found" };
-  const limits = getEffectiveLimits(factionId, faction.tier);
-  const existing = query("SELECT * FROM faction_fleet_vehicles WHERE faction_id = ?", [factionId]);
-  const currentTotal = existing.reduce((sum, v) => sum + v.quantity, 0);
-  if (existing.length >= limits.maxTypes && !existing.find(v => v.vehicle_name === vehicleName)) {
-    return { ok: false, error: `Faction is at max types (${limits.maxTypes})` };
-  }
-  if (currentTotal + quantity > limits.maxTotal) {
-    return { ok: false, error: `Total ${currentTotal + quantity} exceeds max ${limits.maxTotal}` };
-  }
-  run("INSERT INTO faction_fleet_vehicles (faction_id, vehicle_name, quantity, notes, created_by) VALUES (?, ?, ?, ?, ?)",
-    [factionId, vehicleName, quantity, notes || '', actor.name]);
-  run("INSERT OR IGNORE INTO fleet_vehicle_catalog (vehicle_name) VALUES (?)", [vehicleName]);
-  run("UPDATE fleet_vehicle_catalog SET use_count = use_count + 1 WHERE vehicle_name = ?", [vehicleName]);
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, datetime('now'))",
-    [factionId, `Added ${quantity}x ${vehicleName} to fleet`, actor.name]);
-  logAudit(actor.id, actor.name, 'CREATE', 'fleet_vehicle', null, faction.name, `${vehicleName} x${quantity}`);
-  return { ok: true };
+  const a = activeFaction(factionId);
+  if (a.error) return fail(a.error);
+  const faction = a.faction;
+  const name = str(vehicleName, { max: 80 });
+  const qty = toInt(quantity, { min: 1, max: 999 });
+  if (!name) return fail('A vehicle name is required.');
+  if (!qty) return fail('Quantity must be a whole number of at least 1.');
+  const check = checkFleetAdd(faction.id, faction.tier, name, qty);
+  if (!check.ok) return check;
+  const noteText = str(notes, { max: 500 });
+  let id;
+  transaction(() => {
+    if (check.existing) {
+      run("UPDATE faction_fleet_vehicles SET quantity = quantity + ?, notes = CASE WHEN ? != '' THEN ? ELSE notes END WHERE id = ?", [qty, noteText, noteText, check.existing.id]);
+      id = check.existing.id;
+    } else {
+      const spawn = queryOne("SELECT spawn_name FROM fleet_vehicle_catalog WHERE LOWER(vehicle_name) = LOWER(?)", [name])?.spawn_name || '';
+      id = Number(run("INSERT INTO faction_fleet_vehicles (faction_id, vehicle_name, quantity, notes, created_by, spawn_name) VALUES (?, ?, ?, ?, ?, ?)",
+        [faction.id, check.existing?.vehicle_name || name, qty, noteText, actor.name, spawn]).lastInsertRowid);
+    }
+    run("INSERT OR IGNORE INTO fleet_vehicle_catalog (vehicle_name) VALUES (?)", [name]);
+    run("UPDATE fleet_vehicle_catalog SET use_count = use_count + ? WHERE LOWER(vehicle_name) = LOWER(?)", [qty, name]);
+    fleetHistory(faction.id, `Added ${qty}x ${name} to fleet${check.existing ? ` (now ${check.existing.quantity + qty})` : ''}`, actor);
+  });
+  logAudit(actor.id, actor.name, check.existing ? 'EDIT' : 'CREATE', 'fleet_vehicle', id, faction.name, `${name} +${qty}${check.existing ? ` → ${check.existing.quantity + qty}` : ''}`);
+  bump('/fm/operations/fleet', '/v2/factions');
+  return { ok: true, id, merged: !!check.existing };
 }
 
 export async function editFleetVehicle(vehicleId, quantity, notes) {
   const actor = await requireActor(3);
-  const vehicle = queryOne("SELECT * FROM faction_fleet_vehicles WHERE id = ?", [vehicleId]);
-  if (!vehicle) return { ok: false, error: "Vehicle not found" };
-  const faction = queryOne("SELECT name, tier FROM factions WHERE id = ?", [vehicle.faction_id]);
-  const limits = getEffectiveLimits(vehicle.faction_id, faction.tier);
-  const others = query("SELECT * FROM faction_fleet_vehicles WHERE faction_id = ? AND id != ?", [vehicle.faction_id, vehicleId]);
-  const otherTotal = others.reduce((sum, v) => sum + v.quantity, 0);
-  if (otherTotal + quantity > limits.maxTotal) {
-    return { ok: false, error: `Total would exceed max ${limits.maxTotal}` };
-  }
-  run("UPDATE faction_fleet_vehicles SET quantity = ?, notes = ? WHERE id = ?", [quantity, notes || '', vehicleId]);
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, datetime('now'))",
-    [vehicle.faction_id, `Updated ${vehicle.vehicle_name} quantity: ${vehicle.quantity} → ${quantity}`, actor.name]);
-  logAudit(actor.id, actor.name, 'EDIT', 'fleet_vehicle', vehicleId, faction.name, `${vehicle.vehicle_name} ${vehicle.quantity}→${quantity}`);
+  const vehicle = queryOne("SELECT * FROM faction_fleet_vehicles WHERE id = ?", [toInt(vehicleId)]);
+  if (!vehicle) return fail('Vehicle not found.');
+  const a = activeFaction(vehicle.faction_id);
+  if (a.error) return fail(a.error);
+  const faction = a.faction;
+  const qty = toInt(quantity, { min: 1, max: 999 });
+  if (!qty) return fail('Quantity must be a whole number of at least 1 — remove the vehicle instead of setting 0.');
+  const check = checkFleetAdd(faction.id, faction.tier, vehicle.vehicle_name, qty, { excludeId: vehicle.id });
+  if (!check.ok) return check;
+  const noteText = notes === undefined ? vehicle.notes : str(notes, { max: 500 });
+  run("UPDATE faction_fleet_vehicles SET quantity = ?, notes = ? WHERE id = ?", [qty, noteText, vehicle.id]);
+  if (qty !== vehicle.quantity) fleetHistory(faction.id, `Updated ${vehicle.vehicle_name} quantity: ${vehicle.quantity} → ${qty}`, actor);
+  logAudit(actor.id, actor.name, 'EDIT', 'fleet_vehicle', vehicle.id, faction.name, `${vehicle.vehicle_name} ${vehicle.quantity}→${qty}`);
+  bump('/fm/operations/fleet', '/v2/factions');
   return { ok: true };
 }
 
 export async function deleteFleetVehicle(vehicleId) {
   const actor = await requireActor(3);
-  const vehicle = queryOne("SELECT v.*, f.name as faction_name FROM faction_fleet_vehicles v JOIN factions f ON v.faction_id = f.id WHERE v.id = ?", [vehicleId]);
-  if (!vehicle) return { ok: false };
-  run("DELETE FROM faction_fleet_vehicles WHERE id = ?", [vehicleId]);
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, datetime('now'))",
-    [vehicle.faction_id, `Removed ${vehicle.vehicle_name} (was ${vehicle.quantity}x)`, actor.name]);
-  logAudit(actor.id, actor.name, 'DELETE', 'fleet_vehicle', vehicleId, vehicle.faction_name, vehicle.vehicle_name);
+  const vehicle = queryOne("SELECT v.*, f.name as faction_name FROM faction_fleet_vehicles v JOIN factions f ON v.faction_id = f.id WHERE v.id = ?", [toInt(vehicleId)]);
+  if (!vehicle) return fail('Vehicle not found.');
+  run("DELETE FROM faction_fleet_vehicles WHERE id = ?", [vehicle.id]);
+  fleetHistory(vehicle.faction_id, `Removed ${vehicle.vehicle_name} (was ${vehicle.quantity}x)`, actor);
+  logAudit(actor.id, actor.name, 'DELETE', 'fleet_vehicle', vehicle.id, vehicle.faction_name, vehicle.vehicle_name);
+  bump('/fm/operations/fleet', '/v2/factions');
   return { ok: true };
+}
+
+function coords(x, y, z) {
+  const out = [x, y, z].map(v => toNum(v));
+  if (out.some(v => v === null)) return { error: 'Garage coordinates must be numbers (x, y, z).' };
+  return { x: out[0], y: out[1], z: out[2] };
 }
 
 export async function addFleetGarage(factionId, name, x, y, z, notes) {
   const actor = await requireActor(3);
-  const faction = queryOne("SELECT name, tier FROM factions WHERE id = ?", [factionId]);
-  if (!faction) return { ok: false, error: "Faction not found" };
-  const limits = getEffectiveLimits(factionId, faction.tier);
-  const existing = query("SELECT COUNT(*) as c FROM faction_fleet_garages WHERE faction_id = ?", [factionId])[0];
-  if (existing.c >= limits.maxGarages) {
-    return { ok: false, error: `Faction is at max garages (${limits.maxGarages})` };
-  }
-  run("INSERT INTO faction_fleet_garages (faction_id, name, x, y, z, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [factionId, name, x, y, z, notes || '', actor.name]);
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, datetime('now'))",
-    [factionId, `Added garage: ${name} (${x}, ${y}, ${z})`, actor.name]);
-  logAudit(actor.id, actor.name, 'CREATE', 'fleet_garage', null, faction.name, name);
-  return { ok: true };
+  const a = activeFaction(factionId);
+  if (a.error) return fail(a.error);
+  const faction = a.faction;
+  const gname = str(name, { max: 80 });
+  if (!gname) return fail('A garage name is required.');
+  const c = coords(x, y, z);
+  if (c.error) return fail(c.error);
+  const limits = getEffectiveLimits(faction.id, faction.tier);
+  const existing = queryOne("SELECT COUNT(*) as c FROM faction_fleet_garages WHERE faction_id = ?", [faction.id])?.c || 0;
+  if (existing >= limits.maxGarages) return fail(`Faction is at max garages (${limits.maxGarages}).`);
+  const id = Number(run("INSERT INTO faction_fleet_garages (faction_id, name, x, y, z, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [faction.id, gname, c.x, c.y, c.z, str(notes, { max: 500 }), actor.name]).lastInsertRowid);
+  fleetHistory(faction.id, `Added garage: ${gname} (${c.x}, ${c.y}, ${c.z})`, actor);
+  logAudit(actor.id, actor.name, 'CREATE', 'fleet_garage', id, faction.name, gname);
+  bump('/fm/operations/fleet', '/v2/factions');
+  return { ok: true, id };
 }
 
 export async function editFleetGarage(garageId, name, x, y, z, notes) {
   const actor = await requireActor(3);
-  const garage = queryOne("SELECT g.*, f.name as faction_name FROM faction_fleet_garages g JOIN factions f ON g.faction_id = f.id WHERE g.id = ?", [garageId]);
-  if (!garage) return { ok: false };
-  run("UPDATE faction_fleet_garages SET name=?, x=?, y=?, z=?, notes=? WHERE id=?",
-    [name, x, y, z, notes || '', garageId]);
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, datetime('now'))",
-    [garage.faction_id, `Updated garage: ${name} (${x}, ${y}, ${z})`, actor.name]);
-  logAudit(actor.id, actor.name, 'EDIT', 'fleet_garage', garageId, garage.faction_name, name);
+  const garage = queryOne("SELECT g.*, f.name as faction_name, f.archived FROM faction_fleet_garages g JOIN factions f ON g.faction_id = f.id WHERE g.id = ?", [toInt(garageId)]);
+  if (!garage) return fail('Garage not found.');
+  if (garage.archived) return fail(`${garage.faction_name} is archived; restore it before changing its fleet.`);
+  const gname = name === undefined ? garage.name : str(name, { max: 80 });
+  if (!gname) return fail('A garage name is required.');
+  const c = coords(x === undefined ? garage.x : x, y === undefined ? garage.y : y, z === undefined ? garage.z : z);
+  if (c.error) return fail(c.error);
+  const noteText = notes === undefined ? garage.notes : str(notes, { max: 500 });
+  run("UPDATE faction_fleet_garages SET name=?, x=?, y=?, z=?, notes=? WHERE id=?", [gname, c.x, c.y, c.z, noteText, garage.id]);
+  fleetHistory(garage.faction_id, `Updated garage: ${gname} (${c.x}, ${c.y}, ${c.z})`, actor);
+  logAudit(actor.id, actor.name, 'EDIT', 'fleet_garage', garage.id, garage.faction_name, gname);
+  bump('/fm/operations/fleet', '/v2/factions');
   return { ok: true };
 }
 
 export async function deleteFleetGarage(garageId) {
   const actor = await requireActor(3);
-  const garage = queryOne("SELECT g.*, f.name as faction_name FROM faction_fleet_garages g JOIN factions f ON g.faction_id = f.id WHERE g.id = ?", [garageId]);
-  if (!garage) return { ok: false };
-  run("DELETE FROM faction_fleet_garages WHERE id = ?", [garageId]);
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, datetime('now'))",
-    [garage.faction_id, `Removed garage: ${garage.name}`, actor.name]);
-  logAudit(actor.id, actor.name, 'DELETE', 'fleet_garage', garageId, garage.faction_name, garage.name);
+  const garage = queryOne("SELECT g.*, f.name as faction_name FROM faction_fleet_garages g JOIN factions f ON g.faction_id = f.id WHERE g.id = ?", [toInt(garageId)]);
+  if (!garage) return fail('Garage not found.');
+  run("DELETE FROM faction_fleet_garages WHERE id = ?", [garage.id]);
+  fleetHistory(garage.faction_id, `Removed garage: ${garage.name}`, actor);
+  logAudit(actor.id, actor.name, 'DELETE', 'fleet_garage', garage.id, garage.faction_name, garage.name);
+  bump('/fm/operations/fleet', '/v2/factions');
   return { ok: true };
 }
 
 export async function setFleetOverride(factionId, maxTypes, maxTotal, maxGarages, reason) {
   const actor = await requireActor(3);
-  const faction = queryOne("SELECT name, tier FROM factions WHERE id = ?", [factionId]);
-  if (!faction) return { ok: false };
-  const existing = queryOne("SELECT id FROM faction_fleet_config WHERE faction_id = ?", [factionId]);
-  if (existing) {
-    run("UPDATE faction_fleet_config SET max_types=?, max_total=?, max_garages=?, override_reason=?, overridden_by=?, overridden_at=datetime('now'), updated_at=datetime('now') WHERE faction_id=?",
-      [maxTypes, maxTotal, maxGarages, reason || '', actor.name, factionId]);
-  } else {
-    run("INSERT INTO faction_fleet_config (faction_id, max_types, max_total, max_garages, override_reason, overridden_by, overridden_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
-      [factionId, maxTypes, maxTotal, maxGarages, reason || '', actor.name]);
-  }
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', ?, ?, datetime('now'))",
-    [factionId, `Fleet limits overridden: ${maxTypes} types, ${maxTotal} total, ${maxGarages} garages. Reason: ${reason || 'n/a'}`, actor.name]);
-  logAudit(actor.id, actor.name, 'OVERRIDE', 'fleet_config', factionId, faction.name, `${maxTypes}/${maxTotal}/${maxGarages} — ${reason}`);
+  const a = activeFaction(factionId);
+  if (a.error) return fail(a.error);
+  const faction = a.faction;
+  const t = toInt(maxTypes, { min: 0, max: 99 }), tot = toInt(maxTotal, { min: 0, max: 999 }), g = toInt(maxGarages, { min: 0, max: 99 });
+  if (t === null || tot === null || g === null) return fail('Types, total and garages must be whole numbers of 0 or more.');
+  const why = str(reason, { max: 300 });
+  if (!why) return fail('A reason for the override is required.');
+  const existing = queryOne("SELECT id FROM faction_fleet_config WHERE faction_id = ?", [faction.id]);
+  const now = nowIso();
+  transaction(() => {
+    if (existing) {
+      run("UPDATE faction_fleet_config SET max_types=?, max_total=?, max_garages=?, override_reason=?, overridden_by=?, overridden_at=?, updated_at=? WHERE faction_id=?",
+        [t, tot, g, why, actor.name, now, now, faction.id]);
+    } else {
+      run("INSERT INTO faction_fleet_config (faction_id, max_types, max_total, max_garages, override_reason, overridden_by, overridden_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [faction.id, t, tot, g, why, actor.name, now]);
+    }
+    fleetHistory(faction.id, `Fleet limits overridden: ${t} types, ${tot} total, ${g} garages. Reason: ${why}`, actor);
+  });
+  logAudit(actor.id, actor.name, 'OVERRIDE', 'fleet_config', faction.id, faction.name, `${t}/${tot}/${g} — ${why}`);
+  bump('/fm/operations/fleet', '/v2/factions');
   return { ok: true };
 }
 
 export async function clearFleetOverride(factionId) {
   const actor = await requireActor(3);
-  const faction = queryOne("SELECT name FROM factions WHERE id = ?", [factionId]);
-  if (!faction) return { ok: false };
-  run("DELETE FROM faction_fleet_config WHERE faction_id = ?", [factionId]);
-  run("INSERT INTO faction_history (faction_id, action_type, details, authorized_by, created_at) VALUES (?, 'FLEET', 'Fleet override cleared — reverted to tier defaults', ?, datetime('now'))",
-    [factionId, actor.name]);
-  logAudit(actor.id, actor.name, 'REVOKE', 'fleet_config', factionId, faction.name, 'Override cleared');
+  const faction = queryOne("SELECT id, name FROM factions WHERE id = ?", [toInt(factionId)]);
+  if (!faction) return fail('Faction not found.');
+  const r = run("DELETE FROM faction_fleet_config WHERE faction_id = ?", [faction.id]);
+  if (!r.changes) return fail(`${faction.name} has no override to clear.`);
+  fleetHistory(faction.id, 'Fleet override cleared — reverted to tier defaults', actor);
+  logAudit(actor.id, actor.name, 'REVOKE', 'fleet_config', faction.id, faction.name, 'Override cleared');
+  bump('/fm/operations/fleet', '/v2/factions');
   return { ok: true };
 }
 
 export async function getFleetTierDefaults() {
-  await requireActor(1);
+  await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
   return TIER_DEFAULTS;
 }

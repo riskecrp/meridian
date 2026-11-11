@@ -76,10 +76,15 @@ export async function updatePingRoute(key, data) {
   const route = queryOne("SELECT * FROM ping_routes WHERE key = ?", [key]);
   if (!route) return { ok: false, error: 'Unknown ping route.' };
 
-  const channelId    = (data.channel_id ?? route.channel_id) || '';
-  const altChannelId = route.alt_label ? ((data.alt_channel_id ?? route.alt_channel_id) || '') : '';
+  data = data && typeof data === 'object' ? data : {};
+  // dm / per_item routes have no channel to configure; only the toggle and mentions apply.
+  const hasChannel = route.kind === 'channel' || route.kind === 'source';
+  const channelId    = hasChannel ? String((data.channel_id ?? route.channel_id) || '').trim() : '';
+  const altChannelId = (hasChannel && route.alt_label) ? String((data.alt_channel_id ?? route.alt_channel_id) || '').trim() : '';
+  if (channelId && !/^\d{17,20}$/.test(channelId)) return { ok: false, error: 'That is not a channel id.' };
+  if (altChannelId && !/^\d{17,20}$/.test(altChannelId)) return { ok: false, error: 'The leadership-only destination is not a channel id.' };
   const mentionRoles = Array.isArray(data.mention_roles)
-    ? data.mention_roles.filter(id => /^\d{17,20}$/.test(String(id)))
+    ? [...new Set(data.mention_roles.map(String).filter(id => /^\d{17,20}$/.test(id)))]
     : safeParse(route.mention_roles);
   const enabled = data.enabled === undefined ? route.enabled : (data.enabled ? 1 : 0);
 
@@ -145,6 +150,7 @@ export async function testPing(key, { alt = false } = {}) {
     : '';
   const body = `🧪 **Ping test — ${route.label}**\nSent by ${actor.name} from Admin › Pings. This is the channel **${route.label}** will post to.${mentionNote}`;
 
+  if (!process.env.DISCORD_BOT_TOKEN) return { ok: false, error: 'Discord bot token not configured.' };
   const ok = await sendDiscord(channelId, body, null, null);
   logAudit(actor.id, actor.name, 'EDIT', 'ping_route', null, route.label, `Test send → ${channelId} (${ok ? 'ok' : 'failed'})`);
   return ok

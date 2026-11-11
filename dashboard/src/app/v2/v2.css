@@ -298,3 +298,15 @@
   .v2-root .cols { grid-template-columns: 1fr; }
   .v2-root .metrics { grid-template-columns: repeat(2,1fr); }
 }
+
+/* Comms: two columns on desktop, one on phones; history rows wrap instead of forcing a horizontal scroll. */
+.v2-root .comms-cols { display: grid; grid-template-columns: 1fr 340px; gap: 32px; align-items: start; }
+.v2-root .comms-row { display: grid; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: start; }
+.v2-root .comms-row-3 { grid-template-columns: 150px 80px 1fr; }
+.v2-root .comms-row-4 { grid-template-columns: 150px 80px 1fr 260px; }
+@media (max-width: 860px) {
+  .v2-root .comms-cols { grid-template-columns: 1fr; gap: 20px; }
+  .v2-root .comms-row-3, .v2-root .comms-row-4 { grid-template-columns: 1fr; gap: 6px; }
+}
+/* Inline success/notice box (green counterpart of .err). */
+.v2-root .notice { padding: 10px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.5; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.35); color: var(--emerald, #10b981); }

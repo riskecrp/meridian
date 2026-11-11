@@ -6,6 +6,15 @@ import React, { useEffect, useState } from "react";
 import { getInventory, addInventoryItem, deleteInventoryItem, getDistributionStats } from "../../../fm/inventory/actions.js";
 import { getGlobalImports, addImportItem, editImportItem, deleteImportItem, getGlobalProperties, addGlobalProperty, assignProperty, confiscateProperty, deleteProperty, editPropertyDetail } from "../../../fm/operations/actions.js";
 
+// Run an action; `{ok:false}` or a throw becomes an alert instead of a silent refresh.
+async function act(fn) {
+  try {
+    const r = await fn();
+    if (r && r.ok === false) { window.alert(r.error || "Action failed."); return false; }
+    return true;
+  } catch (e) { window.alert(e?.message || "Action failed."); return false; }
+}
+
 /* ── Inventory ── */
 function Inventory({ auth }) {
   const isL3 = auth.level >= 3;
@@ -18,8 +27,8 @@ function Inventory({ auth }) {
   useEffect(() => { Promise.all([getInventory(), isL3 ? getDistributionStats() : Promise.resolve({})]).then(([i, s]) => { setItems(i || []); setStats(s || {}); setLoading(false); }); }, []);
   if (loading) return <div className="empty">Loading…</div>;
   const cats = items.reduce((a, i) => { (a[i.category] = a[i.category] || []).push(i); return a; }, {});
-  const remove = async (i) => { if (window.confirm(`Remove "${i.name}" from the item list?`)) { await deleteInventoryItem(i.id); load(); } };
-  const saveAdd = async () => { if (!add.name.trim()) return; await addInventoryItem({ name: add.name, category: add.category }); setAdd(null); load(); };
+  const remove = async (i) => { if (window.confirm(`Remove "${i.name}" from the item list?`)) { if (await act(() => deleteInventoryItem(i.id))) load(); } };
+  const saveAdd = async () => { if (!add.name.trim()) return; if (await act(() => addInventoryItem({ name: add.name, category: add.category }))) { setAdd(null); load(); } };
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
@@ -71,15 +80,31 @@ function Imports({ canEdit }) {
   const [q, setQ] = useState("");
   const [form, setForm] = useState(null); // {id?, ...fields} — modal for add + edit
   const [viewItem, setViewItem] = useState(null);
-  const load = () => getGlobalImports().then(d => { setData(d || { factions: [], items: [] }); setLoading(false); });
+  const [formErr, setFormErr] = useState("");
+  const [loadErr, setLoadErr] = useState("");
+  const load = () => getGlobalImports().then(d => { setData(d || { factions: [], items: [] }); setLoading(false); }).catch(e => { setLoadErr(e?.message || "Could not load the import catalog."); setLoading(false); });
   useEffect(() => { load(); }, []);
   if (loading) return <div className="empty">Loading…</div>;
+  if (loadErr) return <div className="empty" style={{ color: "var(--rose)" }}>{loadErr}</div>;
   const filtered = data.items.filter(i => !q || i.name.toLowerCase().includes(q.toLowerCase()) || i.category.toLowerCase().includes(q.toLowerCase()));
   const byTier = filtered.reduce((a, i) => { const t = i.tier || "1"; (a[t] = a[t] || []).push(i); return a; }, {});
   const submit = async () => {
-    if (!form.name.trim()) return;
-    if (form.id) await editImportItem(form.id, form); else await addImportItem(form);
-    setForm(null); load();
+    if (!form.name.trim()) { setFormErr("Name is required."); return; }
+    const tier = parseInt(form.tier, 10);
+    if (!Number.isInteger(tier) || tier < 1 || tier > 9) { setFormErr("Tier must be a number from 1 to 9."); return; }
+    setFormErr("");
+    const payload = { ...form, name: form.name.trim(), category: (form.category || "General").trim() || "General", tier: String(tier) };
+    if (await act(() => form.id ? editImportItem(form.id, payload) : addImportItem(payload))) { setForm(null); load(); }
+  };
+  // Deleting an item revokes every faction's permission for it (faction_imports
+  // cascades). Spell that out and send the confirmation flag the action expects.
+  const remove = async (item) => {
+    const who = item.authorizedFactions || [];
+    const msg = who.length
+      ? `Delete "${item.name}"?\n\nThis also REVOKES it from ${who.length} faction${who.length === 1 ? "" : "s"}:\n${who.join(", ")}\n\nThe revocations are recorded in each faction's history.`
+      : `Delete "${item.name}"? No faction currently has it.`;
+    if (!window.confirm(msg)) return;
+    if (await act(() => deleteImportItem(item.id, { confirmRevoke: true }))) load();
   };
   return (
     <>
@@ -108,7 +133,7 @@ function Imports({ canEdit }) {
                     {canEdit && (
                       <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                         <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ id: item.id, name: item.name, category: item.category, tier: item.tier, price: item.price || "", importTime: item.importTime || "", shipmentPower: item.shipmentPower || "" })}>Edit</button>{" "}
-                        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Delete "${item.name}"?`)) { await deleteImportItem(item.id); load(); } }}>Del</button>
+                        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={() => remove(item)}>Del</button>
                       </td>
                     )}
                   </tr>
@@ -135,9 +160,10 @@ function Imports({ canEdit }) {
                 <input className="filter-inp" placeholder="Import time (e.g. 48 hours)" value={form.importTime} onChange={e => setForm({ ...form, importTime: e.target.value })} />
                 <input className="filter-inp" placeholder="Power (e.g. 500)" value={form.shipmentPower} onChange={e => setForm({ ...form, shipmentPower: e.target.value })} />
               </div>
+              {formErr && <div className="err">{formErr}</div>}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-              <button className="act" onClick={() => setForm(null)}>Cancel</button>
+              <button className="act" onClick={() => { setForm(null); setFormErr(""); }}>Cancel</button>
               <button className="act primary" disabled={!form.name.trim()} onClick={submit}>{form.id ? "Save" : "Add"}</button>
             </div>
           </div>
@@ -172,29 +198,41 @@ function Properties({ canEdit }) {
   const [filter, setFilter] = useState("all");
   const [form, setForm] = useState(null);     // {id?, ...P_EMPTY} — modal for add + edit (faction only on add; Assign moves it)
   const [assign, setAssign] = useState(null); // {id, address, faction}
-  const load = () => getGlobalProperties().then(p => { setProps(p || []); setLoading(false); });
+  const [formErr, setFormErr] = useState("");
+  const [loadErr, setLoadErr] = useState("");
+  const load = () => getGlobalProperties().then(p => { setProps(p || []); setLoading(false); }).catch(e => { setLoadErr(e?.message || "Could not load properties."); setLoading(false); });
   useEffect(() => { load(); }, []);
   if (loading) return <div className="empty">Loading…</div>;
+  if (loadErr) return <div className="empty" style={{ color: "var(--rose)" }}>{loadErr}</div>;
   const isUnassigned = f => !f || !f.trim() || f.toLowerCase() === "none";
+  // getGlobalProperties computes `status` (ACTIVE | ARCHIVED | CONFISCATED | UNASSIGNED);
+  // the fallback only covers rows from an older server build.
+  const statusOf = (p) => p.status || (p.confiscated ? "CONFISCATED" : isUnassigned(p.faction) ? "UNASSIGNED" : p.faction_archived ? "ARCHIVED" : "ACTIVE");
+  const STATUS_COLOR = { CONFISCATED: "var(--rose)", UNASSIGNED: "var(--ink-3)", ARCHIVED: "var(--amber)", ACTIVE: "var(--good)" };
+  const factionNames = [...new Set(props.map(p => p.faction).filter(f => f && !isUnassigned(f)))].sort();
   const filtered = props.filter(p => {
     const s = q.toLowerCase();
     if (q && !p.address?.toLowerCase().includes(s) && !p.faction?.toLowerCase().includes(s) && !p.current_owner?.toLowerCase().includes(s)) return false;
-    if (filter === "active") return !p.confiscated && !isUnassigned(p.faction);
-    if (filter === "confiscated") return p.confiscated;
-    if (filter === "unassigned") return !p.confiscated && isUnassigned(p.faction);
+    const st = statusOf(p);
+    if (filter === "active") return st === "ACTIVE";
+    if (filter === "archived") return st === "ARCHIVED";
+    if (filter === "confiscated") return st === "CONFISCATED";
+    if (filter === "unassigned") return st === "UNASSIGNED";
     return true;
   });
   const submit = async () => {
-    if (!form.address.trim()) return;
-    if (form.id) await editPropertyDetail(form.id, { address: form.address, type: form.type, isHQ: form.isHQ, owner: form.owner, notes: form.notes });
-    else await addGlobalProperty({ address: form.address, faction: form.faction || "", type: form.type || "Property", isHQ: !!form.isHQ, owner: form.owner || "", notes: form.notes || "" });
-    setForm(null); load();
+    if (!form.address.trim()) { setFormErr("Address is required."); return; }
+    setFormErr("");
+    const ok = await act(() => form.id
+      ? editPropertyDetail(form.id, { address: form.address.trim(), type: form.type, isHQ: form.isHQ, owner: form.owner, notes: form.notes })
+      : addGlobalProperty({ address: form.address.trim(), faction: (form.faction || "").trim(), type: form.type || "Property", isHQ: !!form.isHQ, owner: form.owner || "", notes: form.notes || "" }));
+    if (ok) { setForm(null); load(); }
   };
   return (
     <>
       <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
         <div className="sub-tabs" style={{ padding: 0 }}>
-          {["all", "active", "confiscated", "unassigned"].map(f => (
+          {["all", "active", "archived", "confiscated", "unassigned"].map(f => (
             <button key={f} className={`tab${filter === f ? " on" : ""}`} onClick={() => setFilter(f)}>{f}</button>
           ))}
         </div>
@@ -208,12 +246,13 @@ function Properties({ canEdit }) {
             <thead><tr><th>Status</th><th>Faction</th><th>Address</th><th>Type</th><th>Owner</th>{canEdit && <th></th>}</tr></thead>
             <tbody>
               {filtered.map(p => {
-                const none = isUnassigned(p.faction);
-                const status = p.confiscated ? "CONF" : none ? "NONE" : "ACTIVE";
-                const col = p.confiscated ? "var(--rose)" : none ? "var(--ink-3)" : "var(--good)";
+                const none = isUnassigned(p.faction) || !p.faction_id;
+                const status = statusOf(p);
+                const archived = status === "ARCHIVED";
+                const col = STATUS_COLOR[status] || "var(--ink-2)";
                 return (
                   <tr key={p.id}>
-                    <td><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, fontWeight: 700, color: col }}>{status}</span></td>
+                    <td><span style={{ fontFamily: "var(--v2-mono)", fontSize: 10, fontWeight: 700, color: col }} title={archived ? "The faction holding this property is archived" : ""}>{status}</span></td>
                     <td style={{ fontWeight: 600 }}>{none ? <span style={{ color: "var(--ink-3)" }}>—</span> : p.faction}</td>
                     <td>
                       <div style={{ fontFamily: "var(--v2-mono)", fontSize: 12, color: "var(--ink-1)" }}>{p.address}</div>
@@ -225,8 +264,8 @@ function Properties({ canEdit }) {
                       <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                         <button className="act" style={{ padding: "2px 7px" }} onClick={() => setForm({ id: p.id, address: p.address, type: p.type || "Property", isHQ: !!p.is_hq, owner: p.current_owner || "", notes: p.notes || "" })}>Edit</button>{" "}
                         <button className="act" style={{ padding: "2px 7px" }} onClick={() => setAssign({ id: p.id, address: p.address, faction: p.faction || "" })}>Assign</button>{" "}
-                        {!p.confiscated && !none && <><button className="act" style={{ padding: "2px 7px", color: "var(--amber)" }} onClick={async () => { if (window.confirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { await confiscateProperty(p.id); load(); } }}>Conf.</button>{" "}</>}
-                        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm("Delete this property?")) { await deleteProperty(p.id); load(); } }}>Del</button>
+                        {status !== "CONFISCATED" && !none && <><button className="act" style={{ padding: "2px 7px", color: "var(--amber)" }} onClick={async () => { if (window.confirm(`Confiscate ${p.address}? This unassigns it from ${p.faction}.`)) { if (await act(() => confiscateProperty(p.id))) load(); } }}>Conf.</button>{" "}</>}
+                        <button className="act" style={{ padding: "2px 7px", color: "var(--rose)" }} onClick={async () => { if (window.confirm(`Delete ${p.address}? This cannot be undone.`)) { if (await act(() => deleteProperty(p.id))) load(); } }}>Del</button>
                       </td>
                     )}
                   </tr>
@@ -253,9 +292,10 @@ function Properties({ canEdit }) {
               </div>
               <input className="filter-inp" placeholder="Current owner (character name)" value={form.owner} onChange={e => setForm({ ...form, owner: e.target.value })} />
               <textarea className="filter-inp" rows={2} style={{ resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 }} placeholder="Notes — any relevant details…" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
+              {formErr && <div className="err">{formErr}</div>}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-              <button className="act" onClick={() => setForm(null)}>Cancel</button>
+              <button className="act" onClick={() => { setForm(null); setFormErr(""); }}>Cancel</button>
               <button className="act primary" disabled={!form.address.trim()} onClick={submit}>{form.id ? "Save" : "Add"}</button>
             </div>
           </div>
@@ -267,11 +307,13 @@ function Properties({ canEdit }) {
           <div style={{ position: "relative", width: "100%", maxWidth: 420, background: "var(--panel)", border: "1px solid var(--line-2)", borderRadius: 12, padding: 18 }}>
             <div style={{ fontWeight: 700, color: "var(--ink-0)", marginBottom: 6 }}>Assign property</div>
             <div style={{ fontSize: 12, color: "var(--ink-2)", marginBottom: 12, fontFamily: "var(--v2-mono)" }}>{assign.address}</div>
-            <input className="filter-inp" placeholder="Faction name (exact)" value={assign.faction} onChange={e => setAssign({ ...assign, faction: e.target.value })} />
-            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>Assigning also clears any confiscation and resets the given-date to today.</div>
+            <input className="filter-inp" list="v2-prop-factions" placeholder="Faction name (exact)" value={assign.faction} onChange={e => setAssign({ ...assign, faction: e.target.value })} />
+            <datalist id="v2-prop-factions">{factionNames.map(n => <option key={n} value={n} />)}</datalist>
+            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>Assigning also clears any confiscation and resets the given-date to today. The name must match an active faction exactly.</div>
+            {formErr && <div className="err" style={{ marginTop: 6 }}>{formErr}</div>}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
-              <button className="act" onClick={() => setAssign(null)}>Cancel</button>
-              <button className="act primary" disabled={!assign.faction.trim()} onClick={async () => { await assignProperty(assign.id, assign.faction.trim()); setAssign(null); load(); }}>Assign</button>
+              <button className="act" onClick={() => { setAssign(null); setFormErr(""); }}>Cancel</button>
+              <button className="act primary" disabled={!assign.faction.trim()} onClick={async () => { setFormErr(""); if (await act(() => assignProperty(assign.id, assign.faction.trim()))) { setAssign(null); load(); } }}>Assign</button>
             </div>
           </div>
         </div>

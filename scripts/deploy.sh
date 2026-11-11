@@ -23,7 +23,7 @@ after=$(git rev-parse HEAD)
 
 changed() { [ "$before" != "$after" ] && git diff --name-only "$before" "$after" | grep -q "$1"; }
 
-if changed "^package-lock.json";           then npm ci; fi
+if changed "^package-lock.json$";          then npm ci; fi
 if [ "$BOT"  = 1 ] && changed "^bot/package-lock.json";       then (cd bot && npm ci); fi
 if [ "$DASH" = 1 ] && changed "^dashboard/package-lock.json"; then (cd dashboard && npm ci); fi
 
@@ -36,6 +36,10 @@ if [ "$DASH" = 1 ] && changed "^dashboard/package-lock.json"; then (cd dashboard
 # point; the build below is what resolves that.
 echo "==> smoke test"
 node scripts/smoke.mjs --no-build-check
+
+# Functional tests against a seeded throwaway database (never the live file).
+echo "==> tests"
+node scripts/test/run.mjs
 
 node scripts/migrate.mjs
 

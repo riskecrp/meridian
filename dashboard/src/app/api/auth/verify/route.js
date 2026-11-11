@@ -4,7 +4,9 @@ export async function GET(request) {
   const host  = request.headers.get('host');
   const proto = host?.includes('localhost') ? 'http' : 'https';
   const redirect = `${proto}://${host}/api/auth/verify/callback`;
+  // guilds.members.read lets the callback check the verification role, not just membership.
+  const scope = encodeURIComponent('identify guilds guilds.members.read');
   return NextResponse.redirect(
-    `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect)}&response_type=code&scope=identify%20guilds`
+    `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect)}&response_type=code&scope=${scope}`
   );
 }

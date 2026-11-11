@@ -8,6 +8,19 @@ import {
 } from "../actions.js";
 import { getFactionNames } from "../../factions/actions.js";
 
+// Discord ids are 17–20 digit snowflakes; anything else is a paste error and
+// would only ever be found when the bot fails to resolve it.
+const isSnowflake = (v) => /^\d{17,20}$/.test(String(v ?? '').trim());
+
+// Run an action; `{ok:false}` or a throw becomes an alert instead of a silent refresh.
+async function act(fn) {
+  try {
+    const r = await fn();
+    if (r && (r.ok === false || r.error)) { window.alert(r.error || 'Action failed.'); return false; }
+    return true;
+  } catch (e) { window.alert(e?.message || 'Action failed.'); return false; }
+}
+
 // The wiring that connects Meridian to Discord, in one place: what it posts
 // (pings), the servers it talks to, and who is allowed in. These were three
 // separate nav items answering one question — "how is this plumbed in?" — and
@@ -107,13 +120,17 @@ function ServerCard({ server, factions, onRefresh }) {
   };
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
   const saveEdit = async () => {
+    for (const k of ['access_role_id', 'comms_channel_id', 'faction_channel_id']) {
+      if (form[k]?.trim() && !isSnowflake(form[k])) { window.alert(`${SERVER_FIELDS.find(f => f[0] === k)?.[1] || k} must be a Discord id (17–20 digits).`); return; }
+    }
     setSaving(true);
-    await updateBotServerConfig(server.id, form);
-    setSaving(false); setEditing(false); onRefresh();
+    const ok = await act(() => updateBotServerConfig(server.id, form));
+    setSaving(false);
+    if (ok) { setEditing(false); onRefresh(); }
   };
   const submitWatch = async () => {
-    if (!watchForm.role_id.trim()) return;
-    await addBotWatchRole({ config_id: server.id, ...watchForm });
+    if (!isSnowflake(watchForm.role_id)) { window.alert('Role ID must be a Discord id (17–20 digits).'); return; }
+    if (!(await act(() => addBotWatchRole({ config_id: server.id, role_id: watchForm.role_id.trim(), role_name: watchForm.role_name })))) return;
     setAddingWatch(false); setWatchForm({ role_id: '', role_name: '' });
     onRefresh();
   };
@@ -131,7 +148,7 @@ function ServerCard({ server, factions, onRefresh }) {
           {!editing && <button style={S.btn} onClick={startEdit}>Edit</button>}
           <button style={S.danger} onClick={async () => {
             if (!window.confirm(`Remove ${server.guild_name || server.guild_id} and all its roles?`)) return;
-            await deleteBotServerConfig(server.id); onRefresh();
+            if (await act(() => deleteBotServerConfig(server.id))) onRefresh();
           }}>Remove</button>
         </div>
       </div>
@@ -194,7 +211,7 @@ function ServerCard({ server, factions, onRefresh }) {
                 </span>
                 <button style={S.danger} onClick={async () => {
                   if (!window.confirm(`Remove monitored role ${r.role_name || r.role_id}?`)) return;
-                  await deleteBotWatchRole(r.id); onRefresh();
+                  if (await act(() => deleteBotWatchRole(r.id))) onRefresh();
                 }}>Remove</button>
               </div>
             ))}
@@ -212,10 +229,11 @@ function FactionServers({ servers, factions, onRefresh }) {
   const [addForm, setAddForm] = useState(null);
 
   const submitAdd = async () => {
-    if (!addForm.guild_id.trim()) return;
-    const res = await addBotServerConfig(addForm);
-    if (res?.error) return window.alert(res.error);
-    setAddForm(null); onRefresh();
+    if (!isSnowflake(addForm.guild_id)) { window.alert('Discord server ID must be a Discord id (17–20 digits).'); return; }
+    for (const k of ['access_role_id', 'comms_channel_id', 'faction_channel_id']) {
+      if (addForm[k]?.trim() && !isSnowflake(addForm[k])) { window.alert(`${SERVER_FIELDS.find(f => f[0] === k)?.[1] || k} must be a Discord id (17–20 digits).`); return; }
+    }
+    if (await act(() => addBotServerConfig({ ...addForm, guild_id: addForm.guild_id.trim() }))) { setAddForm(null); onRefresh(); }
   };
 
   return (
@@ -298,7 +316,7 @@ function SiteAccess({ roles, onRefresh }) {
           <span style={{ fontSize: 11, color: 'var(--fg-3)' }}>added {r.created_at?.substring(0, 10)}</span>
           <button style={S.danger} onClick={async () => {
             if (!window.confirm(`Remove ${r.role_name || r.role_id} from the allow-list?`)) return;
-            await deleteMdbAccessRole(r.id); onRefresh();
+            if (await act(() => deleteMdbAccessRole(r.id))) onRefresh();
           }}>Remove</button>
         </div>
       ))}
@@ -323,7 +341,9 @@ function SiteAccess({ roles, onRefresh }) {
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
               <button style={S.btn} onClick={() => setAdding(null)}>Cancel</button>
               <button style={S.btnPri} disabled={!adding.role_id.trim()} onClick={async () => {
-                await addMdbAccessRole(adding); setAdding(null); onRefresh();
+                if (!isSnowflake(adding.role_id)) { window.alert('Role ID must be a Discord id (17–20 digits).'); return; }
+                if (roles.some(r => r.role_id === adding.role_id.trim())) { window.alert('That role is already on the allow-list.'); return; }
+                if (await act(() => addMdbAccessRole({ role_id: adding.role_id.trim(), role_name: adding.role_name }))) { setAdding(null); onRefresh(); }
               }}>Add</button>
             </div>
           </div>
