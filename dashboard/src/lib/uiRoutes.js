@@ -33,7 +33,12 @@ const V2_TO_V3 = {
   '/story?tab=scenes': '/storytelling?tab=scenes',
   '/story?tab=changelog': '/storytelling?tab=changelog',
   '/story?tab=npcs': '/storytelling?tab=npcs',
-  '/story?tab=spawner': '/storytelling?tab=spawner',
+  '/story?tab=spawner': '/library?tab=spawner',
+  '/story?tab=arsenal': '/library?tab=arsenal',
+  '/story?tab=kb': '/library?tab=kb',
+  '/story?tab=docs': '/library?tab=docs',
+  '/story?tab=peds': '/library?tab=peds',
+  '/story?tab=vehicles': '/library?tab=vehicles',
   '/admin': '/settings',
 };
 const V3_TO_V2 = {

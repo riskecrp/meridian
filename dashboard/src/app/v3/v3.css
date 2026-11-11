@@ -641,3 +641,4 @@
   .v3-root .li .side { flex-basis: 100%; justify-content: flex-start; }
   .v3-root .lirow.open .li.link, .v3-root .li.unread { margin: 0; padding-left: 10px; padding-right: 10px; }
 }
+.v3-root .mb8 { margin-bottom: 8px; }
