@@ -55,7 +55,10 @@ export default function FactionHubPage() {
   const [leadSummary, setLeadSummary] = useState({ notes: [], pending: [] });
   const [modal, setModal] = useState(null);
 
-  const tabParam = useQueryParam("tab", "overview");
+  // Aliases other pages link with (Home: members, scenes; v2: activity ids).
+  const TAB_ALIASES = { members: "roster", scenes: "activity", history: "timeline", properties: "assets", fleet: "assets" };
+  const rawTab = useQueryParam("tab", "overview");
+  const tabParam = TAB_ALIASES[rawTab] || rawTab;
   const tabKnown = TAB_IDS.includes(tabParam);
   const tabAllowed = tabKnown && (isLeader || !LEADER_TABS.has(tabParam));
   const tab = tabAllowed ? tabParam : "overview";

@@ -651,3 +651,4 @@
 .v3-root .grid > *, .v3-root .stack > *, .v3-root .settings > *, .v3-root .two > * { min-width: 0; }
 .v3-root .settings-chips { max-width: 100%; }
 .v3-root .main { overflow-x: clip; }
+.v3-root .rd-row .rd-ok { flex: 0 0 14px; }

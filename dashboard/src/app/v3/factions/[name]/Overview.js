@@ -15,8 +15,8 @@ export function Readiness({ factionId, refreshKey }) {
     <Card title="Promotion readiness" right={<span className="muted small">{r.nextTier == null ? "top tier" : `next: Tier ${r.nextTier}`} · {r.met}/{r.checks.length} met</span>}>
       <div className="list">
         {r.checks.map(c => (
-          <div className="li" key={c.id}>
-            <span className={`mono w-800 ${c.ok ? "c-good" : "c-amber"}`}>{c.ok ? "✓" : "✕"}</span>
+          <div className="li rd-row" key={c.id}>
+            <span className={`rd-ok${c.ok ? " yes" : ""}`}>{c.ok ? "✓" : "✕"}</span>
             <div className="body"><div className="d c-ink1">{c.label}</div></div>
             <div className="side"><span className="mono small"><b className={c.ok ? "c-ink" : "c-amber"}>{c.value}</b> <span className="faint">· target {c.op === "max" ? `≤ ${c.target}` : `≥ ${c.target}`}</span></span></div>
           </div>
