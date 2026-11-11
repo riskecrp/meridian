@@ -118,3 +118,53 @@ sheet.push(['2026-11-10 16:00', 'Criminal Faction Management (FM)', 'NA', 'The V
   // Sheet ids default to the production forms; blank one out to exercise the configuration-failure path.
   const savedDesc = Object.getOwnPropertyDescriptor(FORMS[3], 'sheet'); Object.defineProperty(FORMS[3], 'sheet', { configurable: true, get: () => ({ id: '', gid: '' }) }); await pollForm(FORMS[3]); Object.defineProperty(FORMS[3], 'sheet', savedDesc); ok(/no sheet id configured/.test(sync('form_poll.ci_application').last_error), 'blank sheet id is a recorded configuration failure, not a crash'); }
 unq(); pass('sheet intakes');
+
+// ── website submissions → threads (hosted forms, dashboard/src/app/forms) ──
+// A row the public form wrote (source 'web', thread_id NULL) is posted by the next
+// poll — and by the one-minute job — through the same path as a sheet row, once.
+unq = quiet();
+globalThis.__cookies = {}; globalThis.__headers = { host: 'localhost:3000', 'x-forwarded-for': '198.51.100.7' };
+const PF = await import('../../../dashboard/src/app/forms/actions.js');
+const { postWebRows, webAll } = await import('../../../bot/formSubmissions.js'); const { postWebFeedback } = await import('../../../bot/factionFeedback.js');
+const emptySheets = { 'sheet-rcf_application': [['Timestamp', 'Faction Name']], 'sheet-staff_application': [['Timestamp', 'Name', 'Discord']], 'sheet-garage_request': [['Timestamp', 'What faction are you requesting for?']], 'sheet-ci_application': [['Timestamp', 'Character name']], 'sheet-feedback': [['Timestamp', 'Which team is this for?', 'Faction']] };
+plan = (e) => { const m = e.url.match(/spreadsheets\/d\/([^/]+)/); if (m) return { text: csv(emptySheets[m[1]] || [['Timestamp']]), json: {} }; if (e.url.includes('sheets.googleapis.com')) return { status: 403, json: {} }; return { json: { id: (e.url.includes('/threads') ? 'th' : 'm') + Math.random().toString(36).slice(2, 6) } }; };
+const threads = () => log.filter(e => /\/threads$/.test(e.url) && e.method === 'POST').length;
+const ackPosts = () => log.filter(e => /\/messages$/.test(e.url) && e.method === 'POST' && e.body?.embeds?.[0]?.footer).map(e => e.body.embeds[0].footer.text);
+const sheetReads = () => log.filter(e => e.url.includes('docs.google.com')).length;
+const garage = { 'What faction are you requesting for?': 'The Vanguard', 'What are you requesting?': 'Initial garage', "Character's name": 'Marcus Vane', 'Vehicle(s) requested (name and quantity)': 'Sultan x1', 'Reason for the request': 'First garage' };
+const GARAGE = FORMS.find(f => f.key === 'garage_request'), STAFF = FORMS.find(f => f.key === 'staff_application'), RCF = FORMS[0];
+{ const r = await PF.submitPublicForm('garage_request', garage); ok(r.ok, 'web garage request stored');
+  const before = queryOne("SELECT id, thread_id FROM form_submissions WHERE form_key='garage_request' AND source='web'"); ok(before.thread_id === null, 'no thread before the poll');
+  log.length = 0; await pollForm(GARAGE); const after = queryOne('SELECT thread_id, ack_message_id, status, title FROM form_submissions WHERE id=?', [before.id]);
+  ok(threads() === 1 && after.thread_id && after.ack_message_id && after.status === 'new', 'poll posts the web row: one thread, ack recorded');
+  ok(ackPosts().some(t => /Received via the website form/.test(t)), 'card footer says it came from the website form');
+  ok(log.some(e => /\/threads$/.test(e.url) && e.body?.name === '[Open] The Vanguard · Initial garage'), 'thread titled like a sheet row');
+  ok(/1 website submission\(s\) posted/.test(sync('form_web.garage_request').last_detail) && /nothing new/.test(sync('form_poll.garage_request').last_detail), 'health rows: web posted, sheet checked');
+  log.length = 0; await pollForm(GARAGE); await webAll(); await postWebRows(GARAGE); ok(threads() === 0 && /nothing waiting/.test(sync('form_web.garage_request').last_detail), 'posted exactly once: later polls and the minute job post nothing');
+  ok(query("SELECT 1 FROM form_submissions WHERE form_key='garage_request' AND source='web'").length === 1 && query("SELECT 1 FROM sheet_rows_seen WHERE source='form:garage_request' AND row_key LIKE 'web:%'").length === 0, 'no duplicate record, web rows never enter sheet_rows_seen'); }
+{ ok((await PF.submitPublicForm('garage_request', { ...garage, "Character's name": 'Lena Ortiz' })).ok, 'second web row'); log.length = 0; await webAll();
+  ok(threads() === 1 && queryOne("SELECT thread_id FROM form_submissions WHERE form_key='garage_request' AND source='web' ORDER BY id DESC LIMIT 1").thread_id, 'the one-minute job posts a fresh row without a sheet read'); eq(sheetReads(), 0, 'minute job reads no sheet'); }
+// A row the channel configuration cannot accept stays queued (reported, never skipped); the minute job leaves it to the poll.
+run("UPDATE ping_routes SET channel_id='' WHERE key='form.staff_application'");
+{ ok((await PF.submitPublicForm('staff_application', { Name: 'Bob', Discord: 'bob_b', Age: '24', Timezone: 'CET', 'How long have you played on ECRP?': '2y', 'Current and past characters (names and factions)': '-', 'Why do you want to join Faction Management?': 'x', 'What can you bring to the team?': 'y', 'Average weekly availability (hours)': '5' })).ok, 'web staff application stored');
+  log.length = 0; await pollForm(STAFF); const s = sync('form_web.staff_application'); const f = queryOne("SELECT sheet_row, attempts, skipped FROM form_submission_failures WHERE form_key='staff_application'");
+  ok(threads() === 0 && /0 posted, 1 waiting/.test(s.last_error) && /no channel/.test(s.last_error) && s.consecutive_failures === 1 && f && f.sheet_row < 0 && f.attempts === 1 && f.skipped === 0, 'no channel: failure recorded against the negative sheet_row, row kept');
+  await webAll(); ok(queryOne("SELECT attempts FROM form_submission_failures WHERE form_key='staff_application'").attempts === 1, 'minute job skips a row that already failed');
+  await pollForm(STAFF); ok(queryOne("SELECT attempts FROM form_submission_failures WHERE form_key='staff_application'").attempts === 2 && queryOne("SELECT thread_id FROM form_submissions WHERE form_key='staff_application' AND source='web'").thread_id === null, 'poll retries and keeps counting, never skips a web row');
+  run("UPDATE ping_routes SET channel_id='800000000000000001' WHERE key='form.staff_application'"); log.length = 0; await pollForm(STAFF);
+  ok(threads() === 1 && queryOne("SELECT thread_id FROM form_submissions WHERE form_key='staff_application' AND source='web'").thread_id && !queryOne("SELECT 1 FROM form_submission_failures WHERE form_key='staff_application'") && sync('form_web.staff_application').consecutive_failures === 0, 'channel fixed → posted, failure row cleared'); }
+// INTAKE_SOURCE: web turns the sheet off per form; sheet ignores web rows.
+{ process.env.INTAKE_SOURCE = 'web'; log.length = 0; await pollForm(RCF); ok(sheetReads() === 0 && /sheet polling is off/.test(sync('form_poll.rcf_application').last_detail), 'INTAKE_SOURCE=web: no sheet read, recorded as a state'); 
+  process.env.INTAKE_SOURCE = 'sheet'; ok((await PF.submitPublicForm('garage_request', { ...garage, "Character's name": 'Ignored Person' })).ok, 'row written regardless'); log.length = 0; await pollForm(GARAGE); await webAll();
+  ok(threads() === 0 && sheetReads() === 1 && /ignored/.test(sync('form_web.garage_request').last_detail) && queryOne("SELECT thread_id FROM form_submissions WHERE form_key='garage_request' AND source='web' ORDER BY id DESC LIMIT 1").thread_id === null, 'INTAKE_SOURCE=sheet: sheet read, web row left alone');
+  delete process.env.INTAKE_SOURCE; log.length = 0; await pollForm(GARAGE); ok(threads() === 1, 'back to both: the waiting web row posts'); }
+// Feedback: same contract on faction_feedback.
+{ const r = await PF.submitPublicForm('faction_feedback', { 'Which faction is this feedback about?': 'The Vanguard', 'Character name': 'Tyrone', 'Your Discord username': 'ty.rone', 'When did this occur?': '2026-11-02', 'What happened? Describe the roleplay and your feedback': 'He did a thing' }); ok(r.ok, 'web feedback stored');
+  const id = queryOne("SELECT id FROM faction_feedback WHERE source='web'").id; log.length = 0; await pollSheet(); const row = queryOne('SELECT thread_id, ack_message_id, faction, character_name, discord_username FROM faction_feedback WHERE id=?', [id]);
+  ok(threads() === 1 && row.thread_id && row.ack_message_id && row.faction === 'The Vanguard' && row.character_name === 'Tyrone', 'feedback poll posts the web row once');
+  ok(log.some(e => /\/threads$/.test(e.url) && e.body?.name === '[Pending Acknowledgement] The Vanguard · Tyrone'), 'feedback thread titled like a sheet row'); ok(ackPosts().some(t => /website form/.test(t)), 'feedback card footer names the source');
+  ok(log.some(e => /\/messages$/.test(e.url) && /\*\*Discord \(for follow-up\):\*\* ty\.rone/.test(e.body?.content || '') && /When did this occur\?\*\* 2026-11-02/.test(e.body?.content || '')), 'header block built from the payload');
+  ok(/1 website submission/.test(sync('feedback_web').last_detail), 'feedback_web health row');
+  log.length = 0; await pollSheet(); await postWebFeedback({ freshOnly: true }); await postWebFeedback(); ok(threads() === 0 && /nothing waiting/.test(sync('feedback_web').last_detail), 'feedback posted exactly once');
+  process.env.INTAKE_SOURCE_FEEDBACK = 'web'; log.length = 0; await pollSheet(); ok(sheetReads() === 0 && /sheet polling is off/.test(sync('feedback_poll').last_detail), 'INTAKE_SOURCE_FEEDBACK=web turns the feedback sheet off'); delete process.env.INTAKE_SOURCE_FEEDBACK; }
+unq(); pass('website submissions → threads');

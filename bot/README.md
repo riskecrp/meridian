@@ -36,6 +36,7 @@ annotated list with current values is in `bot/.env.example`.
 | `GOOGLE_SHEETS_API_KEY` | read the intake sheets through the Sheets API | CSV export (sheet must be link-viewable) |
 | `SHEET_FEEDBACK_ID` / `_GID`, `SHEET_RCF_APPLICATION_ID` / `_GID`, `SHEET_STAFF_APPLICATION_ID` / `_GID`, `SHEET_GARAGE_REQUEST_ID` / `_GID`, `SHEET_CI_APPLICATION_ID` / `_GID` | the five intake sheets (id = URL token, gid = tab, blank gid = first tab) | that intake records "no sheet id configured" in `sync_status` every poll |
 | `FEEDBACK_TEAM_VALUE` | the team-column value that makes a feedback row ours | `Criminal Faction Management (FM)` |
+| `INTAKE_SOURCE`, `INTAKE_SOURCE_<FORM>` | `both` / `web` / `sheet` — whether an intake reads its Google Sheet, the website form rows, or both | `both` |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | `/summarize` | the command says OpenAI is not configured / `gpt-4o-mini` |
 | `PROMO_GUN_CATEGORIES` | import categories polled on promotion | the ten weapon categories in `promotionReview.js` |
 
@@ -78,8 +79,8 @@ case-insensitive partial match; an ambiguous name is refused with the candidates
 | Forum sync | hourly | `forum_sync` — a muted route or unreachable channel is a recorded failure |
 | Conversation sync | hourly | `conversation_sync` |
 | Promotion review | 14th 12:00 UTC; poll results every 5 min | `promotion_review`, `promotion_polls` |
-| Feedback intake | sheet every 15 min, nudges every 30 min | `feedback_poll`, `feedback_nudge` |
-| Form intakes | sheet every 15 min, nudges every 30 min | `form_poll.<form>`, `form_nudge.<form>` |
+| Feedback intake | website rows every minute, sheet every 15 min, nudges every 30 min | `feedback_web`, `feedback_poll`, `feedback_nudge` |
+| Form intakes | website rows every minute, sheet every 15 min, nudges every 30 min | `form_web.<form>`, `form_poll.<form>`, `form_nudge.<form>` |
 | Task DM reminders | hourly | — |
 | Weekly leadership digest (`lib/digest.js`) | Monday 09:00 UTC | `leadership_digest` |
 | Verify-in-game nudge (`lib/digest.js`) | hourly at :05 | `rp_verify_nudge` |
@@ -153,6 +154,32 @@ submissions nor hides new ones; `sheet_row` on a record is informational. The
 `row_key` columns and the `sheet_rows_seen` table are created on first use if
 a migration has not added them yet. A decision-form application (RCF) cannot be
 completed until it has been accepted.
+
+#### Hosted forms (website submissions)
+
+The dashboard serves the same five forms publicly at `/forms` and
+`/forms/<key>` (`dashboard/src/app/forms`, field definitions in
+`dashboard/src/lib/formDefs.js`, no login). A submission is written straight
+into `form_submissions` / `faction_feedback` with `source = 'web'`,
+`thread_id NULL`, `sheet_row = -<epoch ms>`, `row_key = 'web:<reference>'` and
+the same `{ question: answer }` payload a sheet row carries, the field names
+being the sheet headers the bot's `identify()` / column patterns expect. The
+bot then posts every row with `thread_id NULL` through the same code path as a
+new sheet row (`postWebRows` / `postWebFeedback`): at the start of every
+15-minute poll and from a one-minute job (which only takes rows that have not
+failed before), then fills in `thread_id`. The card footer says which source a
+submission came from. A website row that cannot be posted (route without a
+channel) is recorded in the failures table and `sync_status` and retried every
+poll; it is never skipped, since there is no sheet to fall back to.
+
+`INTAKE_SOURCE` = `both` (default) | `web` | `sheet` says which sources an
+intake listens to; `INTAKE_SOURCE_<FORM>` (`RCF_APPLICATION`,
+`STAFF_APPLICATION`, `GARAGE_REQUEST`, `CI_APPLICATION`, `FEEDBACK`) overrides
+it per form. `web` turns that form's sheet polling off (recorded in
+`sync_status` as a state, not a failure) once its Google Form is retired;
+`sheet` ignores website rows. The dashboard's rate limit (3 submissions per
+form per hour per address, stored as a salted hash in `submitter_ip_hash`) uses
+`NOTIFY_SECRET`, falling back to the session secret.
 
 ### Staff sync
 

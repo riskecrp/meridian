@@ -32,7 +32,7 @@ export const FIELD_TYPES = ['text', 'textarea', 'select', 'discord', 'url', 'dat
 // Length caps. SHORT keeps a "field" on one line of the thread's header block
 // (bot SHORT_ANSWER_LIMIT is 120; a title part is dropped above 40); LONG is a
 // generous essay cap that still fits a handful of Discord messages.
-export const LIMITS = { text: 200, discord: 64, url: 300, date: 10, select: 120, textarea: 4000, fixed: 120 };
+export const LIMITS = { text: 200, discord: 64, url: 300, date: 40, select: 120, textarea: 4000, fixed: 120 };
 
 // Discord usernames are 2–32 characters of lowercase letters, digits, dots and
 // underscores; the legacy Name#1234 and display names with spaces or capitals
@@ -175,7 +175,7 @@ export function cleanText(v) {
     .replace(/\r\n?/g, '\n')
     .replace(/<@[!&]?\d+>|<#\d+>/g, '[mention removed]')
     .replace(/@(everyone|here)\b/gi, '$1')
-    .replace(/```+[^\n`]*/g, '')
+    .replace(/```+\w*/g, '')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .trim();
 }
@@ -195,7 +195,8 @@ export function validateSubmission(def, values) {
   for (const f of def.fields) {
     const label = f.label || f.name;
     if (f.type === 'fixed') { clean[f.name] = f.value; continue; }
-    let v = cleanText(str(src[f.name], { max: LIMITS[f.type] || LIMITS.text }));
+    const raw = str(src[f.name], { max: LIMITS[f.type] || LIMITS.text });
+    let v = cleanText(raw);
     if (!v) {
       if (f.required) errors[f.name] = `${label} is required.`;
       clean[f.name] = '';
@@ -206,7 +207,8 @@ export function validateSubmission(def, values) {
         if (oneOf(v, f.options || []) === null) errors[f.name] = `${label}: choose one of the options.`;
         break;
       case 'discord':
-        if (!DISCORD_RE.test(v)) errors[f.name] = `${label}: enter a Discord username (not a mention or a link).`;
+        // Tested on what was typed: a mention is refused, not stored cleaned.
+        if (!DISCORD_RE.test(raw)) errors[f.name] = `${label}: enter a Discord username (not a mention or a link).`;
         break;
       case 'url':
         if (!/^https?:\/\/\S+$/i.test(v)) errors[f.name] = `${label}: enter a full link starting with https://.`;

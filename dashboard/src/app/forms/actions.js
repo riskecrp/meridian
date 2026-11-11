@@ -95,9 +95,15 @@ export async function submitPublicForm(key, values, meta = {}) {
   const header = Object.keys(payload);
   const row = header.map((h) => payload[h]);
   const { reference, rowKey } = newReference(def);
-  const sheetRow = -Date.now();
+  // Negative so it can never collide with a sheet position (UNIQUE(sheet_row)
+  // on both tables); stepped down when two submissions land in the same
+  // millisecond.
+  let sheetRow = -Date.now();
+  while (queryOne(`SELECT 1 FROM ${table} WHERE sheet_row = ?${table === 'form_submissions' ? ' AND form_key = ?' : ''}`,
+    table === 'form_submissions' ? [sheetRow, def.key] : [sheetRow])) sheetRow--;
   let id;
 
+  try {
   if (table === 'faction_feedback') {
     const pick = (re) => valueByHeader(header, row, re)?.value || '';
     const faction = pick(def.identify.faction) || 'Unknown faction';
@@ -124,6 +130,10 @@ export async function submitPublicForm(key, values, meta = {}) {
          plusHours(REMINDER_HOURS), nowSqlite(), ipHash]).lastInsertRowid;
       logAudit('', 'Website form', 'CREATE', 'form_submission', id, `${def.title} — ${title}`, `Submission received from the website form (${reference})`);
     });
+  }
+  } catch (e) {
+    console.error('[FORMS] submit failed:', e.message);
+    return fail('The submission could not be saved. Try again in a minute.');
   }
   return { ok: true, reference };
 }
