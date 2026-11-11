@@ -110,7 +110,7 @@ export default function WorkPage() {
   }, [data, kind, status, needle, inbox.items, effView, staffList, roleTargets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (auth?.loading) return <><PageHeader eyebrow="Work" title="Work" /><Skeleton rows={5} /></>;
-  if (!auth?.ok) return <><PageHeader eyebrow="Work" title="Work" /><Restricted>You are not signed in.</Restricted></>;
+  if (!auth?.ok) return <><PageHeader eyebrow="Work" title="Work" /><Restricted>Your session has ended. <a href="/api/auth/logout?reason=expired" style={{ textDecoration: "underline" }}>Sign in again</a>.</Restricted></>;
   if (level < 1) return <><PageHeader eyebrow="Work" title="Work" /><Restricted>Work is for FM staff (L1+). Event Team and Lead Storytellers see tasks on Home.</Restricted></>;
 
   const VIEWS = [{ id: "mine", label: "Mine" }, { id: "team", label: "My team" }, ...(isL3 ? [{ id: "all", label: "All" }] : [])];

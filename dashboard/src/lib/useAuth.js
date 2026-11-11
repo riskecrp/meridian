@@ -39,8 +39,8 @@ export function useAuthReal({ enabled = true } = {}) {
       // The middleware only checks the session cookie EXISTS, not that it's valid
       // (it can't query the DB in the Edge runtime). A stale cookie slips onto the
       // app pages; detect the 401 here and route through logout to clear it.
-      if (r.status === 401 && typeof window !== "undefined" && (window.location.pathname.startsWith("/fm") || window.location.pathname.startsWith("/v2"))) {
-        window.location.href = "/api/auth/logout";
+      if (r.status === 401 && typeof window !== "undefined" && /^\/(fm|v2|v3)(\/|$)/.test(window.location.pathname)) {
+        window.location.href = "/api/auth/logout?reason=expired";
         return null;
       }
       return r.ok ? r.json() : null;

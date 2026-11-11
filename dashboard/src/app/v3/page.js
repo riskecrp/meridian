@@ -37,7 +37,7 @@ export default function HomePage() {
   }, [panel, data.loading]);
 
   if (auth?.loading) return <><PageHeader eyebrow="Home" title="Loading…" /><Skeleton rows={5} /></>;
-  if (!auth?.ok) return <><PageHeader eyebrow="Home" title="Meridian" /><Restricted>You are not signed in.</Restricted></>;
+  if (!auth?.ok) return <><PageHeader eyebrow="Home" title="Meridian" /><Restricted>Your session has ended. <a href="/api/auth/logout?reason=expired" style={{ textDecoration: "underline" }}>Sign in again</a>.</Restricted></>;
   if (level < 1 && !isET && !isLST) return <><PageHeader eyebrow="Home" title={`Welcome, ${auth.displayName || auth.name}`} /><Restricted>Your account has no FM clearance yet. Ask a team lead to add you to the staff roster.</Restricted></>;
 
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
