@@ -336,17 +336,26 @@ export async function editImportItem(id, data) {
   logAudit(actor.id, actor.name, 'EDIT', 'import_item', row.id, f.name, '');
   return { ok: true };
 }
-export async function deleteImportItem(itemId) {
+export async function deleteImportItem(itemId, opts) {
   const actor = await requireActor(3);
   const row = queryOne("SELECT * FROM import_items WHERE id = ?", [toInt(itemId)]);
   if (!row) return fail('Import item not found.');
-  const perms = queryOne("SELECT COUNT(*) c FROM faction_imports WHERE item_id = ? AND permitted = 1", [row.id])?.c || 0;
+  const losing = query(`SELECT f.id, f.name FROM faction_imports fi JOIN factions f ON f.id = fi.faction_id
+                        WHERE fi.item_id = ? AND fi.permitted = 1 ORDER BY f.name`, [row.id]);
+  if (losing.length && !(opts && opts.confirmRevoke === true)) {
+    return fail(`"${row.name}" is permitted to ${losing.length} faction${losing.length === 1 ? '' : 's'} (${losing.map(f => f.name).join(', ')}). Confirm that you want to revoke it from all of them.`, { needsConfirm: true, factions: losing.map(f => f.name) });
+  }
   transaction(() => {
+    for (const f of losing) {
+      run("INSERT INTO faction_history (faction_id, faction_name, action_type, details, authorized_by, created_at) VALUES (?, ?, 'IMPORT_REVOKED', ?, ?, ?)",
+        [f.id, f.name, `Import "${row.name}" (T${row.tier}) removed from the catalog — permission revoked`, actor.name, nowIso()]);
+    }
     run("DELETE FROM faction_imports WHERE item_id = ?", [row.id]);
     run("DELETE FROM import_items WHERE id = ?", [row.id]);
   });
-  logAudit(actor.id, actor.name, 'DELETE', 'import_item', row.id, row.name, perms ? `${perms} faction permission(s) removed with it` : '');
-  return { ok: true };
+  logAudit(actor.id, actor.name, 'DELETE', 'import_item', row.id, row.name,
+    losing.length ? `Revoked from ${losing.length} faction(s): ${losing.map(f => f.name).join(', ')}` : 'No faction had it');
+  return { ok: true, revoked: losing.map(f => f.name) };
 }
 
 // ── DELETION REQUESTS ──
@@ -453,20 +462,23 @@ export async function executeRPChange(execId, data) {
  * so the first sign of a broken sync was stale numbers days later.
  */
 export async function getSyncStatus() {
-  await requireActor(3, {allowEventTeam: true});
+  await requireActor(3);
   return query("SELECT * FROM sync_status ORDER BY label, job");
 }
 
 export async function getAuditLog(limit) {
-  await requireActor(3, {allowEventTeam: true});
-  return query("SELECT * FROM site_audit_log ORDER BY timestamp DESC LIMIT ?", [limit || 200]);
+  await requireActor(3);
+  return query("SELECT * FROM site_audit_log ORDER BY timestamp DESC LIMIT ?", [toInt(limit, { min: 1, max: 1000, def: 200 })]);
 }
 export async function deleteAuditLogEntry(entryId) {
-  const actor = await requireActor(3, {allowEventTeam: true});
+  const actor = await requireActor(3);
   // An audit trail you can prune isn't an audit trail — owner only (2026-08-04).
-  if (!isOwner(actor.id) && !isOwner(actor._realId)) return { ok: false, error: 'Owner only' };
-  run("DELETE FROM site_audit_log WHERE id = ?", [entryId]);
-  logAudit(actor.id, actor.name, 'DELETE', 'audit_log', entryId, '', 'Audit entry pruned');
+  if (!isOwner(actor.id) && !isOwner(actor._realId)) return fail('Owner only');
+  const id = toInt(entryId);
+  if (!id) return fail('Audit entry not found.');
+  const res = run("DELETE FROM site_audit_log WHERE id = ?", [id]);
+  if (!res.changes) return fail('Audit entry not found.');
+  logAudit(actor.id, actor.name, 'DELETE', 'audit_log', id, '', 'Audit entry pruned');
   return { ok: true };
 }
 
