@@ -555,3 +555,11 @@
 .v3-root .rv-dot { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 9px; color: var(--ink-3); }
 .v3-root .rv-dot i { width: 8px; height: 8px; border-radius: 50%; background: var(--panel-3); border: 1px solid var(--line-2); display: inline-block; }
 .v3-root .rv-dot.on { color: var(--good); } .v3-root .rv-dot.on i { background: var(--good); border-color: var(--good); }
+.v3-root .gap-xs { gap: 4px; } .v3-root .gap-sm { gap: 7px; } .v3-root .gap-md { gap: 10px; } .v3-root .gap-lg { gap: 18px; }
+.v3-root .mt { margin-top: 10px; } .v3-root .mb { margin-bottom: 12px; } .v3-root .mb-p { margin: 0 0 10px; }
+.v3-root .c-rose { color: var(--rose); } .v3-root .c-good { color: var(--good); } .v3-root .c-accent { color: var(--accent); } .v3-root .c-amber { color: var(--amber); } .v3-root .c-ink { color: var(--ink-0); }
+.v3-root .bold { font-weight: 700; } .v3-root .semi { font-weight: 600; } .v3-root .italic { font-style: italic; } .v3-root .upper { text-transform: uppercase; }
+.v3-root .top { align-items: flex-start; } .v3-root .right { justify-content: flex-end; } .v3-root .pad { padding: 12px; }
+.v3-root .w80 { min-width: 80px; } .v3-root .w150 { min-width: 150px; }
+.v3-root .money { font-family: var(--mono); font-size: 17px; color: var(--good); }
+.v3-root .scene-title { font-weight: 700; color: var(--ink-0); font-size: 14px; line-height: 1.3; }
