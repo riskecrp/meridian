@@ -95,3 +95,20 @@ flags.dmFail = true; const eF = newExec("INSERT INTO pending_executions (date, f
 log.length = 0; ok((await A.approveRPChange(eF)).ok && pings(log).some(x => x.ch === REQUESTER_CH && /<@100000000000000002>/.test(x.content) && x.comps.some(c => /^rpc:done:/.test(c))), 'DM failure falls back to rp.requester channel'); flags.dmFail = false;
 { const r = await RP.markRPDone({ id: '100000000000000003', name: 'Mgmt Three', level: 3, source: 'bot' }, eF, 'via bot'); ok(r.ok && audit().source === 'bot', 'shared markRPDone audits source=bot'); }
 ok(!(await RP.approveRPChange({ id: '100000000000000002', name: 'Lead Two', level: 2, source: 'bot' }, eF)).ok, 'shared refuses L2 approve'); pass('DM fallback + shared');
+
+// ── verify in game (post-EXECUTED flag; the full matrix is in queue.test.mjs) ──
+// Request #1 was executed above by L3 and requested by Lead Two (L2).
+as('tok-l1'); await failsWith(() => A.verifyRPChange(1, ''), /requester|Leadership/i, 'verify by a non-requester L1 refused');
+await failsWith(() => A.verifyRPChange(eF, ''), /executed/i, 'verify on a non-executed row refused');
+ok(RP.unverifiedExecutions().some(r => r.id === 1 && r.awaiting_verification), 'executed #1 awaits verification');
+run("UPDATE faction_ic_contacts SET rp_change_id = 1, thread_id = '620000000000000001' WHERE id = 1");   // the request came from this IC thread
+as('tok-l2'); log.length = 0; { const r = await A.verifyRPChange(1, 'Checked the NPC in city');
+  const row = queryOne('SELECT status, verified_at, verified_by FROM pending_executions WHERE id = 1');
+  ok(r.ok && row.status === 'EXECUTED' && row.verified_by === 'Lead Two' && !!row.verified_at, 'requester verifies; status stays EXECUTED');
+  ok(audit().action === 'VERIFY' && audit().target_id === '1', 'audit VERIFY');
+  eq(queryOne("SELECT COUNT(*) c FROM faction_history WHERE action_type = 'RP_VERIFIED' AND faction_id = 1").c, 1, 'history RP_VERIFIED');
+  ok(pings(log).some(x => x.ch === '620000000000000001' && /verified in game/.test(x.content)), 'note posted to the linked IC thread'); }
+await failsWith(() => A.verifyRPChange(1, 'again'), /already verified/i, 'double verify refused');
+ok(!RP.unverifiedExecutions().some(r => r.id === 1), 'verified rows leave the unverified list');
+{ const r = await RP.verifyRPChange({ id: '100000000000000003', name: 'Mgmt Three', level: 3, source: 'bot' }, 2); ok(r.ok && audit().source === 'bot' && queryOne('SELECT verified_by FROM pending_executions WHERE id = 2').verified_by === 'Mgmt Three', 'L3 via bot verifies #2, audits source=bot'); }
+pass('verify in game');

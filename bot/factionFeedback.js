@@ -27,6 +27,16 @@
  * form's Apps Script on submit, but that payload carries only the faction name.
  * The answers exist solely in the sheet, and the answers are the point.
  *
+ * Hosted form: the dashboard serves the feedback form at /forms/faction_feedback
+ * and writes each submission straight into faction_feedback with source = 'web',
+ * thread_id NULL and a negative sheet_row, carrying the same { question: answer }
+ * payload a sheet row would (team column included). postWebFeedback posts those
+ * rows through postFeedback — the exact path a new sheet row takes — at the
+ * start of every poll and from a one-minute job, then fills in thread_id.
+ * INTAKE_SOURCE (or INTAKE_SOURCE_FEEDBACK) = web | sheet | both (default) says
+ * which sources are listened to; the sheet stays a fallback until the Google
+ * Form is retired.
+ *
  * Buttons are handled in index.js with the rest of the interaction routing; the
  * record id travels in the custom id, so they keep working across restarts.
  *
@@ -45,6 +55,7 @@ import {
   discordFetch, discordPost, discordPatch, discordDelete, hideThreadCard,
   STATUS_TAGS, titled, retag, chunks, fetchSheetRows, valueByHeader, rowPayload, TIMESTAMP_HEADER,
   rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
+  sheetPollingEnabled, webIntakeEnabled, payloadToRow, sourceLabel,
 } from './lib/formIntake.js';
 
 // Responses sheet of the ECRP roleplay feedback form. The id and tab come from
@@ -168,6 +179,13 @@ const alreadyEnded = (interaction, id, status) => interaction.reply({
 // that a success.
 async function pollSheet() {
   ensureIntakeSchema();
+  // Website submissions first: they are already in the database and need no
+  // network to read, so an unreadable sheet never holds them up.
+  await postWebFeedback().catch((e) => console.error('[FEEDBACK] web rows:', e.message));
+  if (!sheetPollingEnabled(SOURCE)) {
+    recordSyncOk('feedback_poll', 'sheet polling is off (INTAKE_SOURCE=web); submissions arrive from the website form');
+    return;
+  }
   const sheet = SHEET();
   const { rows, error } = await fetchSheetRows(sheet.id, sheet.gid);
   if (error) {
@@ -268,14 +286,18 @@ async function postFeedback(header, row, sheetRow, key) {
   // a half-finished post finds this record and resumes rather than opening a
   // second thread. ack_message_id is written last and checked first, so it
   // doubles as the "posted in full" marker.
-  const existing = queryOne('SELECT id, thread_id, ack_message_id FROM faction_feedback WHERE row_key = ?', [key]);
+  const existing = queryOne('SELECT id, thread_id, ack_message_id, source FROM faction_feedback WHERE row_key = ?', [key]);
   if (existing?.ack_message_id) return existing.id;
+  // Where this came from, for the card's footer: a website row already exists
+  // (the dashboard wrote it), a sheet row is created just below.
+  const origin = existing?.source || 'sheet';
 
   let feedbackId, threadId;
   if (existing) {
     feedbackId = existing.id;
     threadId = existing.thread_id;
-    console.log(`[FEEDBACK] resuming partially posted row ${sheetRow} (#${feedbackId})`);
+    if (origin === 'web') console.log(`[FEEDBACK] posting website submission #${feedbackId}`);
+    else console.log(`[FEEDBACK] resuming partially posted row ${sheetRow} (#${feedbackId})`);
   } else {
     const res = run(
       `INSERT INTO faction_feedback (sheet_row, row_key, faction, character_name, discord_username, occurred,
@@ -347,7 +369,7 @@ async function postFeedback(header, row, sheetRow, key) {
       title: 'Acknowledgement',
       description: `Have we messaged the submitter yet? If not, reach out to **${submitter}** on Discord to let them know the feedback was received, then mark this as **Done**.`,
       color: EMBED_COLOR,
-      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed or cancelled.` },
+      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is completed or cancelled. Received via ${sourceLabel(origin)}.` },
     }],
     components: [ackRow(feedbackId)],
     allowed_mentions: allowedMentions('feedback.new'),
@@ -359,6 +381,60 @@ async function postFeedback(header, row, sheetRow, key) {
   // Only now is the row fully posted, so an earlier failure record is stale.
   run('DELETE FROM faction_feedback_failures WHERE sheet_row = ? OR row_key = ?', [sheetRow, key]);
   return feedbackId;
+}
+
+/**
+ * Post every website submission that has no thread yet.
+ *
+ * The dashboard's public form writes the record (source 'web', thread_id NULL,
+ * payload keyed by question text) and stops there; this turns each such row into
+ * a thread through postFeedback, the same path a new sheet row takes, so the
+ * card, the ping and the nudges are identical whichever way the submission
+ * arrived. postFeedback finds the existing record by row_key and resumes it,
+ * writing thread_id first and ack_message_id last, so a crash half-way is picked
+ * up on the next pass rather than posted twice.
+ *
+ * `freshOnly` is for the one-minute job: rows that have already failed once
+ * are left to the fifteen-minute poll, so a row the channel configuration
+ * cannot accept is reported every poll rather than every minute.
+ *
+ * Returns the number posted; records health under `feedback_web`.
+ */
+export async function postWebFeedback({ freshOnly = false } = {}) {
+  const job = 'feedback_web';
+  if (!webIntakeEnabled(SOURCE)) {
+    if (!freshOnly) recordSyncOk(job, 'website submissions are ignored (INTAKE_SOURCE=sheet)');
+    return 0;
+  }
+  ensureIntakeSchema();
+  const pending = query(
+    `SELECT f.id, f.sheet_row, f.row_key, f.payload FROM faction_feedback f
+     WHERE f.source = 'web' AND f.thread_id IS NULL AND f.ack_message_id IS NULL AND f.row_key IS NOT NULL
+       AND f.status NOT IN ('completed', 'cancelled')
+       ${freshOnly ? 'AND NOT EXISTS (SELECT 1 FROM faction_feedback_failures x WHERE x.sheet_row = f.sheet_row)' : ''}
+     ORDER BY f.id`);
+  if (!pending.length) {
+    if (!freshOnly) recordSyncOk(job, 'checked, nothing waiting');
+    return 0;
+  }
+  let posted = 0;
+  const failures = [];
+  for (const rec of pending) {
+    const { header, row } = payloadToRow(rec.payload);
+    try {
+      await postFeedback(header, row, rec.sheet_row, rec.row_key);
+      posted++;
+    } catch (e) {
+      // Reported, never skipped: a website submission has no sheet to fall back
+      // to, so it stays queued until the post succeeds.
+      const attempts = recordFailure(rec.sheet_row, rec.row_key, e);
+      console.error(`[FEEDBACK] website submission #${rec.id} attempt ${attempts} failed:`, e.message);
+      failures.push(`#${rec.id}: ${e.message.slice(0, 80)}`);
+    }
+  }
+  if (failures.length) recordSyncFail(job, `${posted} posted, ${failures.length} waiting: ${failures.join(' | ')}`);
+  else recordSyncOk(job, `${posted} website submission(s) posted`);
+  return posted;
 }
 
 // ── Nudges ─────────────────────────────────────────────────────────────────────
@@ -671,9 +747,17 @@ export async function handleFeedbackButton(interaction) {
 export { pollSheet, checkReminders };
 
 export function startFactionFeedback() {
-  if (!SHEET().id) console.warn('[FEEDBACK] SHEET_FEEDBACK_ID is not set — the feedback intake will report a configuration error on every poll');
+  if (!sheetPollingEnabled(SOURCE)) console.log('[FEEDBACK] sheet polling off (INTAKE_SOURCE=web), website submissions only');
+  else if (!SHEET().id) console.warn('[FEEDBACK] SHEET_FEEDBACK_ID is not set — the feedback intake will report a configuration error on every poll');
   cron.schedule('*/15 * * * *', () => {
     pollSheet().catch((e) => { console.error('[FEEDBACK] poll error:', e.message); recordSyncFail('feedback_poll', e); });
+  }, { timezone: 'UTC' });
+
+  // The one-minute pass over website submissions: one cheap indexed SELECT, so a
+  // hosted submission reaches Discord within a minute instead of waiting out the
+  // sheet cycle. Rows that have failed once wait for the fifteen-minute poll.
+  cron.schedule('* * * * *', () => {
+    postWebFeedback({ freshOnly: true }).catch((e) => { console.error('[FEEDBACK] web intake error:', e.message); recordSyncFail('feedback_web', e); });
   }, { timezone: 'UTC' });
 
   cron.schedule('*/30 * * * *', () => {
@@ -690,5 +774,5 @@ export function startFactionFeedback() {
   // arrived while the bot was down instead of waiting out the cron interval.
   pollSheet().catch((e) => { console.error('[FEEDBACK] initial poll error:', e.message); recordSyncFail('feedback_poll', e); });
 
-  console.log(`[FEEDBACK] Faction feedback intake running — sheet every 15m, nudges every ${REMINDER_HOURS}h.`);
+  console.log(`[FEEDBACK] Faction feedback intake running — website submissions every 1m, sheet every 15m, nudges every ${REMINDER_HOURS}h.`);
 }

@@ -473,3 +473,41 @@ export function freeSheetRow(table, sheetRow, extraWhere = '', params = []) {
   const max = queryOne(`SELECT MAX(sheet_row) AS m FROM ${table} WHERE 1=1 ${extraWhere}`, params)?.m || 0;
   return Math.max(max, sheetRow) + 1;
 }
+
+// ── Hosted (web) submissions ───────────────────────────────────────────────────
+//
+// The dashboard's public forms (/forms/<key>, dashboard/src/app/forms/actions.js)
+// write straight into form_submissions / faction_feedback with source = 'web',
+// thread_id NULL and a negative sheet_row, carrying the same { question: answer }
+// payload a sheet row would. The intakes post those rows exactly as they post a
+// new sheet row; these helpers are the little the two need in common.
+
+const INTAKE_SOURCES = ['both', 'web', 'sheet'];
+
+/**
+ * Where an intake's submissions come from: INTAKE_SOURCE_<KEY> for one form,
+ * else INTAKE_SOURCE for all, else 'both'. 'web' turns the sheet polling off
+ * for that form (the Google Form is retired); 'sheet' ignores web rows (the
+ * hosted form is not in use). Anything unrecognised reads as 'both', so a typo
+ * never switches an intake off.
+ */
+export function intakeSource(key) {
+  const own = process.env[`INTAKE_SOURCE_${String(key).toUpperCase()}`];
+  const all = process.env.INTAKE_SOURCE;
+  const pick = (v) => (INTAKE_SOURCES.includes(String(v || '').trim().toLowerCase()) ? String(v).trim().toLowerCase() : null);
+  return pick(own) || pick(all) || 'both';
+}
+export const sheetPollingEnabled = (key) => intakeSource(key) !== 'web';
+export const webIntakeEnabled = (key) => intakeSource(key) !== 'sheet';
+
+/** A stored payload back into the header/row pair the posting code reads. */
+export function payloadToRow(payload) {
+  let obj = payload;
+  if (typeof payload === 'string') { try { obj = JSON.parse(payload); } catch { obj = {}; } }
+  if (!obj || typeof obj !== 'object') obj = {};
+  const header = Object.keys(obj);
+  return { header, row: header.map((h) => (obj[h] == null ? '' : String(obj[h]))) };
+}
+
+/** How a record's origin reads on the thread card's footer. */
+export const sourceLabel = (source) => (source === 'web' ? 'the website form' : 'Google Forms');

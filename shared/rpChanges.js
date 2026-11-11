@@ -1,11 +1,14 @@
 // The RP-change pipeline, implemented once for the dashboard (fm/operations/
 // actions.js wrappers, v2 Leadership › Approvals) and the bot (rpc:* buttons).
 //
-//   PENDING --approve--> APPROVED --done--> RP_DONE --execute--> EXECUTED
+//   PENDING --approve--> APPROVED --done--> RP_DONE --execute--> EXECUTED --verify--> (flag)
 //      |                    |
 //      +------deny----------+--> DENIED --resubmit--> PENDING
 //
 // Rules this module enforces, which the two old copies did not agree on:
+//   - verify is a post-EXECUTED flag, not a status: the requester (or L3)
+//     confirms the change landed in game, which sets verified_at/verified_by
+//     once; unverifiedExecutions() lists the executed rows still waiting
 //   - every move checks the current status with rpTransitionError(); an
 //     out-of-order click (stale tab, old Discord button) is refused, never
 //     silently repeated
@@ -23,8 +26,8 @@
 // Actor shape (see shared/actor.js): { id, name, level, source? }.
 import { query, queryOne, run, transaction } from './db.js';
 import { sendPing, sendDiscord, getPingRoute, rpComponents, urls } from './pings.js';
-import { rpTransitionError, getExec, findNpcTarget } from './rpState.js';
-import { nowIso, todayIso } from './dates.js';
+import { rpTransitionError, rpVerifyError, getExec, findNpcTarget } from './rpState.js';
+import { nowIso, todayIso, parseDate } from './dates.js';
 import { str, fail } from './validate.js';
 
 export { getExec, findNpcTarget };
@@ -207,6 +210,12 @@ function findProperty(factionId, address) {
 export function executionPreview(execOrId, data = {}) {
   const exec = typeof execOrId === 'object' ? execOrId : load(execOrId);
   if (!exec) return fail('This RP change request no longer exists.');
+  // Every preview (ok or refused) says where the row is and whether an executed
+  // change has been verified in game, so UIs can show "awaiting verification".
+  return { ...previewFor(exec, data), status: exec.status, verified_at: exec.verified_at || null, verified_by: exec.verified_by || '', awaiting_verification: exec.status === 'EXECUTED' && !exec.verified_at };
+}
+
+function previewFor(exec, data) {
   const type = String(exec.execution_type || '').toUpperCase();
   if (type === 'NPC') {
     const t = findNpcTarget(exec);
@@ -405,6 +414,55 @@ export async function executeRPChange(actor, execId, data = {}) {
   return { ok: true, status: 'EXECUTED', detail: applied.detail, npcId: applied.npcId, propertyId: applied.propertyId, contactsClosed: applied.contactsClosed };
 }
 
+// ── verification (post-EXECUTED flag) ───────────────────────────────────────
+
+/**
+ * The requester (or L3) confirms an EXECUTED change is really in game. Sets
+ * verified_at / verified_by once; refused for any other status and when the
+ * row is already verified. Posts a short note to the request's IC thread when
+ * it was staged from one. `note` is optional (max 500).
+ */
+export async function verifyRPChange(actor, execId, note) {
+  const exec = load(execId);
+  const bad = rpVerifyError(exec);
+  if (bad) return fail(bad);
+  if (!isRequester(actor, exec) && !isL3(actor)) return fail(`Only the requester (${exec.requested_by || 'the team lead'}) or Leadership can verify this change in game.`);
+  const text = str(note, { max: 500 });
+  const now = nowIso();
+  transaction(() => {
+    run("UPDATE pending_executions SET verified_at = ?, verified_by = ? WHERE id = ?", [now, actor.name || '', exec.id]);
+    history(exec, 'RP_VERIFIED', `${rpLabel(exec)} — confirmed in game by ${actor.name}${text ? ` — ${text}` : ''}`, actor);
+    audit(actor, 'VERIFY', exec, `Verified in game${text ? ` — ${text.slice(0, 120)}` : ''}${actor.source === 'bot' ? ' (via Discord button)' : ''}`);
+  });
+  // A short note in the IC thread the request came from, when there is one.
+  const contact = queryOne("SELECT thread_id FROM faction_ic_contacts WHERE (id = ? OR rp_change_id = ?) AND thread_id != '' ORDER BY id LIMIT 1", [exec.contact_id || -1, exec.id]);
+  if (contact?.thread_id) {
+    try {
+      await sendDiscord(contact.thread_id, `✅ **${rpLabel(exec)}** verified in game by **${actor.name}**${text ? ` — ${text}` : ''}.
+📋 Request #${exec.id}`, null, undefined, { allowedMentions: { parse: [] } });
+    } catch (e) { console.error('[rp] verify thread note:', e.message); }
+  }
+  return { ok: true, status: 'EXECUTED', verified_at: now, verified_by: actor.name || '' };
+}
+
+/**
+ * EXECUTED rows nobody has verified in game yet, oldest first. `olderThanHours`
+ * keeps only those executed at least that long ago (0 = all). Each row carries
+ * hours_since_executed so callers can flag the overdue ones.
+ */
+export function unverifiedExecutions({ olderThanHours = 0 } = {}) {
+  const hours = Math.max(0, Number(olderThanHours) || 0);
+  const rows = query(`SELECT pe.*, f.name AS faction, f.name AS faction_name, f.archived AS faction_archived, pe.execution_type AS type,
+                 COALESCE(pe.resolved_at, pe.created_at) AS executed_at
+                 FROM pending_executions pe JOIN factions f ON f.id = pe.faction_id
+                 WHERE pe.status = 'EXECUTED' AND pe.verified_at IS NULL
+                 ORDER BY executed_at ASC, pe.id ASC`);
+  const now = Date.now();
+  return rows
+    .map(r => ({ ...r, awaiting_verification: true, hours_since_executed: Math.max(0, Math.floor((now - (parseDate(r.executed_at)?.getTime() || now)) / 3600000)) }))
+    .filter(r => r.hours_since_executed >= hours);
+}
+
 /** Leadership withdraws a request outright. The requester is told. */
 export async function deleteRPChange(actor, execId, reason = '') {
   if (!isL3(actor)) return fail('Deleting an RP change is FM Leadership only.');
@@ -423,13 +481,20 @@ export async function deleteRPChange(actor, execId, reason = '') {
   return { ok: true };
 }
 
-/** Queue for Leadership › Approvals (PENDING / APPROVED / RP_DONE), active factions first. */
-export function pendingExecutions() {
+/**
+ * Queue for Leadership › Approvals (PENDING / APPROVED / RP_DONE), active
+ * factions first. With `includeUnverified` the EXECUTED rows still awaiting
+ * in-game verification are listed too. Every row carries verified_at /
+ * verified_by and awaiting_verification.
+ */
+export function pendingExecutions({ includeUnverified = false } = {}) {
+  const statuses = includeUnverified ? "pe.status IN ('PENDING', 'APPROVED', 'RP_DONE') OR (pe.status = 'EXECUTED' AND pe.verified_at IS NULL)" : "pe.status IN ('PENDING', 'APPROVED', 'RP_DONE')";
   return query(`SELECT pe.*, f.name AS faction, f.name AS faction_name, f.archived AS faction_archived, pe.execution_type AS type,
-                 (SELECT GROUP_CONCAT(n.name || ' (' || n.npc_type || ')', ', ') FROM npcs n WHERE n.turf = pe.turf AND n.npc_type = pe.old_value) AS npcDetails
+                 (SELECT GROUP_CONCAT(n.name || ' (' || n.npc_type || ')', ', ') FROM npcs n WHERE n.turf = pe.turf AND n.npc_type = pe.old_value) AS npcDetails,
+                 (pe.status = 'EXECUTED' AND pe.verified_at IS NULL) AS awaiting_verification
                  FROM pending_executions pe JOIN factions f ON f.id = pe.faction_id
-                 WHERE pe.status IN ('PENDING', 'APPROVED', 'RP_DONE')
-                 ORDER BY f.archived, pe.created_at DESC`);
+                 WHERE ${statuses}
+                 ORDER BY f.archived, pe.created_at DESC`).map(r => ({ ...r, awaiting_verification: !!r.awaiting_verification }));
 }
 
 /** A requester's own open requests (everything not yet executed). */
