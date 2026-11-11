@@ -19,7 +19,9 @@ node scripts/migrate.mjs
 node scripts/smoke.mjs --no-build-check
 node scripts/test/run.mjs
 [ -d dashboard/.next ] || (cd dashboard && npm run build)
-(cd dashboard && node node_modules/.bin/next start -p "$PORT" >"$TMP/server.log" 2>&1 &)
+# Fully detached (own session, no inherited stdio) so a caller that pipes this
+# script's output is not held open by the server.
+(cd dashboard && setsid node node_modules/.bin/next start -p "$PORT" >"$TMP/server.log" 2>&1 </dev/null &)
 for i in $(seq 1 30); do curl -sf -o /dev/null "http://localhost:$PORT/login" && break; sleep 1; done
 curl -sf -o /dev/null "http://localhost:$PORT/login" && echo "==> dashboard answered on :$PORT from the restored copy" || { echo "dashboard did not answer"; cat "$TMP/server.log"; exit 1; }
 echo "RESTORE DRILL OK"
