@@ -59,7 +59,8 @@ function v2Target(pathname) {
   return '/v2';
 }
 
-export function middleware(request) {
+// Next 16 calls this file "proxy" (the former middleware); same contract.
+export function proxy(request) {
   const { pathname } = request.nextUrl;
   const fmSession     = request.cookies.get('meridian_session');
   const verifySession = request.cookies.get('meridian_verify_session');

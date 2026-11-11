@@ -116,7 +116,7 @@ Day-to-day reference — only relevant with access to the box it runs on.
 
 | Path | What |
 |---|---|
-| `dashboard/` | the website (Next.js; current UI under `src/app/v2/`, legacy under `src/app/fm/`) |
+| `dashboard/` | the website (Next.js 16; the UI under `src/app/v2/`, server actions under `src/app/fm/**/actions.js`; old `/fm` links redirect) |
 | `bot/` | the Discord bot (discord.js: commands, schedulers, message capture) |
 | `shared/` | database + Discord helpers used by both |
 | `schema.sql` | reference list of every table (regenerated, not hand-edited) |
