@@ -135,7 +135,7 @@ function Announce({ targets, isL3 }) {
   const canSend = message.trim() && (selected.size > 0 || (isL3 && postToFM));
   const send = async () => { setSending(true); setResult(null); const r = await sendAnnouncement([...selected], message, postToFM, ct); setSending(false); setResult(r); if (r.ok) { setMessage(""); setSelected(new Set()); setPostToFM(false); } };
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 32, alignItems: "start" }}>
+    <div className="comms-cols">
       <div>
         <div className="card"><div className="hd"><div className="t">Message</div></div>
           <div className="codeblock" style={{ color: "var(--ink-1)", marginBottom: 10 }}><b style={{ color: "var(--ink-0)" }}>A Message from Faction Management</b>{message.trim() ? `\n\n${message.trim()}` : "\n\nYour message will appear here…"}</div>
@@ -177,7 +177,7 @@ function IC({ targets, isL3 }) {
   const send = async () => { setSending(true); setResult(null); const r = await sendICCommunication([...selected], link, message, ct); setSending(false); setResult(r); if (r.ok && r.sent > 0) { setLink(""); setMessage(""); setSelected(new Set()); } };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 32, alignItems: "start" }}>
+    <div className="comms-cols">
       <div>
         <div className="card">
           <div className="hd"><div className="t">Image <span style={{ color: "var(--rose)" }}>*</span></div></div>
@@ -258,7 +258,7 @@ function ICThread({ targets }) {
         </select>
       </div>
       {loading ? <div className="empty">Loading…</div> : !fid ? <div className="empty">Pick a faction.</div> : rows.length === 0 ? <div className="empty">No IC memos have reached this faction yet.</div> : rows.map(m => (
-        <div key={m.id} style={{ display: "grid", gridTemplateColumns: "150px 80px 1fr", gap: 14, padding: "12px 0", borderBottom: "1px solid var(--line)", alignItems: "start" }}>
+        <div key={m.id} className="comms-row comms-row-3">
           <div style={{ fontSize: 12, color: "var(--ink-1)", fontWeight: 500 }}>{fmtSent(m.created_at)}</div>
           <div style={{ fontSize: 12, color: "var(--ink-2)", wordBreak: "break-word" }}>{m.author_name || "—"}</div>
           <div style={{ minWidth: 0 }}>
@@ -325,7 +325,7 @@ function HistRow({ row, targets, onRetried }) {
   const showChan = row.channel_type === "both";
   const lines = (fmOnly && (row.deliveries || []).length === 0) ? [{ id: "fm", faction_name: "Faction Management", channel_type: "FM Discord", ok: row.sent_count > 0, error: "" }] : (row.deliveries || []);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "150px 80px 1fr 260px", gap: 14, padding: "14px 0", borderBottom: "1px solid var(--line)", alignItems: "start" }}>
+    <div className="comms-row comms-row-4">
       <div><div style={{ fontSize: 12, color: "var(--ink-1)", fontWeight: 500 }}>{fmtSent(row.created_at)}</div><div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 2 }}>{meta.sub}</div></div>
       <div style={{ fontSize: 12, color: "var(--ink-2)", wordBreak: "break-word" }}>{row.author_name || "—"}</div>
       <div style={{ minWidth: 0 }}>

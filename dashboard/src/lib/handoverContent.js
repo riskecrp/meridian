@@ -21,6 +21,7 @@ export const TABLE_DOCS = {
   turfs: "The territories NPCs and factions operate in, with each one's shipment power.",
   ping_routes: "Which Discord channel each kind of notification goes to, who gets mentioned, and whether it is muted. Configuration — remap these after a move.",
   form_submissions: "Applications and requests received through the Google Forms (RCF applications, staff applications, garage and CI requests) and their status.",
+  sheet_rows_seen: "Which Google Form responses the bot has already processed, keyed by response timestamp so re-ordered or deleted sheet rows are never re-posted.",
   form_submission_checklist: "The per-application checklist items staff tick off while processing a submission.",
   form_submission_state: "Bookkeeping: the last form row the bot imported.",
   form_submission_failures: "Form rows the bot could not import, with the error.",
@@ -97,6 +98,7 @@ export const TABLE_DOCS = {
   bot_watch_roles: "Roles the bot keeps an eye on.",
   sessions: "Active website logins (temporary; the secret token is blanked in every export).",
   mdb_sessions: "Active member-site logins (temporary; the secret token is blanked in every export).",
+  verify_sessions: "Active /verify portal logins (ids and expiry only; revoked on logout).",
   deletion_requests: "Requests to delete a logged Discord message, awaiting action.",
 };
 

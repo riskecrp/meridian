@@ -11,9 +11,11 @@ import { todayIso, nowIso, legacyDate, parseDate } from "../../../../../shared/d
 import { str, toInt, fail } from "../../../../../shared/validate.js";
 
 const ET = { allowEventTeam: true };
+// Reads: Lead Storytellers see scene logs as part of the Library (policy 3); writes stay ET/L1+.
+const READ = { allowEventTeam: true, allowLeadStoryteller: true };
 
 export async function getSceneLogs() {
-  await requireActor(1, ET);
+  await requireActor(1, READ);
   const logs = query(`SELECT sl.id, sl.date, f.name as faction, sl.faction_id, sl.rewards, sl.logged_by, sl.notes, sl.author_id, sl.created_at
     FROM scene_logs sl JOIN factions f ON sl.faction_id = f.id ORDER BY sl.date DESC, sl.created_at DESC`);
   const assistants = query(`SELECT sa.id, sa.scene_id, sa.staff_id, sa.staff_name FROM scene_assistants sa ORDER BY sa.added_at ASC`);
@@ -26,12 +28,12 @@ export async function getSceneLogs() {
 }
 
 export async function getFactionNames() {
-  await requireActor(1, ET);
+  await requireActor(1, READ);
   return query("SELECT name FROM factions WHERE archived = 0 ORDER BY name").map(r => r.name);
 }
 
 export async function getInventoryForScene() {
-  await requireActor(1, ET);
+  await requireActor(1, READ);
   // Every item in the catalogue, whatever it is. This used to filter on
   // current_stock > 0; with stock counts retired that test would hide the whole
   // list. What is handed out is still recorded — see the inventory_logs write in
@@ -40,7 +42,7 @@ export async function getInventoryForScene() {
 }
 
 export async function getStaffForScene() {
-  await requireActor(1, ET);
+  await requireActor(1, READ);
   return query("SELECT discord_id, display_name FROM staff WHERE discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY display_name");
 }
 
@@ -184,7 +186,7 @@ const ATTENTION_THRESHOLD = 2;
 
 /** [[factionName, scenes30d], …] for active factions under the 30-day threshold, fewest first. */
 export async function getAttentionFactions() {
-  await requireActor(1, ET);
+  await requireActor(1, READ);
   const rows = query(`SELECT f.name, COALESCE((SELECT COUNT(*) FROM scene_logs sl WHERE sl.faction_id = f.id AND sl.created_at >= datetime('now','-30 days')), 0) AS n
     FROM factions f WHERE f.archived = 0 ORDER BY n ASC, f.name ASC`);
   return rows.filter(r => r.n < ATTENTION_THRESHOLD).map(r => [r.name, r.n]);

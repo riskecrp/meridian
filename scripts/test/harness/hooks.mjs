@@ -4,6 +4,7 @@ const STUBS = {
   'next/headers': new URL('./stub-headers.mjs', import.meta.url).href,
   'next/cache': new URL('./stub-cache.mjs', import.meta.url).href,
   'next/navigation': new URL('./stub-navigation.mjs', import.meta.url).href,
+  'next/server': new URL('./stub-server.mjs', import.meta.url).href,
 };
 export async function resolve(specifier, context, nextResolve) {
   if (STUBS[specifier]) return { url: STUBS[specifier], shortCircuit: true };

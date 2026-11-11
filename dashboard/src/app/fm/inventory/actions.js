@@ -19,7 +19,8 @@ import { requireActor } from "../../../lib/requireActor.js";
  */
 
 export async function getInventory() {
-  await requireActor(1, {allowLeadStoryteller: true});
+  // Reference data: every staff member reads it, Event Team and Lead Storytellers included (policy 3/4).
+  await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
   return query("SELECT id, name, category FROM inventory_stock ORDER BY category, name");
 }
 
