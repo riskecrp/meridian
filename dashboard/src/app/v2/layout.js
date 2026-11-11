@@ -229,6 +229,8 @@ export default function V2Layout({ children }) {
     { key: "feedback", label: "Feedback", href: "/v2/feedback", icon: I.feedback, min: 2 },
     {
       key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2, lst: true, menu: [
+        // Queue = everything waiting on leadership (L2 sees their team's items); the page's default section.
+        ...(level >= 2 ? [{ id: "queue", label: "Queue" }] : []),
         { id: "approvals", label: "Approvals" },
         { id: "performance", label: "Performance" },
         { id: "notes", label: "Meeting Notes" },

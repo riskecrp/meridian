@@ -4,9 +4,9 @@ import * as Lead from "../../fm/leadership/actions.js";
 import { useRun } from "../hooks.js";
 
 const { sendFeedbackToFaction, markFeedbackSent } = Lead;
-// getFeedbackDraft(factionId, reviewMonth) → { ok, draft, sources } is added by
-// the review-hub work; when the export is not deployed yet the button says so
-// instead of throwing.
+// getFeedbackDraft(factionId, reviewMonth) → { ok, draft, sources:[{ kind, label }] }
+// (fm/leadership/actions.js). Read off the namespace so a build without the
+// export shows a message instead of failing to compile.
 const getFeedbackDraft = Lead.getFeedbackDraft;
 
 /*
@@ -50,7 +50,7 @@ export default function FeedbackComposer({ faction, reviewMonth, onDone, onClose
           <div style={{ fontFamily: "var(--v2-mono)", fontSize: 9, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 3 }}>Built from</div>
           {sources.length === 0 ? <div>Nothing recorded for {reviewMonth} yet.</div> : (
             <ul style={{ margin: 0, paddingLeft: 16 }}>
-              {sources.map((s, i) => <li key={i}>{typeof s === "string" ? s : [s.kind || s.label, s.detail || s.value || s.text].filter(Boolean).join(": ")}</li>)}
+              {sources.map((s, i) => <li key={i}>{typeof s === "string" ? s : (s.label || s.detail || s.text || s.kind || "")}{s.kind && s.label ? <span style={{ fontFamily: "var(--v2-mono)", fontSize: 9, marginLeft: 6, opacity: .7 }}>{s.kind}</span> : null}</li>)}
             </ul>
           )}
         </div>

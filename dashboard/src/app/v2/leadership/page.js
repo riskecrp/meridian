@@ -1,17 +1,19 @@
 "use client";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../../../lib/useAuth";
 import { getTeamPerformance, getGuideActivity, getMeetingNotes, deleteMeetingNote, getReviewData, getPendingQueue } from "../../fm/leadership/actions.js";
-import { approveRPChange, denyRPChange, markRPDone, executeRPChange, deleteRPChange, resolveDeletion, getRPExecutionPreview } from "../../fm/operations/actions.js";
+import { approveRPChange, denyRPChange, markRPDone, deleteRPChange, resolveDeletion, getUnverifiedExecutions } from "../../fm/operations/actions.js";
 import { completePromotion, cancelPromotion } from "../../fm/factions/actions.js";
 import { getAllIcContacts, getThreadMessages, assignIcContact, setIcContactStatus, stageRoleplay, completeIcContact, getStaffList } from "../../fm/teams/actions.js";
 import RpChangeForm from "../../fm/teams/RpChangeForm";
-import Modal from "../Modal.js";
 import { FM_GUILD_ID } from "../../../lib/constants";
-import { getRPExecuteTarget } from "../actions.js";
 import { sanitizeHtml } from "../../fm/leadership/_shared/sanitize.js";
+import Queue from "./Queue.js";
+import { useExecuteFlow } from "./ExecuteFlow.js";
+import VerifyInGame, { AgeBadge } from "./VerifyInGame.js";
+import FeedbackComposer from "./FeedbackComposer.js";
 
 export default function V2LeadershipPage() {
   return <Suspense fallback={<div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>}><V2Leadership /></Suspense>;
@@ -24,19 +26,22 @@ function V2Leadership() {
   const router = useRouter();
   // Old "+New → note" deep links (?new=1) now live on the full-page editor.
   useEffect(() => { if (sp.get("new") === "1") router.replace("/v2/notes"); }, [sp]);
+  const [queueCount, setQueueCount] = useState(null);
   const level = auth?.level || 0;
   const can = level >= 2 || auth?.isLeadStoryteller;
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
   if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead or Leadership access required.</div>;
   // Lead Storytellers read the approvals queue and the review board; the
   // performance and meeting-note actions are L2+ so those sections stay hidden.
-  const TABS = [["approvals", "Approvals"], ...(level >= 2 ? [["performance", "Performance"], ["notes", "Meeting Notes"]] : []), ["reviews", "Reviews"], ...(level >= 3 ? [["contacts", "IC Contacts"]] : [])];
+  // Queue (everything waiting on leadership) is the default section for L2+.
+  const TABS = [...(level >= 2 ? [["queue", "Queue"]] : []), ["approvals", "Approvals"], ...(level >= 2 ? [["performance", "Performance"], ["notes", "Meeting Notes"]] : []), ["reviews", "Reviews"], ...(level >= 3 ? [["contacts", "IC Contacts"]] : [])];
   const tabParam = sp.get("tab");
-  const tab = TABS.some(([v]) => v === tabParam) ? tabParam : "approvals";
+  const tab = TABS.some(([v]) => v === tabParam) ? tabParam : TABS[0][0];
   const sectionLabel = TABS.find(([v]) => v === tab)?.[1] || "";
   return (
     <div className="view">
-      <div className="page-head"><div><p className="eyebrow">Leadership</p><h1>{sectionLabel}</h1><div className="sub">Switch sections from the Leadership menu in the top bar.</div></div></div>
+      <div className="page-head"><div><p className="eyebrow">Leadership</p><h1>{sectionLabel}{tab === "queue" && queueCount !== null && <span className="chip" style={{ marginLeft: 10, verticalAlign: "middle", background: queueCount > 0 ? "var(--amber-bg)" : "var(--good-bg)", color: queueCount > 0 ? "var(--amber)" : "var(--good)", fontSize: 11 }}>{queueCount}</span>}</h1><div className="sub">{tab === "queue" ? "Everything waiting on leadership, oldest first. Seven days or more is highlighted." : "Switch sections from the Leadership menu in the top bar."}</div></div></div>
+      {tab === "queue" && <Queue auth={auth} onCount={setQueueCount} />}
       {tab === "approvals" && <Approvals auth={auth} />}
       {tab === "performance" && <Performance />}
       {tab === "notes" && <MeetingNotes auth={auth} />}
@@ -50,21 +55,27 @@ function V2Leadership() {
 function Approvals({ auth }) {
   const isL3 = auth.level >= 3;
   const [q, setQ] = useState({ rpChanges: [], deletions: [], promos: [] });
+  const [unverified, setUnverified] = useState([]); // EXECUTED rows awaiting in-game verification (L2+ scoped)
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [npcExec, setNpcExec] = useState(null); // {id, factionName, npcName, npcPos, npcId, preview, picked}
-  const [execConfirm, setExecConfirm] = useState(null); // {id, factionName, type, preview, shipmentPower} — HQ / TURF / PROPERTY / Other
   const [rpDone, setRpDone] = useState(null);   // {id, note} — requester confirming the RP happened
-  const load = () => getPendingQueue().then(x => { setQ(x || { rpChanges: [], deletions: [], promos: [] }); setLoading(false); }).catch(() => setLoading(false));
+  const load = () => Promise.all([
+    getPendingQueue().catch(() => null),
+    auth.level >= 2 ? getUnverifiedExecutions().catch(() => []) : Promise.resolve([]),
+  ]).then(([x, u]) => { setQ(x || { rpChanges: [], deletions: [], promos: [] }); setUnverified(u || []); setLoading(false); });
   useEffect(() => { load(); }, []);
   const run = async (fn) => {
     setBusy(true); setErr("");
-    try { const r = await fn(); if (r && r.ok === false) setErr(r.error || "Action failed."); }
-    catch (e) { setErr(e?.message || "Action failed."); }
+    let okRun = true;
+    try { const r = await fn(); if (r && r.ok === false) { setErr(r.error || "Action failed."); okRun = false; } }
+    catch (e) { setErr(e?.message || "Action failed."); okRun = false; }
     finally { setBusy(false); load(); }
+    return okRun;
   };
-  const total = q.rpChanges.length + q.deletions.length + q.promos.length;
+  // Execute preview → confirm → commit, shared with the Queue tab.
+  const exec = useExecuteFlow({ run, busy, setErr });
+  const total = q.rpChanges.length + q.deletions.length + q.promos.length + unverified.length;
   if (loading) return <div className="empty">Loading…</div>;
   if (total === 0) return <div className="empty">Nothing awaiting approval.</div>;
 
@@ -96,18 +107,8 @@ function Approvals({ auth }) {
                 </>}
                 {canConfirmRP && <button className="act good" disabled={busy} onClick={() => setRpDone(rpDone?.id === rc.id ? null : { id: rc.id, note: "" })}>Confirm RP done</button>}
                 {rc.status === "APPROVED" && !canConfirmRP && <span style={{ fontSize: 11, color: "var(--sky)", fontStyle: "italic" }}>Waiting for {rc.requested_by} to confirm the RP.</span>}
-                {isL3 && rc.status === "RP_DONE" && <button className="act good" disabled={busy} onClick={async () => {
-                  // Hardening: show exactly what the execute will rewrite before committing.
-                  // getRPExecuteTarget is shared/rpChanges.js executionPreview — the same
-                  // lookup executeRPChange runs — so the label and the commit agree.
-                  setErr("");
-                  let t;
-                  try { t = await getRPExecuteTarget(rc.id); } catch (e) { setErr(e?.message || "Could not load the execution preview."); return; }
-                  const type = String(t?.type || rc.execution_type || "Other").toUpperCase();
-                  if (type === "NPC") { setNpcExec({ id: rc.id, factionName: rc.faction_name, npcName: "", npcPos: "", npcId: "", preview: t, picked: null, turf: t?.turf || rc.turf }); return; }
-                  if (!t?.ok) { setErr(t?.error || "This request cannot be executed."); return; }
-                  setExecConfirm({ id: rc.id, factionName: rc.faction_name, type, preview: t, shipmentPower: "" });
-                }}>Execute</button>}
+                {/* Execute shows exactly what will be rewritten before committing (ExecuteFlow.js). */}
+                {isL3 && rc.status === "RP_DONE" && <button className="act good" disabled={busy} onClick={() => exec.begin(rc)}>Execute</button>}
                 {isL3 && <button className="act" disabled={busy} onClick={() => { if (window.confirm(`Delete this RP change for ${rc.faction_name}?`)) run(() => deleteRPChange(rc.id)); }}>Delete</button>}
               </div>
             </div>
@@ -123,6 +124,25 @@ function Approvals({ auth }) {
             )}
           </div>
         ); })}
+      </div>}
+
+      {unverified.length > 0 && <div className="card"><div className="hd"><div className="t">Executed — awaiting in-game verification</div><div className="meta">{unverified.length}{unverified.some(u => u.overdue) ? ` · ${unverified.filter(u => u.overdue).length} over 48h` : ""}</div></div>
+        {unverified.map(u => (
+          <div key={u.id} className="clog" style={{ alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 3 }}>
+                <span className="chip" style={{ background: "var(--sky-bg)", color: "var(--sky)" }}>RP · {u.faction_name}</span>
+                <span style={{ fontFamily: "var(--v2-mono)", fontSize: 9, fontWeight: 800, color: u.overdue ? "var(--rose)" : "var(--sky)" }}>{u.overdue ? "EXECUTED · UNVERIFIED 48H+" : "EXECUTED · AWAITING VERIFICATION"}</span>
+                <AgeBadge days={Math.floor((u.hours_since_executed || 0) / 24)} overdue={!!u.overdue} since={u.executed_at} />
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{u.execution_type}: <b>{u.old_value}</b> → <b>{u.new_value}</b></div>
+              <div style={{ fontFamily: "var(--v2-mono)", fontSize: 10.5, color: "var(--ink-3)" }}>{u.requested_by} · executed {String(u.executed_at || "").slice(0, 10)}</div>
+            </div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+              <VerifyInGame exec={u} auth={auth} busy={busy} run={run} />
+            </div>
+          </div>
+        ))}
       </div>}
 
       {q.deletions.length > 0 && <div className="card"><div className="hd"><div className="t">Deletion requests</div><div className="meta">{q.deletions.length}</div></div>
@@ -157,69 +177,7 @@ function Approvals({ auth }) {
         ); })}
       </div>}
 
-      {npcExec && (() => {
-        // `preview` is the server's answer for the request as filed; `picked` is the
-        // re-check for the NPC chosen when several match (ambiguous turf + type).
-        const shown = npcExec.picked || npcExec.preview;
-        const cands = npcExec.preview?.candidates || [];
-        const needsPick = cands.length > 1 && !npcExec.npcId;
-        const target = shown?.ok ? shown.target : null;
-        return (
-          <Modal title={`Execute NPC swap — ${npcExec.factionName}`} saveLabel="Execute" onClose={() => setNpcExec(null)}
-            onSave={async () => {
-              const data = { npcName: npcExec.npcName.trim(), npcPos: npcExec.npcPos.trim() };
-              if (npcExec.npcId) data.npcId = Number(npcExec.npcId);
-              const exec = npcExec;
-              await run(() => executeRPChange(exec.id, data));
-              setNpcExec(null);
-            }}
-            saveDisabled={busy || !shown?.ok || needsPick || !npcExec.npcName.trim() || !npcExec.npcPos.trim()}>
-            {cands.length > 1 && (
-              <div>
-                <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--ink-3)", marginBottom: 4 }}>Which NPC? — {cands.length} match “{npcExec.preview?.oldValue}” on {npcExec.turf}</div>
-                <select className="filter-inp" style={{ width: "100%" }} value={npcExec.npcId} onChange={async e => {
-                  const npcId = e.target.value;
-                  let picked = null;
-                  if (npcId) { try { picked = await getRPExecutionPreview(npcExec.id, { npcId: Number(npcId) }); } catch (err) { picked = { ok: false, error: err?.message || "Could not check that NPC." }; } }
-                  setNpcExec(x => x ? { ...x, npcId, picked } : x);
-                }}>
-                  <option value="">Select the NPC to rewrite…</option>
-                  {cands.map(c => <option key={c.id} value={String(c.id)}>{c.name} ({c.npc_type}) — {c.turf}{c.position ? ` · ${c.position}` : ""}</option>)}
-                </select>
-              </div>
-            )}
-            {target
-              ? <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>
-                  This rewrites the live NPC: <b>{target.name}</b> ({target.npc_type}) on <b>{target.turf}</b>{target.position ? <> — currently at {target.position}</> : null} → type <b>{npcExec.preview?.newValue}</b>.
-                </div>
-              : needsPick
-                ? <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>Pick the NPC above — the request matches more than one, and nothing is rewritten until you choose.</div>
-                : <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--rose-bg)", fontSize: 12.5, color: "var(--rose)" }}>
-                    ⚠ {shown?.error || `No NPC in the registry matches turf “${npcExec.turf}” with the old type — executing would change nothing.`}
-                  </div>}
-            <input className="filter-inp" placeholder="Final NPC name" value={npcExec.npcName} onChange={e => setNpcExec({ ...npcExec, npcName: e.target.value })} />
-            <input className="filter-inp" placeholder="TP position" value={npcExec.npcPos} onChange={e => setNpcExec({ ...npcExec, npcPos: e.target.value })} />
-          </Modal>
-        );
-      })()}
-      {execConfirm && (
-        <Modal title={`Execute ${execConfirm.type === "OTHER" ? "" : execConfirm.type + " "}change — ${execConfirm.factionName}`} saveLabel="Execute" onClose={() => setExecConfirm(null)}
-          onSave={async () => {
-            const data = {};
-            if (execConfirm.type === "TURF" && execConfirm.shipmentPower.trim()) data.shipmentPower = execConfirm.shipmentPower.trim();
-            const exec = execConfirm;
-            await run(() => executeRPChange(exec.id, data));
-            setExecConfirm(null);
-          }}
-          saveDisabled={busy}>
-          <div style={{ fontSize: 12.5, color: "var(--ink-1)" }}>{execConfirm.preview.oldValue} → <b>{execConfirm.preview.newValue}</b></div>
-          <div style={{ padding: "8px 12px", borderRadius: 8, background: "var(--amber-bg)", fontSize: 12.5, color: "var(--amber)" }}>{execConfirm.preview.summary}</div>
-          {execConfirm.type === "TURF" && execConfirm.preview.mode === "turf" && (
-            <input className="filter-inp" placeholder="Shipment power (optional — blank keeps the current value)" value={execConfirm.shipmentPower} onChange={e => setExecConfirm({ ...execConfirm, shipmentPower: e.target.value })} />
-          )}
-          {execConfirm.type === "OTHER" && <div style={{ fontSize: 11, color: "var(--ink-3)" }}>Type “Other” — no world records are rewritten; the request is marked executed and logged.</div>}
-        </Modal>
-      )}
+      {exec.modals}
     </>
   );
 }
@@ -337,9 +295,10 @@ function Reviews() {
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [flt, setFlt] = useState("all"); // all | todo | confirm | feedback
-  useEffect(() => {
-    getReviewData().catch(() => []).then(r => { setRows(r || []); setLoading(false); });
-  }, []);
+  const [composing, setComposing] = useState(null); // faction id whose feedback composer is open
+  const reviewMonth = new Date().toISOString().slice(0, 7);
+  const load = () => getReviewData().catch(() => []).then(r => { setRows(r || []); setLoading(false); });
+  useEffect(() => { load(); }, []);
   if (loading) return <div className="empty">Loading…</div>;
 
   // Every dot comes from getReviewData: the status is derived from the L3
@@ -380,7 +339,8 @@ function Reviews() {
             {shown.map(f => {
               const s = state(f);
               return (
-                <tr key={f.id}>
+                <Fragment key={f.id}>
+                <tr>
                   <td><b>{f.name}</b></td>
                   <td style={{ color: "var(--ink-2)" }}>{f.teamName || "—"}</td>
                   <td><span className={`tier ${f.tier >= 7 ? "hi" : f.tier >= 4 ? "mid" : "lo"}`}>T{f.tier}</span></td>
@@ -396,8 +356,17 @@ function Reviews() {
                       {s.staged && <span className="chip lock" style={{ fontSize: 9 }}>STAGED</span>}
                     </span>
                   </td>
-                  <td><Link className="act" href={`/v2/factions/${encodeURIComponent(f.name)}?tab=review`}>Open →</Link></td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {f.mine && <button className={`act${composing === f.id ? " primary" : s.feedback ? "" : " good"}`} style={{ marginRight: 4 }} onClick={() => setComposing(composing === f.id ? null : f.id)} title={s.feedback ? "Feedback already delivered this month — write another or re-send" : "Write and send this month's feedback from here"}>Feedback</button>}
+                    <Link className="act" href={`/v2/factions/${encodeURIComponent(f.name)}?tab=review`}>Open →</Link>
+                  </td>
                 </tr>
+                {composing === f.id && (
+                  <tr key={`${f.id}-fb`}><td colSpan={7} style={{ padding: "0 8px" }}>
+                    <FeedbackComposer faction={f} reviewMonth={reviewMonth} onDone={load} onClose={() => setComposing(null)} />
+                  </td></tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
