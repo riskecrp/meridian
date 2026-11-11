@@ -71,7 +71,7 @@ function NoteEditor() {
         const fac = (targets.factions || []).find(f => String(f.id) === String(form.targetKey));
         if (fac) { router.push(`/v2/factions/${encodeURIComponent(fac.name)}?tab=activity`); return; }
       }
-      router.push((auth.level >= 2 || auth.isLeadStoryteller) ? "/v2/leadership?tab=notes" : "/v2");
+      router.push("/v2/leadership?tab=notes");
     }
   );
 
@@ -83,7 +83,7 @@ function NoteEditor() {
           <h1>{form.id ? "Edit meeting note" : "Document a meeting"}</h1>
           <div className="sub">Who attended, what was discussed, decisions, concerns, follow-ups. Faction notes appear on the faction's hub; these records feed monthly reviews.</div>
         </div>
-        <Link className="act" href={(auth.level >= 2 || auth.isLeadStoryteller) ? "/v2/leadership?tab=notes" : "/v2"}>Cancel</Link>
+        <Link className="act" href={"/v2/leadership?tab=notes"}>Cancel</Link>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>

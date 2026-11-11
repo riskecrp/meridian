@@ -28,13 +28,15 @@ function V2Leadership() {
   useEffect(() => { if (sp.get("new") === "1") router.replace("/v2/notes"); }, [sp]);
   const [queueCount, setQueueCount] = useState(null);
   const level = auth?.level || 0;
-  const can = level >= 2 || auth?.isLeadStoryteller;
+  const lead = level >= 2 || auth?.isLeadStoryteller;
   if (auth?.loading) return <div className="view" style={{ color: "var(--ink-3)" }}>Loading…</div>;
-  if (!auth?.ok || !can) return <div className="view" style={{ color: "var(--ink-3)" }}>Team Lead or Leadership access required.</div>;
+  if (!auth?.ok || !(lead || level >= 1)) return <div className="view" style={{ color: "var(--ink-3)" }}>Staff access required.</div>;
   // Lead Storytellers read the approvals queue and the review board; the
-  // performance and meeting-note actions are L2+ so those sections stay hidden.
+  // performance section is L2+ so it stays hidden. Guides (L1) get Meeting
+  // Notes only — the server scopes them to their own team and factions.
   // Queue (everything waiting on leadership) is the default section for L2+.
-  const TABS = [...(level >= 2 ? [["queue", "Queue"]] : []), ["approvals", "Approvals"], ...(level >= 2 ? [["performance", "Performance"], ["notes", "Meeting Notes"]] : []), ["reviews", "Reviews"], ...(level >= 3 ? [["contacts", "IC Contacts"]] : [])];
+  const TABS = !lead ? [["notes", "Meeting Notes"]]
+    : [...(level >= 2 ? [["queue", "Queue"]] : []), ["approvals", "Approvals"], ...(level >= 2 ? [["performance", "Performance"], ["notes", "Meeting Notes"]] : []), ["reviews", "Reviews"], ...(level >= 3 ? [["contacts", "IC Contacts"]] : [])];
   const tabParam = sp.get("tab");
   const tab = TABS.some(([v]) => v === tabParam) ? tabParam : TABS[0][0];
   const sectionLabel = TABS.find(([v]) => v === tab)?.[1] || "";

@@ -37,7 +37,8 @@ export function navFor(auth) {
     { key: "home", label: "Home", href: "/v3", icon: I.home },
     { key: "factions", label: "Factions", href: "/v3/factions", icon: I.factions },
     ...(staff ? [{ key: "work", label: "Work", href: "/v3/work", icon: I.work }] : []),
-    ...(level >= 2 || isLST ? [{ key: "reviews", label: "Reviews", href: "/v3/reviews", icon: I.reviews }] : []),
+    ...(level >= 2 || isLST ? [{ key: "reviews", label: "Reviews", href: "/v3/reviews", icon: I.reviews }]
+      : staff ? [{ key: "reviews", label: "Meeting notes", href: "/v3/reviews?tab=notes", icon: I.reviews }] : []),
     { key: "library", label: "Library", href: "/v3/library", icon: I.library },
     { key: "storytelling", label: "Storytelling", href: "/v3/storytelling", icon: I.story },
     ...(level >= 2 ? [{ key: "comms", label: "Comms", href: "/v3/comms", icon: I.comms }] : []),

@@ -228,7 +228,8 @@ export default function V2Layout({ children }) {
     },
     { key: "feedback", label: "Feedback", href: "/v2/feedback", icon: I.feedback, min: 2 },
     {
-      key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 2, lst: true, menu: [
+      // Guides (L1) see this menu with Meeting Notes only.
+      key: "leadership", label: "Leadership", href: "/v2/leadership", icon: I.leadership, min: 1, lst: true, menu: (level >= 2 || isLST) ? [
         // Queue = everything waiting on leadership (L2 sees their team's items); the page's default section.
         ...(level >= 2 ? [{ id: "queue", label: "Queue" }] : []),
         { id: "approvals", label: "Approvals" },
@@ -236,7 +237,7 @@ export default function V2Layout({ children }) {
         { id: "notes", label: "Meeting Notes" },
         { id: "reviews", label: "Reviews" },
         ...(level >= 3 ? [{ id: "contacts", label: "IC Contacts" }] : []),
-      ],
+      ] : [{ id: "notes", label: "Meeting Notes" }],
     },
     // Admin has per-view gates: the dropdown lists only what this user can open.
     {
