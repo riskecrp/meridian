@@ -161,13 +161,14 @@ say('\n[3/4] Migrations — apply cleanly to a copy of the live database');
       // Drift is a warning, not a failure: schema.sql is a generated artefact and
       // lagging behind is untidy rather than dangerous.
       const live = new Database(TMP_DB, { readonly: true });
-      const tables = live.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table'").get().n;
+      // schema.sql deliberately omits the two bookkeeping tables (sqlite_sequence, _migrations).
+      const tables = live.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name NOT IN ('sqlite_sequence', '_migrations')").get().n;
       live.close();
       const committed = existsSync(path.join(ROOT, 'schema.sql'))
         ? (execFileSync('grep', ['-c', '^CREATE TABLE', path.join(ROOT, 'schema.sql')], { encoding: 'utf8' }).trim())
         : '0';
       if (Number(committed) !== tables) {
-        say(`  warn  schema.sql lists ${committed} tables, the migrated database has ${tables} — regenerate it: sqlite3 data/meridian.db .schema`);
+        say(`  warn  schema.sql lists ${committed} tables, the migrated database has ${tables} — regenerate it: node scripts/schema-dump.mjs > schema.sql`);
       } else {
         pass('schema.sql', `in step with the database (${tables} tables)`);
       }

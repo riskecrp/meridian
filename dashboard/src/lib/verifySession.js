@@ -5,7 +5,7 @@
 // 3-day expiry even though the cookie is self-contained. SESSION_SECRET is
 // REQUIRED: without it nothing is signed and nothing validates — there is no
 // fallback secret.
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { queryOne, run } from './db.js';
 
 const DAYS = 3;
