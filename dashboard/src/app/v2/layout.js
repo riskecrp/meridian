@@ -304,6 +304,12 @@ export default function V2Layout({ children }) {
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3 5.5 5.5 0 1 0 13 9.5z" /></svg>
               </button>
               {auth?.ok && <ViewAsMenu auth={auth} />}
+              {auth?.ok && (
+                <button className="tb-btn" title="Try the new site" aria-label="Try the new site" style={{ width: "auto", padding: "0 9px", fontSize: 11.5, fontWeight: 600, gap: 5 }}
+                  onClick={async () => { const r = await fetch("/api/ui", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ui: "v3", from: pathname + window.location.search }) }).then(r => r.json()).catch(() => null); window.location.href = r?.to || "/v3"; }}>
+                  ✦ New site
+                </button>
+              )}
               <div className="tn-user" title={roleLabel}>
                 <div className="avatar">{initial}</div>
                 <div className="who"><div className="n">{auth?.displayName || auth?.name || "…"}</div><div className="r">{roleLabel}</div></div>

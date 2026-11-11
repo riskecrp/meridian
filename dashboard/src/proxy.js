@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { UI_COOKIE, pickUi, translatePath } from './lib/uiRoutes.js';
 
 // The legacy /fm shell is retired and its pages deleted: every /fm link,
 // bookmark or old ping lands on its /v2 equivalent. The fm/**/actions.js
@@ -65,17 +66,20 @@ export function proxy(request) {
   const fmSession     = request.cookies.get('meridian_session');
   const verifySession = request.cookies.get('meridian_verify_session');
 
-  if (pathname.startsWith('/fm') || pathname.startsWith('/v2')) {
+  const ui = pickUi(request.cookies.get(UI_COOKIE)?.value);
+  if (pathname.startsWith('/fm') || pathname.startsWith('/v2') || pathname.startsWith('/v3')) {
     if (!fmSession) return NextResponse.redirect(new URL('/login', request.url));
   }
   if (pathname.startsWith('/fm')) {
     const target = new URL(v2Target(pathname), request.url);
     // Keep any query the legacy link carried (?tab= on the hub pages, ?sop=, …) unless the target sets its own.
     request.nextUrl.searchParams.forEach((v, k) => { if (!target.searchParams.has(k)) target.searchParams.set(k, v); });
-    return NextResponse.redirect(target, 308);
+    // Old links land in whichever shell this person uses.
+    const finalUrl = ui === 'v3' ? new URL(translatePath(target.pathname + target.search, 'v3'), request.url) : target;
+    return NextResponse.redirect(finalUrl, 308);
   }
   if (pathname === '/login') {
-    if (fmSession) return NextResponse.redirect(new URL('/v2', request.url));
+    if (fmSession) return NextResponse.redirect(new URL(`/${ui}`, request.url));
   }
   if (pathname === '/verify') {
     if (!verifySession) return NextResponse.redirect(new URL('/verify/login', request.url));
@@ -85,4 +89,4 @@ export function proxy(request) {
   }
   return NextResponse.next();
 }
-export const config = { matcher: ['/fm/:path*', '/v2/:path*', '/login', '/verify', '/verify/login'] };
+export const config = { matcher: ['/fm/:path*', '/v2/:path*', '/v3/:path*', '/login', '/verify', '/verify/login'] };
