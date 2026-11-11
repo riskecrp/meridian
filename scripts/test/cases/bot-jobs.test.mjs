@@ -115,6 +115,14 @@ sheet.push(['2026-11-10 16:00', 'Criminal Faction Management (FM)', 'NA', 'The V
   for (const f of FORMS) await pollForm(f); ok(FORMS.every(f => /initialised at sheet row 1; no backfill/.test(sync('form_poll.' + f.key).last_detail)), 'all four forms initialise without backfill');
   forms['sheet-rcf_application'].push(['2026-11-10', 'The Reapers', 'Jay', '', 'https://discord.gg/new']); await pollForm(FORMS[0]); const row = queryOne("SELECT title, contact, status, row_key FROM form_submissions WHERE form_key='rcf_application' ORDER BY id DESC LIMIT 1");
   ok(/1 new submission/.test(sync('form_poll.rcf_application').last_detail) && row.title === 'The Reapers · Jay' && row.contact === '' && row.status === 'new' && row.row_key, 'new RCF row posts; contact never a URL');
+  // Legacy hand-over (2026-11-11 incident): a form initialised under the old last_row counter, with no row keys
+  // yet, must not re-post the rows that counter already covered — only the one past it is new.
+  { const staff = FORMS.find(f => f.key === 'staff_application'); forms['sheet-staff_application'].push(['t2', 'Ann', 'ann#1'], ['t3', 'New', 'new#1']);
+    run("DELETE FROM sheet_rows_seen WHERE source='form:staff_application'"); run("UPDATE form_submission_state SET initialized=1, last_row=2, keys_seeded=0 WHERE form_key='staff_application'");
+    const before = queryOne("SELECT count(*) n FROM form_submissions WHERE form_key='staff_application'").n; await pollForm(staff);
+    const added = query("SELECT title FROM form_submissions WHERE form_key='staff_application'").slice(before);
+    ok(added.length === 1 && added[0].title === 'New' && queryOne("SELECT keys_seeded FROM form_submission_state WHERE form_key='staff_application'").keys_seeded === 1, 'legacy last_row seeds row keys: old rows not re-posted, the new one is');
+    await pollForm(staff); ok(/nothing new/.test(sync('form_poll.staff_application').last_detail), 'seeding is one-time and stable'); }
   // Sheet ids default to the production forms; blank one out to exercise the configuration-failure path.
   const savedDesc = Object.getOwnPropertyDescriptor(FORMS[3], 'sheet'); Object.defineProperty(FORMS[3], 'sheet', { configurable: true, get: () => ({ id: '', gid: '' }) }); await pollForm(FORMS[3]); Object.defineProperty(FORMS[3], 'sheet', savedDesc); ok(/no sheet id configured/.test(sync('form_poll.ci_application').last_error), 'blank sheet id is a recorded configuration failure, not a crash'); }
 unq(); pass('sheet intakes');

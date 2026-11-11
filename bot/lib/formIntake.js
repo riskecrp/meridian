@@ -442,7 +442,27 @@ export function ensureIntakeSchema() {
     seen_at   TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (source, row_key)
   )`);
+  add('form_submission_state', 'keys_seeded', 'INTEGER NOT NULL DEFAULT 0');
+  add('faction_feedback_state', 'keys_seeded', 'INTEGER NOT NULL DEFAULT 0');
   schemaReady = true;
+}
+
+/**
+ * One-time hand-over from the old position counter (state.last_row) to row
+ * keys. A source initialised before row keys existed has an empty
+ * sheet_rows_seen, so without this every row it had already processed reads
+ * as new and is re-posted (2026-11-11: 32 old RCF/staff applications came
+ * back as fresh threads). Every row the counter covered is marked seen;
+ * anything past it is still genuinely new and posts normally.
+ * Returns true when it seeded on this call.
+ */
+export function seedSeenFromLastRow(source, header, data, lastRow) {
+  const keys = rowKeys(header, data);
+  const upto = Math.min(Math.max(parseInt(lastRow, 10) || 0, 0), data.length);
+  for (let idx = 0; idx < upto; idx++) {
+    if (!rowSeen(source, keys[idx])) markRowSeen(source, keys[idx], idx + 2);
+  }
+  return upto;
 }
 
 export function rowSeen(source, key) {

@@ -54,7 +54,7 @@ import {
   discordFetch, discordPost, discordPatch, hideThreadCard,
   OPEN_STATUS_TAGS, DECISION_STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
   TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers, rowPayload,
-  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
+  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow, seedSeenFromLastRow,
 } from './lib/formIntake.js';
 
 // Sheet ids/tabs and the links the setup checklist hands out come from the
@@ -346,7 +346,7 @@ async function pollForm(form) {
   const data = rows.slice(1);
 
   run('INSERT OR IGNORE INTO form_submission_state (form_key) VALUES (?)', [form.key]);
-  const state = queryOne('SELECT last_row, initialized FROM form_submission_state WHERE form_key = ?', [form.key]);
+  const state = queryOne('SELECT last_row, initialized, keys_seeded FROM form_submission_state WHERE form_key = ?', [form.key]);
   if (!state) { recordSyncFail(job, 'state row is missing'); return; }
 
   if (!state.initialized) {
@@ -354,10 +354,17 @@ async function pollForm(form) {
     // the feature and would otherwise arrive as a wall of threads, each with its
     // own ping and its own 48-hour nudge cycle.
     markAllRowsSeen(source, header, data);
-    run('UPDATE form_submission_state SET last_row = ?, initialized = 1 WHERE form_key = ?', [data.length, form.key]);
+    run('UPDATE form_submission_state SET last_row = ?, initialized = 1, keys_seeded = 1 WHERE form_key = ?', [data.length, form.key]);
     console.log(`[FORMS] ${form.key} initialised at row ${data.length}; watching for new submissions`);
     recordSyncOk(job, `initialised at sheet row ${data.length}; no backfill`);
     return;
+  }
+
+  if (!state.keys_seeded) {
+    // Initialised under the old position counter: hand its rows over to row keys.
+    const n = seedSeenFromLastRow(source, header, data, state.last_row);
+    run('UPDATE form_submission_state SET keys_seeded = 1 WHERE form_key = ?', [form.key]);
+    console.log(`[FORMS] ${form.key} row keys seeded from last_row (${n} rows marked seen)`);
   }
 
   let posted = 0, held = null;

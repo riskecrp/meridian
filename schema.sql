@@ -733,7 +733,8 @@ CREATE TABLE faction_feedback (
 CREATE TABLE faction_feedback_state (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   last_row    INTEGER NOT NULL DEFAULT 0,
-  initialized INTEGER NOT NULL DEFAULT 0
+  initialized INTEGER NOT NULL DEFAULT 0,
+  keys_seeded INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE faction_feedback_failures (
   sheet_row       INTEGER PRIMARY KEY,
@@ -785,7 +786,8 @@ CREATE TABLE form_submissions (
 CREATE TABLE form_submission_state (
   form_key    TEXT    PRIMARY KEY,
   last_row    INTEGER NOT NULL DEFAULT 0,
-  initialized INTEGER NOT NULL DEFAULT 0
+  initialized INTEGER NOT NULL DEFAULT 0,
+  keys_seeded INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE form_submission_failures (
   form_key        TEXT    NOT NULL,

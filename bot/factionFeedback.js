@@ -44,7 +44,7 @@ import {
   nowStr, plusHours, plusDays,
   discordFetch, discordPost, discordPatch, discordDelete, hideThreadCard,
   STATUS_TAGS, titled, retag, chunks, fetchSheetRows, valueByHeader, rowPayload, TIMESTAMP_HEADER,
-  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow,
+  rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow, seedSeenFromLastRow,
 } from './lib/formIntake.js';
 
 // Responses sheet of the ECRP roleplay feedback form. The id and tab come from
@@ -184,7 +184,7 @@ async function pollSheet() {
   const teamCol = header.findIndex(h => COLS.team.test(String(h || '')));
   if (teamCol < 0) { recordSyncFail('feedback_poll', 'the sheet has no team/division column — headers changed?'); return; }
 
-  const state = queryOne('SELECT last_row, initialized FROM faction_feedback_state WHERE id = 1');
+  const state = queryOne('SELECT last_row, initialized, keys_seeded FROM faction_feedback_state WHERE id = 1');
   if (!state) {
     recordSyncFail('feedback_poll', 'faction_feedback_state row is missing');
     return;
@@ -194,10 +194,17 @@ async function pollSheet() {
     // the feature and would otherwise arrive as a wall of threads, each with its
     // own ping and its own 48-hour nudge cycle.
     markAllRowsSeen(SOURCE, header, data);
-    run('UPDATE faction_feedback_state SET last_row = ?, initialized = 1 WHERE id = 1', [data.length]);
+    run('UPDATE faction_feedback_state SET last_row = ?, initialized = 1, keys_seeded = 1 WHERE id = 1', [data.length]);
     console.log(`[FEEDBACK] initialised at row ${data.length}; watching for new submissions`);
     recordSyncOk('feedback_poll', `initialised at sheet row ${data.length}; no backfill`);
     return;
+  }
+
+  if (!state.keys_seeded) {
+    // Initialised under the old position counter: hand its rows over to row keys.
+    const n = seedSeenFromLastRow(SOURCE, header, data, state.last_row);
+    run('UPDATE faction_feedback_state SET keys_seeded = 1 WHERE id = 1');
+    console.log(`[FEEDBACK] row keys seeded from last_row (${n} rows marked seen)`);
   }
 
   let posted = 0, held = null;
