@@ -1,8 +1,10 @@
 import cron from "node-cron";
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { query, run } from './lib/db.js';
-import { pingEnabled } from './lib/pings.js';
+import { pingEnabled, sendPing, BASE_URL } from './lib/pings.js';
 import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
+import { healthReport, diffHealth, registerJob, LATE_FACTOR, FAILING_AFTER } from './lib/health.js';
+import { sendLeadershipDigest, verifyNudgeTick, reviewVoteNudge } from './lib/digest.js';
 
 // A reminder that could not be delivered is NOT deleted (BOT-15): a transient
 // failure is retried on the next tick for up to RETRY_WINDOW_MS after its time,
@@ -104,6 +106,68 @@ export function startScheduler(client) {
     catch (e) { console.error("[SCHEDULER ERROR]:", e.message); recordSyncFail('reminders', e); }
     finally { running = false; }
   });
+  startLeadershipJobs(client);
+}
+
+// ── Leadership nudges + job health ───────────────────────────────────────────
+// Read-only jobs (bot/lib/digest.js): they remind, they never move a request,
+// vote or task. Each one is muted from the dashboard through its ping route and
+// records sync_status so the health check below (and /api/health) judges it.
+
+const healthState = new Map();   // job → last status alerted; alerts fire on change only
+
+const fmtAge = (m) => m == null ? 'never' : m < 120 ? `${m}m` : m < 2880 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+const alertLine = (a) => {
+  const j = a.job;
+  if (a.kind === 'recovered') return `✅ **${j.label}** recovered${j.lastOk ? ` (ok ${fmtAge(j.ageMinutes)} ago)` : ''}`;
+  if (a.kind === 'failing') return `🔴 **${j.label}** failing — ${j.consecutiveFailures} failure${j.consecutiveFailures === 1 ? '' : 's'} in a row${j.lastError ? `: ${String(j.lastError).slice(0, 160)}` : ''}`;
+  return `🟠 **${j.label}** late — no successful run for ${fmtAge(j.ageMinutes)} (expected every ${j.expectedEveryMinutes} min)`;
+};
+
+/**
+ * One health pass: classify every sync_status row (lib/health.js) and post the
+ * CHANGES since the previous pass on route 'ops.health' — a job that turned late
+ * or failing, or one that recovered. The in-memory map keeps a broken job from
+ * being announced again every half hour. While the route is muted nothing is
+ * compared, so the first pass after un-muting reports the current state.
+ */
+export async function healthAlertTick({ now = Date.now(), state = healthState } = {}) {
+  const out = { sent: 0, alerts: [], muted: false };
+  try {
+    const report = healthReport({ now });
+    out.report = report;
+    const bad = report.jobs.filter(j => j.status !== 'ok').length;
+    if (!pingEnabled('ops.health')) { out.muted = true; recordSyncOk('ops_health', `${bad} unhealthy job(s); route ops.health muted`); return out; }
+    const alerts = diffHealth(state, report).filter(a => a.job.job !== 'ops_health');
+    out.alerts = alerts;
+    if (alerts.length) {
+      const content = `🩺 **Job health** — ${alerts.length} change${alerts.length === 1 ? '' : 's'}\n${alerts.map(alertLine).join('\n')}\n${BASE_URL}/v2/admin?tab=audit`;
+      const sent = await sendPing('ops.health', content);
+      if (!sent) { recordSyncFail('ops_health', `${alerts.length} alert(s) could not be posted`); for (const a of alerts) state.delete(a.job.job); return out; }
+      out.sent = alerts.length;
+    }
+    recordSyncOk('ops_health', `${report.jobs.length} job(s) checked, ${bad} unhealthy, ${alerts.length} alert(s) sent`);
+  } catch (e) { console.error('[HEALTH]', e.message); recordSyncFail('ops_health', e); out.error = e.message; }
+  return out;
+}
+
+export const LEADERSHIP_JOBS = [
+  { job: 'leadership_digest', label: 'Weekly leadership digest', cron: '0 9 * * 1', every: 7 * 24 * 60 },
+  { job: 'rp_verify_nudge', label: 'Verify-in-game nudge', cron: '5 * * * *', every: 60 },
+  { job: 'review_vote_nudge', label: 'Review vote nudge', cron: '0 10 12 * *', every: 31 * 24 * 60 },
+  { job: 'ops_health', label: 'Job health alert', cron: '*/30 * * * *', every: 30 },
+];
+
+export function startLeadershipJobs(client) {
+  for (const j of LEADERSHIP_JOBS) registerJob(j.job, j.label, j.every);
+  const guard = (name, fn) => { let busy = false; return async () => { if (busy) return; busy = true; try { await fn(); } catch (e) { console.error(`[${name}]`, e.message); } finally { busy = false; } }; };
+  const tz = { timezone: 'UTC' };
+  cron.schedule('0 9 * * 1', guard('DIGEST', () => sendLeadershipDigest()), tz);
+  cron.schedule('5 * * * *', guard('VERIFY_NUDGE', () => verifyNudgeTick(client)), tz);
+  cron.schedule('0 10 12 * *', guard('VOTE_NUDGE', () => reviewVoteNudge(client)), tz);
+  cron.schedule('*/30 * * * *', guard('HEALTH', () => healthAlertTick()), tz);
+  setTimeout(() => healthAlertTick().catch(e => console.error('[HEALTH] startup:', e.message)), 60000);
+  console.log(`[SCHEDULER] Leadership jobs scheduled — digest Mon 09:00 UTC, verify nudge hourly, vote nudge 12th 10:00 UTC, health every 30 min (late > ${LATE_FACTOR}× cadence, failing ≥ ${FAILING_AFTER})`);
 }
 
 function getRepeatMs(str) {

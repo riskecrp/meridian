@@ -81,8 +81,45 @@ case-insensitive partial match; an ambiguous name is refused with the candidates
 | Feedback intake | sheet every 15 min, nudges every 30 min | `feedback_poll`, `feedback_nudge` |
 | Form intakes | sheet every 15 min, nudges every 30 min | `form_poll.<form>`, `form_nudge.<form>` |
 | Task DM reminders | hourly | — |
+| Weekly leadership digest (`lib/digest.js`) | Monday 09:00 UTC | `leadership_digest` |
+| Verify-in-game nudge (`lib/digest.js`) | hourly at :05 | `rp_verify_nudge` |
+| Review vote nudge (`lib/digest.js`) | 12th 10:00 UTC | `review_vote_nudge` |
+| Job health alert (`scheduler.js healthAlertTick`) | every 30 min + 60 s after start | `ops_health` |
 
 Hourly `setInterval` jobs never overlap (a run still in progress skips the tick).
+
+### Leadership nudges (read-only)
+
+Started by `startScheduler` → `startLeadershipJobs`. None of them changes
+workflow state: they list and remind, and leadership acts on the dashboard.
+Each has a ping route that mutes it from the dashboard (Admin → Pings); a muted
+job records "muted" in `sync_status` and sends nothing.
+
+- **Weekly digest** (route `leadership.digest`): one embed, grouped by kind,
+  of everything waiting on leadership for more than 7 days — PENDING RP
+  requests, RP_DONE awaiting execution, EXECUTED but unverified (48 h rule),
+  confirmed reviews this month without feedback sent, PENDING deletion
+  requests, unanswered questions on open tasks, unclaimed tasks targeting the
+  FM Leadership / Game Affairs roles, staged promotions. Every line carries the
+  age in days and a dashboard link; "Nothing is waiting" when empty.
+  `buildDigest({ now, olderThanDays, verifyHours })` returns the grouped data.
+- **Verify-in-game nudge** (route `rp.verify_nudge`): an EXECUTED request
+  with `verified_at NULL` whose `resolved_at` is older than 48 h is sent to its
+  requester (DM first, the route's channel with a mention as fallback) with a
+  link to Leadership → Queue, then `verify_nudged_at` is stamped so the next
+  nudge waits another 48 h. That stamp is the only write any of these jobs make.
+- **Review vote nudge** (route `review.vote_nudge`): on the 12th every active
+  L3 who has no `leadership_personal_notes` row for a faction reviewed this
+  month gets one message (DM first, channel fallback with a mention) listing
+  the factions still to vote on, before the tally on the 14th.
+- **Job health** (route `ops.health`): every `sync_status` row with a cadence
+  is judged by `lib/health.js` — *late* when no successful run for more than
+  3× `expected_every_minutes` (a job that never succeeded is measured from its
+  last attempt or the row itself), *failing* at 3 or more failures in a row.
+  Alerts are posted on **state change only** (an in-memory map per process),
+  and a job that comes back is announced once as recovered. The dashboard's
+  `GET /api/health` uses the same module: 200 when every job is ok, 503
+  otherwise; job details are included only for an authenticated L3.
 
 ### Promotion review (policy 7)
 
