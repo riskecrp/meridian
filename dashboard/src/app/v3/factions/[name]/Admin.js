@@ -39,11 +39,11 @@ export default function Admin({ hub, onRenamed, onArchived }) {
               </div>
             ))}
           </div>
-          {canEdit && <div className="hint" style={{ marginTop: 8 }}>Setting the tier here bypasses the review cycle — use it for corrections; promotions and demotions belong on the Review tab.</div>}
+          {canEdit && <div className="hint mt-s">Setting the tier here bypasses the review cycle — use it for corrections; promotions and demotions belong on the Review tab.</div>}
         </Card>
 
         {isL3 && (
-          <Card title={<span style={{ color: "var(--rose)" }}>Danger zone</span>}>
+          <Card title={<span className="c-rose">Danger zone</span>}>
             {archived
               ? <div className="danger-row"><span className="x">Archived{detail.archivedAt ? ` on ${String(detail.archivedAt).slice(0, 10)}` : ""}. Restoring puts it back on every list and re-enables writes.</span><Button size="sm" variant="good" disabled={busy} onClick={() => { if (window.confirm(`Restore ${detail.name}?`)) run(() => restoreFaction(detail.id), done(`${detail.name} restored.`)); }}>Restore faction</Button></div>
               : <div className="danger-row"><span className="x">Archive removes the faction from active lists, clears any staged promotion and denies its open RP requests — restorable from here or from the archived list.</span><Button size="sm" variant="danger ghost" disabled={busy} onClick={() => { if (window.confirm(`Archive ${detail.name}?`)) run(() => deleteFaction(detail.id), { success: `${detail.name} archived.`, onDone: onArchived }); }}>Archive faction</Button></div>}
@@ -78,7 +78,7 @@ export default function Admin({ hub, onRenamed, onArchived }) {
       {form?.kind === "lead" && <Modal title="Faction lead" onClose={() => setForm(null)} saveDisabled={busy || staff === null}
         onSave={() => run(() => editFactionLead(detail.id, form.value), done("Lead updated."))}>
         <Field label="Lead" help="The lead's team becomes the faction's team: its guides see the faction, its leads review it.">
-          {staff === null ? <div className="skeleton" style={{ height: 34 }} /> : (
+          {staff === null ? <div className="skeleton sk-row" /> : (
             <select autoFocus value={form.value} onChange={e => setForm({ ...form, value: e.target.value })}>
               <option value="">— No lead —</option>
               {staff.map(s => <option key={s.discord_id} value={s.discord_id}>{s.display_name}{s.team_name ? ` · ${s.team_name}` : ""} (L{s.clearance})</option>)}

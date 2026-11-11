@@ -4,7 +4,7 @@
 // buttons, per-person favourites (localStorage), category pills, ?q= seeding.
 import { useEffect, useMemo, useState } from "react";
 import { getLoreEntries, getCommandEntries, addKBEntry, editKBEntry, deleteKBEntry } from "../../fm/storytelling/actions.js";
-import { Card, Badge, Button, Field, Empty, Modal, useAction } from "../ui.js";
+import { Badge, Button, Field, Empty, Modal, useAction } from "../ui.js";
 import { useCopy, CopyButton, confirmIt } from "./shared.js";
 
 const BLANK = (type) => ({ type, category: "", title: "", content: "", notes: "" });
@@ -80,17 +80,17 @@ export default function KnowledgeBase({ auth, initialQ = "" }) {
             return (
               <div key={item.uid} className={`entry${isFav ? " fav" : ""}${isCmd ? " mgmt" : ""}`}>
                 <div className="row spread">
-                  <div className="row" style={{ gap: 5 }}>{item.category && <Badge tone="accent">{item.category}</Badge>}{isCmd && <Badge tone="good">MGMT</Badge>}</div>
+                  <div className="row gap-xs">{item.category && <Badge tone="accent">{item.category}</Badge>}{isCmd && <Badge tone="good">MGMT</Badge>}</div>
                   <button className={`star${isFav ? " on" : ""}`} onClick={() => toggleFav(item.uid)} title={isFav ? "Remove favourite" : "Favourite"}>{isFav ? "★" : "☆"}</button>
                 </div>
                 <div className="et">{item.title}</div>
                 {item.content && <div className={`codeblock${isCmd ? " good" : ""}`}>{item.content}</div>}
-                {item.notes && <div className="tiny faint" style={{ fontStyle: "italic" }}>{item.notes}</div>}
+                {item.notes && <div className="tiny faint italic">{item.notes}</div>}
                 <div className="foot">
                   <CopyButton text={item.content || item.title} id={item.uid} copied={copied} copy={copy} />
                   {(isCmd ? canAddMgmt : canEdit) && <>
                     <button className="copybtn" onClick={() => setForm({ id: item.id, type: item.dtype, category: item.category || "", title: item.title || "", content: item.content || "", notes: item.notes || "" })}>Edit</button>
-                    <button className="copybtn" style={{ color: "var(--rose)" }} disabled={busy} onClick={() => remove(item)}>Del</button>
+                    <button className="copybtn c-rose" disabled={busy} onClick={() => remove(item)}>Del</button>
                   </>}
                 </div>
               </div>

@@ -106,7 +106,7 @@ function Loadouts({ d, canEdit, run, busy, reload, initialQ }) {
                   </div>
                   {open && (
                     <div className="detail two-col">
-                      <div className="stack" style={{ gap: 8 }}>
+                      <div className="stack gap-sm">
                         <div className="lbl">Attachments</div>
                         <div className="chips">
                           {(w.attachments || []).map(a => <span key={a.id} className="chip static tag">{a.attachment_name}{canEdit && <button className="xbtn" title="Remove" onClick={() => { if (confirmIt(`Remove ${a.attachment_name}?`)) run(() => removeAttachmentCompat(a.id), { onDone: reload }); }}>✕</button>}</span>)}
@@ -120,10 +120,10 @@ function Loadouts({ d, canEdit, run, busy, reload, initialQ }) {
                           <Button size="sm" variant="ghost" disabled={!addAtt[w.id] || busy} onClick={() => run(() => addAttachmentCompat(w.id, addAtt[w.id]), { onDone: () => { setAddAtt({ ...addAtt, [w.id]: "" }); reload(); } })}>Add</Button>
                         </div>}
                       </div>
-                      <div className="stack" style={{ gap: 8 }}>
+                      <div className="stack gap-sm">
                         <div className="lbl">Compatible ammo</div>
-                        <div className="stack" style={{ gap: 4 }}>
-                          {(w.ammo || []).map(a => <div key={a.id} className="row" style={{ gap: 7 }}><Badge tone={AMMO_TONE[a.ammo_type]}>{a.ammo_type}</Badge><span className="small">{a.ammo_name}</span>{canEdit && <button className="xbtn" title="Remove" onClick={() => { if (confirmIt(`Remove ${a.ammo_name}?`)) run(() => removeAmmoCompat(a.id), { onDone: reload }); }}>✕</button>}</div>)}
+                        <div className="stack gap-xs">
+                          {(w.ammo || []).map(a => <div key={a.id} className="row gap-sm"><Badge tone={AMMO_TONE[a.ammo_type]}>{a.ammo_type}</Badge><span className="small">{a.ammo_name}</span>{canEdit && <button className="xbtn" title="Remove" onClick={() => { if (confirmIt(`Remove ${a.ammo_name}?`)) run(() => removeAmmoCompat(a.id), { onDone: reload }); }}>✕</button>}</div>)}
                           {!(w.ammo || []).length && <span className="tiny faint">None</span>}
                         </div>
                         {canEdit && <div className="row">
@@ -187,7 +187,7 @@ function SpawnCommands({ spawns, canWrite, run, busy, reload, copied, copy, init
                       <td className="hide-sm mono muted">{item.game_id}</td>
                       <td><code className="mono tiny">{cmd}</code></td>
                       <td className="num">
-                        <span className="actions-inline" style={{ justifyContent: "flex-end" }}>
+                        <span className="actions-inline right">
                           <CopyButton text={cmd} id={key} copied={copied} copy={copy} title="Copy command" />
                           {canWrite && <>
                             <Button variant="ghost" size="sm" onClick={() => setForm({ id: item.id, name: item.name, game_id: item.game_id || "", category: item.category || "", item_type: item.item_type || "item" })}>Edit</Button>

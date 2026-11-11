@@ -26,7 +26,7 @@ export default function SceneForm({ auth, title = "Log scene", form, setForm, li
           {factions.map(f => <option key={f} value={f}>{f}</option>)}
         </select>
       </Field>
-      <div className="pane stack" style={{ gap: 10 }}>
+      <div className="pane stack gap-md">
         <div className="row spread"><span className="lbl">Rewards &amp; inventory</span><Button type="button" variant="ghost" size="sm" onClick={() => setForm({ ...form, items: [...form.items, { name: "", qty: 1 }] })}>+ Add item</Button></div>
         <Field label="Cash reward ($)"><input type="number" min="0" value={form.cash} onChange={e => setForm({ ...form, cash: e.target.value })} placeholder="0" /></Field>
         {form.items.map((item, idx) => (
@@ -39,7 +39,7 @@ export default function SceneForm({ auth, title = "Log scene", form, setForm, li
             <Button type="button" variant="danger ghost" size="sm" onClick={() => setForm({ ...form, items: form.items.filter((_, i) => i !== idx) })}>✕</Button>
           </div>
         ))}
-        {proposed && <div className="tiny" style={{ color: "var(--accent)" }}>Proposed: {proposed}</div>}
+        {proposed && <div className="tiny c-accent">Proposed: {proposed}</div>}
         <Field label="Other rewards"><input placeholder="e.g. 1x Declasse Tulip" value={form.otherRewards} onChange={e => setForm({ ...form, otherRewards: e.target.value })} /></Field>
       </div>
       <Field label={`Also present (optional)${form.assistants.length ? ` · ${form.assistants.length} selected` : ""}`}>

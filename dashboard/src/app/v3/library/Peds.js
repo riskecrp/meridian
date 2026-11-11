@@ -5,7 +5,7 @@
 // is L2 (Event Team read-only, policy 4).
 import { useEffect, useRef, useState } from "react";
 import { getPedsPage, updatePedTags } from "../../v2/story/actions.js";
-import { Card, Badge, Button, Field, Empty, Modal, useAction } from "../ui.js";
+import { Card, Button, Field, Empty, Modal, useAction } from "../ui.js";
 import { useCopy, CopyButton } from "./shared.js";
 
 const PAGE = 48;
@@ -74,7 +74,7 @@ export default function Peds({ auth, initialQ = "" }) {
       <div className="chips">
         {tagsToShow.map(([t, n]) => <button key={t} className={`chip tag${picked.includes(t) ? " on" : ""}`} onClick={() => toggleTag(t)} title={`${n} peds`}>{t} <span className="faint mono">{n}</span></button>)}
         {tagCounts.length > 20 && <button className="linkbtn" onClick={() => setAllTags(a => !a)}>{allTags ? "Fewer tags" : `All ${tagCounts.length} tags`}</button>}
-        {filtering ? <button className="linkbtn" style={{ color: "var(--rose)" }} onClick={clear}>Clear filters</button> : null}
+        {filtering ? <button className="linkbtn c-rose" onClick={clear}>Clear filters</button> : null}
       </div>
       {err && <div className="err">{err}</div>}
       {!loading && rows.length === 0 && <Empty title="No peds match">Loosen the search or drop a tag.</Empty>}
@@ -144,9 +144,9 @@ function PedDetail({ ped, canEdit, copied, copy, onTag, onClose, onSaved }) {
   return (
     <Modal title={ped.display_name || ped.model_name} maxWidth={600} onClose={onClose} onSave={editing ? save : undefined} saveLabel="Save tags" saveDisabled={busy}>
       <div className="tiny faint">{ped.category || "Uncategorised"}{ped.dlc && ped.dlc !== "basegame" ? ` · ${ped.dlc}` : ""}</div>
-      <div className="row" style={{ alignItems: "flex-start" }}>
+      <div className="row top">
         <div className="ped-hero">{ped.image ? <img src={`/peds/${ped.image}`} alt={ped.model_name} /> : <span className="tiny faint">No preview</span>}</div>
-        <div className="stack grow" style={{ gap: 7 }}>
+        <div className="stack grow gap-sm">
           <div className="kv"><span className="k">Model</span><CopyButton text={ped.model_name} id={`m${ped.id}`} copied={copied} copy={copy} label={ped.model_name} /></div>
           <div className="kv"><span className="k">Hash</span><CopyButton text={String(ped.hash)} id={`d${ped.id}`} copied={copied} copy={copy} label={String(ped.hash)} /><CopyButton text={ped.hash_hex} id={`h${ped.id}`} copied={copied} copy={copy} label={ped.hash_hex} /></div>
           {kv("Ped type", ped.ped_type)}

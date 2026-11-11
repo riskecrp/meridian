@@ -68,7 +68,7 @@ export default function Activity({ hub }) {
 
   return (
     <Card title="Activity" right={right}>
-      <div className="chips" style={{ marginBottom: 8 }}>
+      <div className="chips mb-s">
         {SUBS.map(([id, l]) => <button key={id} className={`chip${sub === id ? " on" : ""}`} onClick={() => { setSub(id); setEdit(null); }}>{l}{id === "scenes" && detail.sceneLogs.length > 0 && <span className="ct">{detail.sceneLogs.length}</span>}</button>)}
       </div>
 
@@ -87,11 +87,11 @@ export default function Activity({ hub }) {
       )))}
 
       {sub === "intel" && <>
-        {ai.text && <div className="ai-box" style={{ margin: "8px 0" }}>{ai.text}</div>}
+        {ai.text && <div className="ai-box mb-s mt-s">{ai.text}</div>}
         {detail.notes.length === 0 ? <Empty title="No intel notes.">{canWrite ? "Add what the team has learned about this faction." : null}</Empty> : detail.notes.map(n => (
           <div className="note" key={n.id}>
             <div className="nh">
-              <span className="who" style={{ color: "var(--accent)" }}>{n.author}</span><span className="mono tiny faint">{n.date}</span><span className="sp" />
+              <span className="who c-accent">{n.author}</span><span className="mono tiny faint">{n.date}</span><span className="sp" />
               {(mine(n.author_id) || isL3) && !archived && <Button size="sm" variant="quiet" onClick={() => startEdit(`i${n.id}`, n.text)}>Edit</Button>}
               {mine(n.author_id) && !isL3 && !archived && <Button size="sm" variant="quiet" onClick={() => reqDel("intel_note", n.text, n.id)}>Request deletion</Button>}
               {isL3 && !archived && <Button size="sm" variant="danger ghost" disabled={busy} onClick={() => hardDel("intel_note", n.id, "note")}>Delete</Button>}
@@ -105,7 +105,7 @@ export default function Activity({ hub }) {
       {sub === "ooc" && (detail.oocNotes.length === 0 ? <Empty title="No OOC meetings documented.">{canWrite ? "Document a meeting to record attendance and notes." : null}</Empty> : detail.oocNotes.map(n => (
         <div className="note" key={n.id}>
           <div className="nh">
-            <span className="mono tiny" style={{ color: "var(--accent)" }}>{n.date}</span><span className="who">By {n.author}</span><span className="sp" />
+            <span className="mono tiny c-accent">{n.date}</span><span className="who">By {n.author}</span><span className="sp" />
             {(mine(n.author_id) || (level >= 2 && canWrite)) && !archived && <Button size="sm" variant="quiet" onClick={() => startEdit(`o${n.id}`, n.text)}>Edit</Button>}
             {isL3 && !archived && <Button size="sm" variant="danger ghost" disabled={busy} onClick={() => hardDel("ooc_note", n.id, "OOC note")}>Delete</Button>}
           </div>
@@ -125,14 +125,14 @@ export default function Activity({ hub }) {
       {ooc && <Modal maxWidth={860} title={`OOC meeting · ${detail.name}`} onClose={() => setOoc(null)} onSave={submitOOC} saveLabel="Save meeting" saveDisabled={busy || !ooc.text.trim()}>
         <div className="ooc-grid">
           <div>
-            <div className="lbl" style={{ marginBottom: 6 }}>Attendance</div>
+            <div className="lbl mb-s">Attendance</div>
             <div className="attend">
               {ooc.staff.length === 0 ? <span className="hint">No team members on the lead's team.</span> : ooc.staff.map(m => (
                 <label key={m.discord_id} className={ooc.att[m.discord_id] ? "on" : ""}><span>{m.display_name}</span><input type="checkbox" checked={!!ooc.att[m.discord_id]} onChange={() => setOoc({ ...ooc, att: { ...ooc.att, [m.discord_id]: !ooc.att[m.discord_id] } })} /></label>
               ))}
             </div>
           </div>
-          <div><div className="lbl" style={{ marginBottom: 6 }}>Meeting notes</div><QuillEditor value={ooc.text} onChange={t => setOoc(o => ({ ...o, text: t }))} placeholder="Meeting notes…" /></div>
+          <div><div className="lbl mb-s">Meeting notes</div><QuillEditor value={ooc.text} onChange={t => setOoc(o => ({ ...o, text: t }))} placeholder="Meeting notes…" /></div>
         </div>
       </Modal>}
     </Card>

@@ -33,14 +33,14 @@ function FleetCard({ hub }) {
         {fleet.vehicles.length === 0 ? <Empty>No vehicles.</Empty> : <div className="list">{fleet.vehicles.map(v => <div className="li" key={v.id}><div className="body"><div className="t"><span className="mono">{v.quantity}×</span> {v.vehicle_name}</div>{v.notes && <div className="d">{v.notes}</div>}</div>{manage && <div className="side"><Button size="sm" variant="danger ghost" disabled={busy} onClick={() => { if (window.confirm(`Remove ${v.vehicle_name} from the fleet?`)) run(() => deleteFleetVehicle(v.id), done("Vehicle removed.")); }}>Remove</Button></div>}</div>)}</div>}
         <div className="grp">Garages</div>
         {fleet.garages.length === 0 ? <Empty>No garages.</Empty> : <div className="list">{fleet.garages.map(g => <div className="li" key={g.id}><div className="body"><div className="t">{g.name}</div><div className="d mono tiny">({g.x}, {g.y}, {g.z})</div></div>{manage && <div className="side"><Button size="sm" variant="danger ghost" disabled={busy} onClick={() => { if (window.confirm(`Remove garage ${g.name}?`)) run(() => deleteFleetGarage(g.id), done("Garage removed.")); }}>Remove</Button></div>}</div>)}</div>}
-        {manage && <div className="actions-inline" style={{ paddingTop: 10 }}>
+        {manage && <div className="actions-inline pt-m">
           <Button size="sm" onClick={() => setForm({ kind: "veh", vname: "", qty: "1" })}>+ Vehicle</Button>
           <Button size="sm" variant="ghost" onClick={() => setForm({ kind: "gar", gname: "", x: "", y: "", z: "" })}>+ Garage</Button>
           {fleet.limits.isOverridden
             ? <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(() => clearFleetOverride(detail.id), done("Override cleared — tier defaults apply."))}>Clear override</Button>
             : <Button size="sm" variant="ghost" onClick={() => setForm({ kind: "ovr", mt: fleet.limits.maxTypes, mtot: fleet.limits.maxTotal, mg: fleet.limits.maxGarages, reason: "" })}>Override caps</Button>}
         </div>}
-      </> : <div className="hint" style={{ paddingTop: 8 }}>Fleet inventory is managed by leadership (L3).</div>}
+      </> : <div className="hint pt-s">Fleet inventory is managed by leadership (L3).</div>}
 
       {form?.kind === "veh" && <Modal title="Add vehicle" onClose={() => setForm(null)} saveDisabled={busy || !form.vname.trim()}
         onSave={() => { const vname = form.vname.trim(), qty = parseInt(form.qty) || 1; run(() => addFleetVehicle(detail.id, vname, qty, ""), { success: "Vehicle added.", onDone: async (r) => { if (r?.merged) toast(`"${vname}" was already in this fleet — the ${qty} were added to the existing entry.`); setForm(null); await reload(); } }); }}>
@@ -94,7 +94,7 @@ export default function Assets({ hub }) {
       <Card flush title="Properties" right={manage
         ? <span className="actions-inline"><Button size="sm" variant="ghost" onClick={() => setModal({ kind: "rp" })}>Request change</Button><Button size="sm" onClick={() => setModal({ kind: "prop" })}>+ Add property</Button></span>
         : <span className="faint small">team leads manage</span>}>
-        {detail.properties.length === 0 ? <div style={{ padding: "0 16px 16px" }}><Empty title="No properties on file.">{manage ? "Add one, or request a change through the RP queue." : null}</Empty></div> : (
+        {detail.properties.length === 0 ? <div className="pad-in"><Empty title="No properties on file.">{manage ? "Add one, or request a change through the RP queue." : null}</Empty></div> : (
           <div className="tblwrap">
             <table className="tbl">
               <thead><tr><th>Address</th><th>Type</th><th></th>{manage && <th></th>}</tr></thead>

@@ -78,7 +78,7 @@ export default function FactionsPage() {
     return rows.sort(cmp);
   }, [facs, archived, showArchived, counts, openReq, needle, sort]);
 
-  if (auth?.loading || (auth?.ok && facs === null)) return <><PageHeader eyebrow="Faction Management" title="Factions" /><div className="stack"><div className="skeleton" style={{ height: 36 }} /><div className="skeleton" style={{ height: 220 }} /></div></>;
+  if (auth?.loading || (auth?.ok && facs === null)) return <><PageHeader eyebrow="Faction Management" title="Factions" /><div className="stack"><div className="skeleton sk-row" /><div className="skeleton sk-tall" /></div></>;
   if (!auth?.ok) return <><PageHeader eyebrow="Faction Management" title="Factions" /><Restricted>Sign in to see the factions.</Restricted></>;
 
   const loadingList = showArchived && archived === null;
@@ -98,7 +98,7 @@ export default function FactionsPage() {
         {isL3 && <div className="chips"><button className={`chip${!showArchived ? " on" : ""}`} onClick={() => setShowArchived(false)}>Active</button><button className={`chip${showArchived ? " on" : ""}`} onClick={() => setShowArchived(true)}>Archived</button></div>}
       </div>
 
-      {loadingList ? <div className="skeleton" style={{ height: 160 }} />
+      {loadingList ? <div className="skeleton sk-block" />
         : shown.length === 0 ? <Empty title={showArchived ? "No archived factions." : "No factions match."}>{needle ? "Try a shorter search." : showArchived ? "Archived factions can be restored from here." : isL3 ? "Create the first one with “New faction”." : null}</Empty>
         : <>
           {/* Phone: cards */}
@@ -135,15 +135,15 @@ export default function FactionsPage() {
                       <td><TierPill tier={f.tier} /></td>
                       <td className="muted">{f.leadName || "Unassigned"}</td>
                       <td className="muted hide-sm">{f.teamName || "—"}</td>
-                      <td className="num">{f.memberCount == null ? <span className="skeleton" style={{ display: "inline-block", width: 22, height: 12 }} /> : f.memberCount}</td>
+                      <td className="num">{f.memberCount == null ? <span className="skeleton" aria-label="loading">&nbsp;&nbsp;&nbsp;</span> : f.memberCount}</td>
                       <td className="muted hide-sm">{promoted(f.lastPromoted)}</td>
                       {!showArchived && isLeader && <td className="num">{f.openRequests == null ? "…" : f.openRequests > 0 ? <Badge tone="warn">{f.openRequests}</Badge> : <span className="faint">0</span>}</td>}
                       {!showArchived && <td className="num hide-sm">{f.scenes30d ?? 0}</td>}
                       {!showArchived && <td className="num hide-sm">{f.forumPosts ?? 0}</td>}
                       <td className="hide-sm" onClick={e => e.stopPropagation()}>
                         <span className="actions-inline">
-                          {f.discord ? <a className="badge accent" href={f.discord} target="_blank" rel="noreferrer">Discord ↗</a> : <span className="badge" style={{ opacity: .5 }}>Discord</span>}
-                          {f.forum ? <a className="badge accent" href={f.forum} target="_blank" rel="noreferrer">Forum ↗</a> : <span className="badge" style={{ opacity: .5 }}>Forum</span>}
+                          {f.discord ? <a className="badge accent" href={f.discord} target="_blank" rel="noreferrer">Discord ↗</a> : <span className="badge dim">Discord</span>}
+                          {f.forum ? <a className="badge accent" href={f.forum} target="_blank" rel="noreferrer">Forum ↗</a> : <span className="badge dim">Forum</span>}
                         </span>
                       </td>
                       {showArchived && <td onClick={e => e.stopPropagation()}>{isL3 && <Button size="sm" variant="ghost" disabled={busy} onClick={() => restore(f)}>Restore</Button>}</td>}

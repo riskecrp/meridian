@@ -67,7 +67,7 @@ export default function Vehicles({ auth, initialQ = "" }) {
                     <td className="hide-sm muted small">{r.notes || ""}</td>
                     {canEdit && (
                       <td className="num">
-                        <span className="actions-inline" style={{ justifyContent: "flex-end" }}>
+                        <span className="actions-inline right">
                           <Button variant="ghost" size="sm" title="Add to a faction garage" onClick={() => setAddTo({ row: r, faction: "", qty: 1 })}>+ Faction</Button>
                           <Button variant="ghost" size="sm" onClick={() => setForm({ id: r.id, vehicle_name: r.vehicle_name, spawn_name: r.spawn_name || "", notes: r.notes || "" })}>Edit</Button>
                           <Button variant="danger ghost" size="sm" disabled={busy} onClick={() => remove(r)}>×</Button>

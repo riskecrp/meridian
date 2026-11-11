@@ -94,7 +94,7 @@ export function RPChangeModal({ detail, contactId = null, onClose, onDone }) {
           <option value="">Select change type…</option><option value="NPC">NPC change</option><option value="HQ">HQ relocation</option><option value="TURF">Turf change</option><option value="PROPERTY">Property change</option><option value="Other">Other</option>
         </select>
       </Field>
-      {!lists && f.type && <div className="skeleton" style={{ height: 34 }} />}
+      {!lists && f.type && <div className="skeleton sk-row" />}
       {lists && f.type === "NPC" && <>
         <Field label="Current NPC"><select value={f.oldVal} onChange={e => setF({ ...f, oldVal: e.target.value })}><option value="">Pick the NPC…</option>{npcs.map(n => <option key={n.id} value={String(n.id)}>{n.name} ({n.npc_type}) — {n.turf}</option>)}</select></Field>
         <Field label="New NPC type"><select value={f.newVal} onChange={e => setF({ ...f, newVal: e.target.value })}><option value="">Pick a type…</option>{[...new Set(npcs.map(n => n.npc_type))].sort().map(t => <option key={t} value={t}>{t}</option>)}</select></Field>

@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSceneLibrary, addSceneLibraryEntry, editSceneLibraryEntry, setSceneLibraryStatus, deleteSceneLibraryEntry, getSceneLibraryFeedback, addSceneLibraryFeedback } from "../../fm/storytelling/actions.js";
 import { getFactionNames, getInventoryForScene, getStaffForScene, submitScene } from "../../fm/scenes/actions.js";
-import { Card, Badge, Button, Field, Empty, Modal, useAction, useToast, fmtDate, fmtDateTime } from "../ui.js";
+import { Badge, Button, Field, Empty, Modal, useAction, useToast, fmtDate, fmtDateTime } from "../ui.js";
 import { confirmIt } from "../library/shared.js";
 import SceneForm, { BLANK_SCENE } from "./SceneForm.js";
 
@@ -114,7 +114,7 @@ export default function SceneLibrary({ auth, initialQ = "" }) {
                   <Badge tone={approved ? "good" : "warn"}>{approved ? "Approved" : "Idea"}</Badge>
                   <span className="tiny faint mono">{s.created_by}{s.created_at ? ` · ${fmtDate(s.created_at)}` : ""}</span>
                 </div>
-                <div className="et" style={{ fontWeight: 700, color: "var(--ink-0)", fontSize: 14 }}>{s.title}</div>
+                <div className="scene-title">{s.title}</div>
                 {s.description && (
                   <div>
                     <div className={`pre small${long && !isOpen ? " clamp3" : ""}`}>{s.description}</div>
@@ -126,8 +126,8 @@ export default function SceneLibrary({ auth, initialQ = "" }) {
                   <Badge tone={s.spawning_required ? "warn" : undefined}>Spawning {s.spawning_required ? "yes" : "no"}</Badge>
                   <Badge tone={s.ped_required ? "info" : undefined}>Peds {s.ped_required ? "yes" : "no"}</Badge>
                 </div>
-                {!!s.spawning_required && s.spawning_details && <div className="small muted"><b style={{ color: "var(--amber)" }}>Spawn</b> {s.spawning_details}</div>}
-                {s.proposed_rewards && <div className="small mono" style={{ color: "var(--good)" }}><span className="faint">Rewards</span> {s.proposed_rewards}</div>}
+                {!!s.spawning_required && s.spawning_details && <div className="small muted"><b className="c-amber">Spawn</b> {s.spawning_details}</div>}
+                {s.proposed_rewards && <div className="small mono c-good"><span className="faint">Rewards</span> {s.proposed_rewards}</div>}
                 {tags.length > 0 && <div className="chips">{tags.map(t => <Badge key={t} tone="lock">{t}</Badge>)}</div>}
                 <div className="sf">
                   {canSuggest ? <Button size="sm" onClick={() => openLog(s)}>+ Add to faction</Button> : <span className="tiny faint">Read only</span>}
@@ -163,7 +163,7 @@ export default function SceneLibrary({ auth, initialQ = "" }) {
         <Modal title={`Feedback — ${feedback.scene.title}`} maxWidth={620} onClose={() => setFeedback(null)} onSave={canEdit && feedback.scene.status !== "approved" ? sendFeedback : undefined} saveLabel="Send feedback" saveDisabled={busy || !feedback.text.trim()}>
           {feedback.loading ? <div className="skeleton row" /> : feedback.list.length === 0 ? <Empty>No feedback yet.</Empty> : feedback.list.map(f => (
             <div key={f.id} className="pane">
-              <div className="row spread"><span className="small" style={{ fontWeight: 700, color: "var(--accent)" }}>{f.created_by}</span><span className="tiny faint mono">{fmtDateTime(f.created_at)}</span></div>
+              <div className="row spread"><span className="small bold c-accent">{f.created_by}</span><span className="tiny faint mono">{fmtDateTime(f.created_at)}</span></div>
               <div className="pre small">{f.feedback}</div>
             </div>
           ))}

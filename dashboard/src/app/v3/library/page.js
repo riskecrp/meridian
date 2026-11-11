@@ -47,7 +47,7 @@ export default function LibraryPage() {
     <>
       <PageHeader eyebrow="Library" title={label} sub="Reference for the whole team. Scene logs, ideas, the change log and the NPC map are under Storytelling." />
       <Tabs tabs={LIBRARY_TABS} active={tab} onChange={(t) => setQuery({ tab: t, q: "", sop: "", sub: "" })} />
-      {notice && <div className="info" style={{ marginBottom: 12 }}>{notice}</div>}
+      {notice && <div className="info mb">{notice}</div>}
       {tab === "kb" && <KnowledgeBase auth={auth} initialQ={initialQ} />}
       {tab === "docs" && <Documents auth={auth} initialQ={initialQ} sop={sop} />}
       {tab === "peds" && <Peds auth={auth} initialQ={initialQ} />}

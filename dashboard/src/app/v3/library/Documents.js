@@ -112,7 +112,7 @@ export default function Documents({ auth, initialQ = "", sop = "" }) {
                   {open && (
                     <div className="detail">
                       <div className="doc-body quill-content" onClick={onBodyClick} dangerouslySetInnerHTML={{ __html: doc.content || "<p><em>This document is empty.</em></p>" }} />
-                      <div className="tiny faint mono" style={{ marginTop: 10 }}>Updated {fmtDateTime(doc.updated_at) || "—"}</div>
+                      <div className="tiny faint mono mt">Updated {fmtDateTime(doc.updated_at) || "—"}</div>
                     </div>
                   )}
                 </div>

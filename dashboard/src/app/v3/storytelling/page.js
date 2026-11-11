@@ -54,7 +54,7 @@ export default function StorytellingPage() {
     <>
       <PageHeader eyebrow="Storytelling" title={label} sub="Log what happened, grow the idea pool, record world changes. Reference material is in the Library." />
       <Tabs tabs={tabs} active={tab} onChange={(t) => setQuery({ tab: t, q: "", new: "", faction: "" })} />
-      {notice && <div className="info" style={{ marginBottom: 12 }}>{notice}</div>}
+      {notice && <div className="info mb">{notice}</div>}
       {tab === "scenelogs" && <SceneLogs auth={auth} openNew={openNew} prefillFaction={prefillFaction} />}
       {tab === "scenes" && <SceneLibrary auth={auth} initialQ={initialQ} />}
       {tab === "changelog" && <ChangeLog auth={auth} initialQ={initialQ} />}

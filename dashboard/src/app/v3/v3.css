@@ -563,3 +563,81 @@
 .v3-root .w80 { min-width: 80px; } .v3-root .w150 { min-width: 150px; }
 .v3-root .money { font-family: var(--mono); font-size: 17px; color: var(--good); }
 .v3-root .scene-title { font-weight: 700; color: var(--ink-0); font-size: 14px; line-height: 1.3; }
+/* Factions: spacing / skeleton / colour utilities (no inline layout styles in pages) */
+.v3-root .mb-s { margin-bottom: 8px; } .v3-root .mb-m { margin-bottom: 16px; } .v3-root .mt-s { margin-top: 8px; } .v3-root .mt-m { margin-top: 12px; } .v3-root .pt-s { padding-top: 8px; } .v3-root .pt-m { padding-top: 12px; }
+.v3-root .pad-in { padding: 0 16px 16px; } .v3-root .grow { flex: 1; } .v3-root .center { justify-content: center; }
+.v3-root .sk-line { height: 30px; width: 40%; } .v3-root .sk-row { height: 34px; } .v3-root .sk-box { height: 48px; } .v3-root .sk-block { height: 160px; } .v3-root .sk-tall { height: 240px; }
+.v3-root .c-good { color: var(--good); } .v3-root .c-amber { color: var(--amber); } .v3-root .c-accent { color: var(--accent); } .v3-root .c-rose { color: var(--rose); } .v3-root .c-ink { color: var(--ink-0); }
+.v3-root .badge.dim { opacity: .5; }
+.v3-root .inp.auto { width: auto; } .v3-root .inp.compact { padding: 2px 6px; font-size: 11px; }
+.v3-root .stack.tight { gap: 8px; }
+.v3-root .li.faded { opacity: .45; }
+.v3-root .note.flat { border-bottom: none; }
+
+/* ── home-work (Home, Work, task page) ── */
+.v3-root .stack.tight { gap: 8px; }
+.v3-root .stats.tight { gap: 18px; }
+.v3-root .mt8 { margin-top: 8px; } .v3-root .mb14 { margin-bottom: 14px; }
+.v3-root .grow { flex: 1; }
+.v3-root .tx-good { color: var(--good); } .v3-root .tx-accent { color: var(--accent); } .v3-root .tx-warn { color: var(--amber); }
+.v3-root .narrow { max-width: 860px; }
+/* Legacy variable names used by fm/teams/RpChangeForm.js, aliased to the v3 tokens. */
+.v3-root .fm-vars { --fg-0: var(--ink-0); --fg-1: var(--ink-1); --fg-2: var(--ink-1); --fg-3: var(--ink-2); --fg-4: var(--ink-3); --bg-2: var(--panel-2); --bg-3: var(--panel-3); --border: var(--line-2); --blue: var(--accent); --blue-bg: var(--accent-bg); --red: var(--rose); }
+/* Inline confirm forms under a row. */
+.v3-root .inline { margin-top: 8px; padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.v3-root .inline textarea, .v3-root .inline select, .v3-root .inline input:not([type=checkbox]) { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-0); font-size: 13px; outline: none; }
+.v3-root .inline textarea { resize: vertical; line-height: 1.5; min-height: 60px; }
+.v3-root .inline textarea:focus, .v3-root .inline select:focus, .v3-root .inline input:focus { border-color: var(--accent); }
+/* Expandable rows (tasks, queue items). */
+.v3-root .lirow { border-bottom: 1px solid var(--line); }
+.v3-root .lirow:last-child { border-bottom: none; }
+.v3-root .lirow .li { border-bottom: none; }
+.v3-root .lirow.open .li.link { background: var(--panel-2); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: 8px 8px 0 0; }
+.v3-root .lix { padding: 4px 0 12px; display: flex; flex-direction: column; gap: 8px; }
+.v3-root .lix .prose { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.v3-root .li.unread { background: var(--accent-bg); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: 8px; }
+.v3-root .li .t.row { gap: 8px; }
+.v3-root .msg { font-size: 13px; color: var(--ink-1); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 6px; }
+.v3-root .ev-when { display: flex; flex-direction: column; align-items: center; min-width: 42px; padding: 4px 0; border-radius: 7px; background: var(--panel-2); font-family: var(--mono); line-height: 1.1; }
+.v3-root .ev-when span { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.v3-root .ev-when b { font-size: 15px; color: var(--ink-0); }
+/* Filter bar (chips + search). */
+.v3-root .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.v3-root .filters .search { flex: 1 1 200px; max-width: 360px; width: auto; }
+.v3-root .chip .ct { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 8px; background: var(--panel-3); color: var(--ink-2); }
+.v3-root .chip.on .ct { background: var(--accent); color: #fff; }
+/* Discord thread view inside an IC contact. */
+.v3-root .thread { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.v3-root .tmsg { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.v3-root .tmsg:last-child { border-bottom: none; }
+.v3-root .tmsg.bot { background: var(--accent-bg); }
+.v3-root .tmsg p { margin: 3px 0 0; font-size: 12px; line-height: 1.6; white-space: pre-wrap; color: var(--ink-1); }
+.v3-root .sel-sm { width: auto; padding: 3px 8px; font-family: var(--mono); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.v3-root .card.ic { border-left: 3px solid var(--sky); }
+/* Foldable section (leadership Home). */
+.v3-root .fold-h { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 4px; border: none; background: none; cursor: pointer; color: var(--ink-0); }
+.v3-root .fold-h .t { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; flex: 1; }
+.v3-root .fold-h .tg { color: var(--ink-3); font-size: 12px; }
+.v3-root .fold-h:hover .t { color: var(--accent-hi); }
+/* Faction tiles on Home. */
+.v3-root .tile { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--panel-2); min-width: 0; }
+.v3-root .tile .t { font-weight: 700; color: var(--ink-0); font-size: 14px; }
+.v3-root .tile .t:hover { color: var(--accent-hi); }
+.v3-root .tile .d { font-size: 11.5px; color: var(--ink-3); }
+.v3-root .tile .stat .v { font-size: 20px; }
+/* Key/value facts on the task page. */
+.v3-root .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 16px; margin-top: 10px; font-size: 13px; color: var(--ink-0); }
+.v3-root .kv .span { grid-column: 1 / -1; }
+/* Q&A thread. */
+.v3-root .qa { border-left: 2px solid var(--amber); padding-left: 12px; }
+.v3-root .qa.answered { border-left-color: var(--line-2); }
+.v3-root .qa .ans { margin-top: 8px; padding: 8px 10px; border-radius: 7px; background: var(--panel-2); }
+/* Work list inside a flush card. */
+.v3-root .list.pad { padding: 4px 16px; }
+.v3-root .wrow.contact { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.v3-root .wrow.contact:last-child { border-bottom: none; }
+.v3-root .wrow.contact .card { border: none; background: transparent; padding: 0; border-left: 3px solid var(--sky); padding-left: 12px; border-radius: 0; }
+@media (max-width: 760px) {
+  .v3-root .li .side { flex-basis: 100%; justify-content: flex-start; }
+  .v3-root .lirow.open .li.link, .v3-root .li.unread { margin: 0; padding-left: 10px; padding-right: 10px; }
+}

@@ -96,7 +96,7 @@ export default function SceneLogs({ auth, openNew = false, prefillFaction = "" }
         </div>
       )}
       {attention.length > 0 && (
-        <Card title={<span style={{ color: "var(--rose)" }}>Attention required</span>} right={<Badge tone="bad">{attention.length} faction{attention.length !== 1 ? "s" : ""}</Badge>}>
+        <Card title={<span className="c-rose">Attention required</span>} right={<Badge tone="bad">{attention.length} faction{attention.length !== 1 ? "s" : ""}</Badge>}>
           <div className="attn-grid">
             {attention.map(([fac, count]) => <div key={fac} className="attn"><div className="t">{fac}</div><div className="d">{count} scene{count !== 1 ? "s" : ""} in 30d</div></div>)}
           </div>
@@ -117,21 +117,21 @@ export default function SceneLogs({ auth, openNew = false, prefillFaction = "" }
         return (
           <Card key={log.id} title={log.faction} right={<span className="tiny faint mono">{log.dateLabel || fmtDate(log.date)}</span>}>
             {edit?.id === log.id ? (
-              <div className="stack" style={{ gap: 8 }}>
+              <div className="stack gap-sm">
                 <Field label="Notes"><textarea rows={5} value={edit.text} onChange={e => setEdit({ ...edit, text: e.target.value })} /></Field>
                 <div className="actions-inline"><Button size="sm" disabled={busy || !edit.text.trim()} onClick={saveEdit}>Save</Button><Button size="sm" variant="ghost" onClick={() => setEdit(null)}>Cancel</Button></div>
               </div>
-            ) : <p className="pre" style={{ margin: "0 0 10px" }}>{log.notes}</p>}
-            <div className="pane row" style={{ gap: 18 }}>
-              <div><div className="lbl">Staff</div><div className="small" style={{ fontWeight: 600 }}>{log.logged_by}</div></div>
+            ) : <p className="pre mb-p">{log.notes}</p>}
+            <div className="pane row gap-lg">
+              <div><div className="lbl">Staff</div><div className="small semi">{log.logged_by}</div></div>
               {log.assistants?.length > 0 && (
                 <div><div className="lbl">Also present</div>
                   <div className="chips">{log.assistants.map(a => <span key={a.id} className="chip static tag">{a.staff_name}{canManage && <button className="xbtn" title="Remove" onClick={() => removeAssistant(a)}>✕</button>}</span>)}</div>
                 </div>
               )}
-              <div><div className="lbl">Rewards</div><div className="small mono" style={{ color: "var(--good)" }}>{log.rewards}</div></div>
+              <div><div className="lbl">Rewards</div><div className="small mono c-good">{log.rewards}</div></div>
             </div>
-            <div className="row spread" style={{ marginTop: 10 }}>
+            <div className="row spread mt">
               <span className="actions-inline">
                 {canLog && (isAuthor || canEditAny) && edit?.id !== log.id && <Button size="sm" variant="ghost" onClick={() => setEdit({ id: log.id, text: log.notes || "" })}>Edit</Button>}
                 {canLog && (isAuthor || canEditAny) && <Button size="sm" variant="ghost" onClick={() => requestDelete(log)}>Request deletion</Button>}
@@ -149,10 +149,10 @@ export default function SceneLogs({ auth, openNew = false, prefillFaction = "" }
         <Modal title="Treasury & distribution" maxWidth={720} onClose={() => setTreasury(null)}>
           <div className="tiny faint">Cash and items handed out, per distributor, across every scene log.</div>
           {Object.entries(treasury).sort((a, b) => b[1].cash - a[1].cash).map(([name, data]) => (
-            <div key={name} className="pane row" style={{ alignItems: "flex-start" }}>
-              <div style={{ minWidth: 150 }}><div className="small" style={{ fontWeight: 700 }}>{name}</div><div className="mono" style={{ fontSize: 17, color: "var(--good)" }}>${(data.cash || 0).toLocaleString()}</div></div>
+            <div key={name} className="pane row top">
+              <div className="w150"><div className="small bold">{name}</div><div className="money">${(data.cash || 0).toLocaleString()}</div></div>
               <div className="chips grow">
-                {Object.entries(data.items || {}).sort((a, b) => b[1] - a[1]).map(([item, qty]) => <span key={item} className="chip static tag"><b style={{ color: "var(--accent)" }}>{qty}x</b>&nbsp;{item}</span>)}
+                {Object.entries(data.items || {}).sort((a, b) => b[1] - a[1]).map(([item, qty]) => <span key={item} className="chip static tag"><b className="c-accent">{qty}x</b>&nbsp;{item}</span>)}
                 {Object.keys(data.items || {}).length === 0 && <span className="tiny faint">No items distributed</span>}
               </div>
             </div>

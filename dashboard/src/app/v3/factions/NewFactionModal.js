@@ -52,7 +52,7 @@ export default function NewFactionModal({ onClose, onCreated }) {
       {field("hqAddress", "Initial HQ address")}
       <div className="section">
         <div className="lbl">Meridian Database — faction portal</div>
-        <div className="hint" style={{ marginBottom: 8 }}>Lets faction members log into the public portal and receive FM announcements. Watch roles auto-register and recent pings backfill. Leave blank to configure later in Settings › Discord &amp; Access.</div>
+        <div className="hint mb-s">Lets faction members log into the public portal and receive FM announcements. Watch roles auto-register and recent pings backfill. Leave blank to configure later in Settings › Discord &amp; Access.</div>
         <div className="form-grid">
           {field("guildId", "Discord server ID")}
           {field("guildName", "Discord server name")}

@@ -62,7 +62,7 @@ export default function Npcs({ auth, initialQ = "" }) {
 
   const NpcRow = (n) => (
     <div className="line" key={n.id}>
-      <span className="tiny faint mono hide-sm" style={{ minWidth: 80, textTransform: "uppercase" }}>{n.npc_type}</span>
+      <span className="tiny faint mono hide-sm w80 upper">{n.npc_type}</span>
       <span className="t">{n.name}</span>
       {filter && <Badge tone="accent">{n.turf || NEUTRAL}</Badge>}
       <span className="spacer" />
@@ -90,7 +90,7 @@ export default function Npcs({ auth, initialQ = "" }) {
       {mapView ? (
         <Card flush>
           <div className="map-wrap"><GTAMap npcs={filter && filter !== "__neutral" ? all.filter(n => (n.npc_type || "").trim().toLowerCase() === filter.toLowerCase()) : filter === "__neutral" ? all.filter(n => isNeutral(n.turf)) : all} selectedTurf={mapTurf} height={520} /></div>
-          <div className="chips" style={{ padding: 12 }}>
+          <div className="chips pad">
             <button className={`chip tag${!mapTurf ? " on" : ""}`} onClick={() => setMapTurf(null)}>All NPCs</button>
             {mapTurfs.map(t => <button key={t} className={`chip tag${mapTurf === t ? " on" : ""}`} onClick={() => setMapTurf(t)}>{t}</button>)}
           </div>
