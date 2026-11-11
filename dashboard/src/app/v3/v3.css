@@ -461,7 +461,7 @@
 @media (max-width: 860px) { .v3-root .v2x .kv { grid-template-columns: repeat(2, 1fr); } }
 
 /* ── REVIEWS (/v3/reviews: cycle · performance · notes · contacts) ── */
-.v3-root .inp.auto { width: auto; min-width: 160px; }
+.v3-root .rv-inp { width: auto; min-width: 160px; }
 .v3-root .rv-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 14px; }
 .v3-root .rv-step { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); color: var(--ink-1); cursor: pointer; min-width: 0; }
 .v3-root .rv-step:hover { border-color: var(--line-2); }
@@ -506,8 +506,8 @@
   .v3-root .rv-cell { min-width: 0; flex-basis: 100%; }
   .v3-root .rv-list { padding: 0 12px; }
 }
-.v3-root .caret { display: inline-block; font-size: 11px; color: var(--ink-3); transition: transform .15s; }
-.v3-root .caret.open { transform: rotate(90deg); }
+.v3-root .rv-caret { display: inline-block; font-size: 11px; color: var(--ink-3); transition: transform .15s; }
+.v3-root .rv-caret.open { transform: rotate(90deg); }
 /* Votes strip: one chip per active L3 */
 .v3-root .votes { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .v3-root .vote { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid transparent; background: var(--panel-3); color: var(--ink-2); white-space: nowrap; }
@@ -537,9 +537,9 @@
 .v3-root .quill-wrap .ql-editor { min-height: 260px; }
 .v3-root .quill-wrap .ql-editor.ql-blank::before { color: var(--ink-3); font-style: normal; }
 .v3-root .quill-wrap .ql-snow .ql-stroke { stroke: var(--ink-2); } .v3-root .quill-wrap .ql-snow .ql-fill { fill: var(--ink-2); } .v3-root .quill-wrap .ql-snow .ql-picker { color: var(--ink-2); }
-.v3-root .quill-content, .v3-root .quill-content * { color: var(--ink-1) !important; }
-.v3-root .quill-content strong, .v3-root .quill-content h1, .v3-root .quill-content h2, .v3-root .quill-content h3 { color: var(--ink-0) !important; }
-.v3-root .quill-content a { color: var(--accent) !important; }
+.v3-root .note-body .quill-content, .v3-root .note-body .quill-content * { color: var(--ink-1) !important; }
+.v3-root .note-body .quill-content strong, .v3-root .note-body .quill-content h1, .v3-root .note-body .quill-content h2, .v3-root .note-body .quill-content h3 { color: var(--ink-0) !important; }
+.v3-root .note-body .quill-content a { color: var(--accent) !important; }
 /* IC contacts */
 .v3-root .ic-done { opacity: .7; }
 .v3-root .ic-faction { font-weight: 700; color: var(--ink-0); } .v3-root .ic-faction:hover { color: var(--accent-hi); }
