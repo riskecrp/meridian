@@ -1,0 +1,42 @@
+/* Public intake forms (/forms). Plain, phone-first, the login page's palette:
+   the CSS variables from globals.css (dark by default, light under
+   [data-theme="light"]), no dashboard chrome. */
+.pf-page { min-height: 100vh; background: var(--bg-0); color: var(--fg-0); padding: 24px 16px 48px; }
+.pf-wrap { max-width: 640px; margin: 0 auto; }
+.pf-brand { text-align: center; margin-bottom: 28px; }
+.pf-brand .pf-logo { font-size: 22px; font-weight: 900; font-style: italic; letter-spacing: -0.04em; text-transform: uppercase; color: var(--fg-0); }
+.pf-brand .pf-sub { font-size: 9px; font-weight: 700; letter-spacing: 0.4em; text-transform: uppercase; color: var(--fg-4); margin-top: 2px; }
+.pf-card { background: var(--bg-1); border: 1px solid var(--border); border-radius: 14px; padding: 22px 18px; }
+@media (min-width: 560px) { .pf-card { padding: 28px 28px; } }
+.pf-title { font-size: 20px; font-weight: 800; letter-spacing: -0.01em; margin: 0 0 6px; color: var(--fg-0); }
+.pf-intro { font-size: 13px; line-height: 1.55; color: var(--fg-2); margin: 0 0 22px; }
+.pf-field { display: block; margin-bottom: 18px; }
+.pf-label { display: block; font-size: 12px; font-weight: 700; color: var(--fg-1); margin-bottom: 6px; }
+.pf-label .req { color: var(--red); margin-left: 3px; }
+.pf-help { font-size: 11px; color: var(--fg-4); margin-top: 5px; line-height: 1.45; }
+.pf-input, .pf-select, .pf-textarea {
+  width: 100%; font: inherit; font-size: 14px; color: var(--fg-0); background: var(--bg-2);
+  border: 1px solid var(--border-h); border-radius: 8px; padding: 10px 12px; outline: none;
+}
+.pf-input:focus, .pf-select:focus, .pf-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.pf-textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
+.pf-fixed { font-size: 14px; color: var(--fg-1); background: var(--bg-3); border: 1px dashed var(--border-h); border-radius: 8px; padding: 10px 12px; }
+.pf-field.has-error .pf-input, .pf-field.has-error .pf-select, .pf-field.has-error .pf-textarea { border-color: var(--red); }
+.pf-error { font-size: 12px; color: var(--red); margin-top: 5px; }
+.pf-alert { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px; background: var(--red-bg); color: var(--red); border: 1px solid var(--red); }
+.pf-btn {
+  display: inline-block; width: 100%; padding: 14px 18px; border: 0; border-radius: 8px; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: #fff; background: var(--accent);
+}
+.pf-btn:disabled { opacity: 0.6; cursor: default; }
+.pf-foot { font-size: 11px; color: var(--fg-4); text-align: center; margin-top: 20px; font-family: var(--font-mono); }
+.pf-foot a, .pf-link { color: var(--accent); text-decoration: none; }
+.pf-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.pf-item { display: block; background: var(--bg-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; text-decoration: none; color: inherit; }
+.pf-item:hover { border-color: var(--accent); }
+.pf-item .pf-item-title { font-size: 15px; font-weight: 700; color: var(--fg-0); margin-bottom: 4px; }
+.pf-item .pf-item-intro { font-size: 12px; color: var(--fg-2); line-height: 1.5; }
+.pf-thanks { text-align: center; padding: 12px 0 4px; }
+.pf-thanks .pf-check { font-size: 34px; color: var(--green); margin-bottom: 8px; }
+.pf-ref { display: inline-block; font-family: var(--font-mono); font-size: 18px; font-weight: 700; letter-spacing: 0.08em; background: var(--bg-3); border: 1px solid var(--border-h); border-radius: 8px; padding: 8px 14px; margin: 10px 0 14px; color: var(--fg-0); }
+.pf-hp { position: absolute; left: -10000px; top: auto; width: 1px; height: 1px; overflow: hidden; }

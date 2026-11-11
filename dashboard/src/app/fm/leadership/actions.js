@@ -712,3 +712,130 @@ export async function getAttendeesForTarget(targetType, targetKey) {
   const leadTeamId = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [faction.lead_discord_id])?.team_id;
   return leadTeamId ? members('team_id = ?', [leadTeamId]) : [];
 }
+
+// ══════════════════════════════════════════════
+// HUB: VOTE STATUS + FEEDBACK DRAFT
+// ══════════════════════════════════════════════
+
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const monthLabel = (key) => new Date(Date.UTC(+key.slice(0, 4), +key.slice(5, 7) - 1, 1)).toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * Who has voted this month, faction by faction, over the active L3s. L3 sees
+ * every active faction, L2 (and Lead Storyteller reads) their team's. A note
+ * without a status counts as a note, not a vote; `missing` are L3s with no row.
+ */
+export async function getVoteStatus(reviewMonth) {
+  const actor = await requireActor(2, { allowLeadStoryteller: true });
+  const month = str(reviewMonth) || monthKey();
+  if (!MONTH_RE.test(month)) return fail('Month must look like YYYY-MM.');
+  const voters = leadershipVoters().map(v => ({ id: v.discord_id, name: v.display_name || v.discord_id }));
+  const nameOf = Object.fromEntries(voters.map(v => [v.id, v.name]));
+  const factions = scopedFactions(actor);
+  if (!factions.length) return ok({ month, voters, factions: [] });
+  const ids = factions.map(f => f.id);
+  const byFaction = {};
+  query(`SELECT faction_id, author_id, author_name, status FROM leadership_personal_notes WHERE review_month = ? AND faction_id IN (${ids.map(() => '?').join(',')}) ORDER BY created_at, id`, [month, ...ids])
+    .forEach(n => { (byFaction[n.faction_id] ||= []).push(n); });
+  return ok({
+    month, voters,
+    factions: factions.map(f => {
+      const votes = (byFaction[f.id] || []).map(n => ({ authorId: n.author_id, authorName: nameOf[n.author_id] || n.author_name, status: n.status || '' }));
+      const seen = new Set(votes.map(v => v.authorId));
+      const missing = voters.filter(v => !seen.has(v.id));
+      return { factionId: f.id, name: f.name, votes, missing, voted: votes.filter(v => v.status).length, complete: missing.length === 0 && votes.every(v => v.status) };
+    }),
+  });
+}
+
+/**
+ * A plain-text feedback message for the faction, written the way the team writes
+ * them (greeting, where the month landed, activity, the team's and leadership's
+ * points, the standard sign-off), from that month's review, leadership notes,
+ * scene count and promotion state. Nothing is sent and no names from the notes
+ * leak; the lead edits the draft before it goes out. L3 any faction, L2 own team.
+ */
+export async function getFeedbackDraft(factionId, reviewMonth) {
+  const actor = await requireActor(2);
+  const month = str(reviewMonth) || monthKey();
+  if (!MONTH_RE.test(month)) return fail('Month must look like YYYY-MM.');
+  const r = assertFactionWrite(actor, factionId);
+  if (r.error) return fail(r.error);
+  const f = r.faction;
+  const review = queryOne("SELECT * FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [f.id, month]);
+  const notes = query("SELECT note, status FROM leadership_personal_notes WHERE faction_id = ? AND review_month = ? AND TRIM(note) != '' ORDER BY created_at, id", [f.id, month]);
+  if (!review && !notes.length) return fail(`No team lead review or leadership notes for ${f.name} in ${month} yet.`);
+
+  const scenes = queryOne("SELECT COUNT(*) AS c FROM scene_logs WHERE faction_id = ? AND substr(created_at, 1, 7) = ?", [f.id, month])?.c || 0;
+  const current = month === monthKey();
+  const forumPosts = current ? (f.forum_posts_30d || 0) : null;
+  const moves = query("SELECT action_type, details, created_at FROM faction_history WHERE faction_id = ? AND action_type IN ('PROMOTED','DEMOTED') AND substr(created_at, 1, 7) = ? ORDER BY created_at DESC, id DESC", [f.id, month]);
+  const tally = tallyVotes(f.id, month);
+  const status = review?.status && review.status !== 'Pending Discussion' ? review.status : tally.status;
+  const outcome = /^Confirmed /.test(status) ? status.replace('Confirmed ', '') : null;
+  const rec = review?.recommendation || null;
+  let staged = null;
+  if (f.pending_promo) { try { const p = JSON.parse(f.pending_promo); staged = toInt(p && typeof p === 'object' ? p.tier : p, { min: 0, max: 9 }); } catch { staged = toInt(f.pending_promo, { min: 0, max: 9 }); } }
+  const when = monthLabel(month);
+  const sources = [];
+  const p = [];
+
+  p.push(`Hello ${f.name},`);
+
+  // Where the month landed.
+  const applied = moves[0] || null;
+  if (applied?.action_type === 'PROMOTED') {
+    p.push(`First off, congratulations. Following the ${when} review ${f.name} has been promoted to Tier ${f.tier}. That is the result of the work you have been putting in, so keep doing what got you here.`);
+    sources.push({ kind: 'promotion', label: `Promoted in ${month} (${applied.details.split(' · ')[0]})` });
+  } else if (applied?.action_type === 'DEMOTED') {
+    p.push(`We will be straight with you: following the ${when} review ${f.name} has been demoted to Tier ${f.tier}. What has been lost can be recovered, and we would like to see you climb back.`);
+    sources.push({ kind: 'demotion', label: `Demoted in ${month} (${applied.details.split(' · ')[0]})` });
+  } else if (outcome === 'Promote') {
+    p.push(`Good news first: FM Leadership has confirmed a promotion for ${f.name} this month.${staged != null ? ` The move to Tier ${staged} is staged and will be applied once the roleplay that goes with it has run.` : ' Your guides will be in touch about the roleplay that goes with it before the tier change is applied.'}`);
+    sources.push({ kind: 'outcome', label: `Outcome: Confirmed Promote${staged != null ? ` (staged → Tier ${staged})` : ''}` });
+  } else if (outcome === 'Hold') {
+    p.push(`This month's review landed on a hold, so ${f.name} stays at Tier ${f.tier}. That is not a bad place to be, but we want to see the points below worked on before the next cycle.`);
+    sources.push({ kind: 'outcome', label: 'Outcome: Confirmed Hold' });
+  } else if (outcome === 'Demote') {
+    p.push(`This month's review landed on a demotion. ${f.name} will move down from Tier ${f.tier}; the reasons are below, and so is the way back.`);
+    sources.push({ kind: 'outcome', label: 'Outcome: Confirmed Demote' });
+  } else if (outcome === 'Remove') {
+    p.push(`This month's review has not gone well, and FM Leadership has confirmed that ${f.name} will be removed as a faction. Your guides will walk you through what that means and when.`);
+    sources.push({ kind: 'outcome', label: 'Outcome: Confirmed Remove' });
+  } else if (rec) {
+    const recWord = { Promote: 'a promotion', Hold: 'a hold at your current tier', Demote: 'a demotion', Remove: 'removal' }[rec] || rec.toLowerCase();
+    p.push(`Your team lead has put ${f.name} forward for ${recWord} for ${when} and FM Leadership is finalising the outcome; we will follow up once that is settled.`);
+    sources.push({ kind: 'outcome', label: `Outcome pending (${tally.confirmed} of the votes in)` });
+  } else {
+    p.push(`FM Leadership is finalising the outcome of the ${when} review for ${f.name}; we will follow up once that is settled.`);
+    sources.push({ kind: 'outcome', label: 'Outcome pending' });
+  }
+
+  // Activity for the month, and the faction thread when the month is still live.
+  let activity = `On activity: we logged ${plural(scenes, 'scene')} with ${f.name} in ${when}.`;
+  if (scenes === 0) activity += ' We would like to see that change — reach out to your guides to get something on the calendar.';
+  sources.push({ kind: 'scenes', label: `${plural(scenes, 'scene')} logged in ${month}` });
+  if (forumPosts != null) {
+    if (forumPosts === 0) activity += ' We also have not seen a post on your faction thread in the last 30 days. The thread is a requirement at every tier and it counts against you at review time, so please get something up.';
+    else if (forumPosts < 3) activity += ` Your faction thread has had ${plural(forumPosts, 'post')} in the last 30 days, which is on the low side — keep it moving.`;
+    else activity += ` Your faction thread is active (${forumPosts} posts in the last 30 days), which we appreciate.`;
+    sources.push({ kind: 'forum', label: `${plural(forumPosts, 'forum post')} in the last 30 days` });
+  }
+  p.push(activity);
+
+  // The team lead's written feedback, then leadership's points (never their authors).
+  if (review?.feedback?.trim()) {
+    p.push(`Here is what your team had to say this month:\n\n${review.feedback.trim()}`);
+    sources.push({ kind: 'review', label: `Team lead review ${month}${rec ? ` (${rec})` : ''}` });
+  } else if (review) sources.push({ kind: 'review', label: `Team lead review ${month}${rec ? ` (${rec})` : ''}` });
+  if (notes.length) {
+    p.push(`FM Leadership also wanted to pass along the following:\n\n${notes.map(n => n.note.trim()).join('\n\n')}`);
+    sources.push({ kind: 'notes', label: `${plural(notes.length, 'leadership note')} for ${month}` });
+  }
+
+  p.push("As always, please don't hesitate to reach out to your guides if you need to discuss anything.");
+  p.push('— Faction Management');
+
+  return ok({ draft: p.join('\n\n'), sources, month, faction: f.name, status, recommendation: rec, scenes });
+}

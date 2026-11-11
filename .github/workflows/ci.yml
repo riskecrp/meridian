@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            bot/package-lock.json
+            dashboard/package-lock.json
+      - name: Install
+        run: |
+          npm ci
+          (cd bot && npm ci)
+          (cd dashboard && npm ci)
+      - name: Functional tests (seeded throwaway database)
+        run: node scripts/test/run.mjs
+      - name: Bot smoke test (syntax, imports, migrations on an empty database)
+        run: |
+          DATABASE_PATH=/tmp/smoke.db node scripts/bootstrap.mjs
+          DATABASE_PATH=/tmp/smoke.db node scripts/smoke.mjs --no-build-check
+      - name: Dashboard build
+        working-directory: dashboard
+        run: npm run build

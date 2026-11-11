@@ -2,16 +2,16 @@
 import { revalidatePath } from "next/cache";
 import { query, queryOne, run, transaction } from "../../../lib/db.js";
 import { logAudit } from "../../../lib/audit.js";
-import { sendPing, pingChannel } from "../../../lib/pings.js";
+import { sendPing, pingChannel, urls, BASE_URL } from "../../../lib/pings.js";
 import { getRole } from "../../../lib/discord.js";
 import { requireActor } from "../../../lib/requireActor.js";
 import { isOwner } from "../../../lib/constants.js";
-import { resolveFaction } from "../../../lib/access.js";
+import { resolveFaction, writableFactionIds } from "../../../lib/access.js";
 import { TIER_DEFAULTS, getEffectiveLimits, fleetState, checkFleetAdd } from "../../../lib/fleet.js";
 import * as rp from "../../../../../shared/rpChanges.js";
 import * as tasks from "../../../../../shared/tasks.js";
 import { str, toInt, toNum, isSnowflake, fail, PROPERTY_TYPES } from "../../../../../shared/validate.js";
-import { todayIso, nowIso } from "../../../../../shared/dates.js";
+import { todayIso, nowIso, monthKey, parseDate, toIso } from "../../../../../shared/dates.js";
 
 // All Operations actions are L3-only unless explicitly noted otherwise.
 // Mutations validate first and return { ok:false, error } — SQLite never throws
@@ -451,6 +451,123 @@ export async function executeRPChange(execId, data) {
   const r = await rp.executeRPChange(actor, execId, data || {});
   if (r.ok) bump('/fm/operations/analytics', '/fm/operations/properties', '/fm/storytelling/network', '/v2/story');
   return r;
+}
+
+// Level 0 = any signed-in staffer: the shared function only lets the requester
+// or L3 verify, and only an EXECUTED, not-yet-verified row.
+export async function verifyRPChange(execId, note) {
+  const actor = await requireActor(0);
+  const r = await rp.verifyRPChange(actor, execId, note);
+  if (r.ok) bump('/fm/operations/analytics');
+  return r;
+}
+
+/**
+ * Executed RP changes nobody has confirmed in game yet. L3 sees all; L2 sees
+ * the ones for factions their team leads plus the ones they requested
+ * themselves. Rows older than 48h carry overdue: true.
+ */
+export async function getUnverifiedExecutions() {
+  const actor = await requireActor(2);
+  const scope = writableFactionIds(actor);
+  return rp.unverifiedExecutions()
+    .filter(r => scope === null || scope.has(r.faction_id) || r.requester_id === actor.id)
+    .map(r => ({ ...r, overdue: r.hours_since_executed >= VERIFY_OVERDUE_HOURS }));
+}
+
+// ── LEADERSHIP QUEUE ──
+// One list of everything waiting on leadership, grouped by kind, for the v2
+// Leadership › Queue tab (and the Home counts). Reads only; every action an
+// item offers is the existing gated mutation for that record.
+const VERIFY_OVERDUE_HOURS = 48;
+const QUEUE_KINDS = ['approval', 'execute', 'verify', 'feedback', 'deletion', 'question', 'task', 'promotion'];
+// Hrefs are paths into /v2 (the shared urls.* are absolute; the dashboard links relatively).
+const v2Path = (abs) => String(abs || '').replace(BASE_URL, '') || '/v2';
+function queueItem(kind, id, title, { faction = '', factionId = null, since = null, href = '/v2', actor = '', ...extra } = {}) {
+  const sinceIso = since ? toIso(since) : null;
+  const ageDays = sinceIso ? Math.max(0, Math.floor((Date.now() - parseDate(sinceIso).getTime()) / 86400000)) : 0;
+  return { kind, id, title, faction, factionId, ageDays, since: sinceIso, href, actor, ...extra };
+}
+
+/**
+ * { items: [{ kind, id, title, faction, factionId, ageDays, since, href, actor, ... }], counts }
+ * kind ∈ approval | execute | verify | feedback | deletion | question | task | promotion.
+ * L3 sees everything. L2 sees items for the factions their team leads (lib/
+ * access.js writableFactionIds) plus verifications they requested and questions
+ * on tasks they created; deletion requests and leadership-role tasks are L3 only.
+ */
+export async function getLeadershipQueue() {
+  const actor = await requireActor(2);
+  const isL3 = actor.level >= 3;
+  const scope = writableFactionIds(actor);            // null = unscoped (L3 / Event Team)
+  const inScope = (factionId) => scope === null || scope.has(Number(factionId));
+  const items = [];
+
+  // RP changes: PENDING → approval, RP_DONE → execute, EXECUTED+unverified → verify.
+  const rpRows = query(`SELECT pe.*, f.name AS faction_name, f.archived AS faction_archived FROM pending_executions pe JOIN factions f ON f.id = pe.faction_id
+    WHERE pe.status IN ('PENDING', 'RP_DONE') OR (pe.status = 'EXECUTED' AND pe.verified_at IS NULL) ORDER BY pe.created_at ASC`);
+  for (const r of rpRows) {
+    const title = `${r.execution_type}: ${r.old_value} → ${r.new_value}`;
+    const base = { faction: r.faction_name, factionId: r.faction_id, href: v2Path(urls.approvals()), actor: r.requested_by, status: r.status, requesterId: r.requester_id, executionType: r.execution_type };
+    if (r.status === 'PENDING' && inScope(r.faction_id)) items.push(queueItem('approval', r.id, title, { ...base, since: r.created_at }));
+    else if (r.status === 'RP_DONE' && inScope(r.faction_id)) items.push(queueItem('execute', r.id, title, { ...base, since: r.created_at, note: r.rp_note || '' }));
+    else if (r.status === 'EXECUTED' && (inScope(r.faction_id) || r.requester_id === actor.id)) {
+      const executedAt = r.resolved_at || r.created_at;
+      const hours = Math.max(0, Math.floor((Date.now() - (parseDate(executedAt)?.getTime() || Date.now())) / 3600000));
+      items.push(queueItem('verify', r.id, title, { ...base, since: executedAt, overdue: hours >= VERIFY_OVERDUE_HOURS, hoursSinceExecuted: hours, canVerify: isL3 || r.requester_id === actor.id }));
+    }
+  }
+
+  // Feedback: this month's confirmed reviews whose feedback has not gone out.
+  const month = monthKey();
+  for (const r of query(`SELECT fr.*, f.name AS fname FROM faction_reviews fr JOIN factions f ON f.id = fr.faction_id
+      WHERE fr.review_month = ? AND fr.status LIKE 'Confirmed %' AND fr.feedback_sent_at IS NULL AND f.archived = 0 ORDER BY fr.updated_at ASC`, [month])) {
+    if (!inScope(r.faction_id)) continue;
+    items.push(queueItem('feedback', r.id, `Send ${month} feedback — ${r.status}`, { faction: r.fname, factionId: r.faction_id, since: r.updated_at || r.created_at, href: v2Path(urls.faction(r.fname, 'review')), actor: r.reviewer_name || r.submitted_by, reviewMonth: month, status: r.status }));
+  }
+
+  // Deletion requests (resolving is L3 only).
+  if (isL3) {
+    for (const d of query("SELECT * FROM deletion_requests WHERE status = 'PENDING' ORDER BY created_at ASC")) {
+      items.push(queueItem('deletion', d.id, `Delete ${d.content_type}: ${(d.original_text || '').slice(0, 90)}`, { since: d.created_at, href: v2Path(urls.approvals()), actor: d.requested_by, contentType: d.content_type }));
+    }
+  }
+
+  // Unanswered questions on open tasks (the creator answers; L3 may too).
+  for (const q of query(`SELECT q.*, t.description, t.created_by_id, t.created_by_name, t.target_type, t.target_id FROM task_questions q JOIN tasks t ON t.task_uid = q.task_uid
+      WHERE q.answer IS NULL AND t.status = 'open' ORDER BY q.asked_at ASC`)) {
+    if (!isL3 && q.created_by_id !== actor.id) continue;
+    items.push(queueItem('question', q.id, q.question, { since: q.asked_at, href: v2Path(urls.task(q.task_uid)), actor: q.asked_by_name, taskUid: q.task_uid, taskDescription: q.description, creator: q.created_by_name }));
+  }
+
+  // Unclaimed tasks addressed to the leadership roles.
+  if (isL3) {
+    const r = tasks.roleIds();
+    const roles = [r.leadership, r.gameAffairs].filter(Boolean);
+    if (roles.length) {
+      const ph = roles.map(() => '?').join(',');
+      for (const t of query(`SELECT * FROM tasks WHERE status = 'open' AND target_type = 'Role' AND target_id IN (${ph}) AND (claimed_by = 'None' OR claimed_by = '') ORDER BY created_at ASC`, roles)) {
+        items.push(queueItem('task', t.task_uid, t.description, { since: t.created_at, href: v2Path(urls.task(t.task_uid)), actor: t.created_by_name, targetLabel: t.target_id === r.gameAffairs ? 'Game Affairs' : 'FM Leadership' }));
+      }
+    }
+  }
+
+  // Staged promotions waiting to be completed after the RP.
+  for (const f of query("SELECT id, name, tier, pending_promo, updated_at FROM factions WHERE pending_promo IS NOT NULL AND archived = 0 ORDER BY name")) {
+    if (!inScope(f.id)) continue;
+    let p = null; try { p = JSON.parse(f.pending_promo); } catch { p = f.pending_promo; }
+    const tier = toInt(p && typeof p === 'object' ? p.tier : p, { min: 0, max: 9 });
+    const staged = queryOne("SELECT created_at FROM faction_history WHERE faction_id = ? AND action_type = 'PROMO_STAGED' ORDER BY created_at DESC, id DESC LIMIT 1", [f.id]);
+    items.push(queueItem('promotion', f.id, `Promotion staged: T${f.tier} → T${tier ?? '?'}`, { faction: f.name, factionId: f.id, since: staged?.created_at || f.updated_at, href: v2Path(urls.faction(f.name, 'review')), actor: '', currentTier: f.tier, targetTier: tier }));
+  }
+
+  const order = Object.fromEntries(QUEUE_KINDS.map((k, i) => [k, i]));
+  items.sort((a, b) => (order[a.kind] - order[b.kind]) || (b.ageDays - a.ageDays));
+  const counts = Object.fromEntries(QUEUE_KINDS.map(k => [k, 0]));
+  for (const it of items) counts[it.kind]++;
+  counts.total = items.length;
+  counts.stale = items.filter(it => it.ageDays >= 7).length;
+  return { items, counts };
 }
 
 // ── AUDIT LOG ──

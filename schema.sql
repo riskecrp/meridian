@@ -95,7 +95,7 @@ CREATE TABLE pending_executions (
     old_value TEXT NOT NULL DEFAULT 'N/A', new_value TEXT NOT NULL DEFAULT '',
     requested_by TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'PENDING',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-, requester_id TEXT NOT NULL DEFAULT '', deny_reason TEXT NOT NULL DEFAULT '', rp_note TEXT NOT NULL DEFAULT '', approver_id TEXT NOT NULL DEFAULT '', npc_id INTEGER, contact_id INTEGER, resolved_at TEXT);
+, requester_id TEXT NOT NULL DEFAULT '', deny_reason TEXT NOT NULL DEFAULT '', rp_note TEXT NOT NULL DEFAULT '', approver_id TEXT NOT NULL DEFAULT '', npc_id INTEGER, contact_id INTEGER, resolved_at TEXT, verified_at TEXT, verified_by TEXT NOT NULL DEFAULT '', verify_nudged_at TEXT);
 CREATE TABLE inventory_stock (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, category TEXT NOT NULL DEFAULT '',
     starting_stock INTEGER NOT NULL DEFAULT 0, current_stock INTEGER NOT NULL DEFAULT 0,
@@ -729,7 +729,7 @@ CREATE TABLE faction_feedback (
   concluded_by_name TEXT,
   concluded_at      TEXT,
   created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
-, reopen_card_id TEXT, row_key TEXT);
+, reopen_card_id TEXT, row_key TEXT, source TEXT NOT NULL DEFAULT 'sheet', submitter_ip_hash TEXT NOT NULL DEFAULT '');
 CREATE TABLE faction_feedback_state (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   last_row    INTEGER NOT NULL DEFAULT 0,
@@ -780,7 +780,7 @@ CREATE TABLE form_submissions (
   last_reminder_at  TEXT,
   concluded_by_name TEXT,
   concluded_at      TEXT,
-  created_at        TEXT    NOT NULL DEFAULT (datetime('now')), decided_by_id       TEXT, decided_by_name     TEXT, decided_at          TEXT, decision_reason     TEXT, checklist_message_id TEXT, row_key TEXT,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now')), decided_by_id       TEXT, decided_by_name     TEXT, decided_at          TEXT, decision_reason     TEXT, checklist_message_id TEXT, row_key TEXT, source TEXT NOT NULL DEFAULT 'sheet', submitter_ip_hash TEXT NOT NULL DEFAULT '',
   UNIQUE (form_key, sheet_row)
 );
 CREATE TABLE form_submission_state (
@@ -951,3 +951,4 @@ CREATE TABLE sheet_rows_seen (
     seen_at   TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (source, row_key)
   );
+CREATE INDEX idx_pe_status ON pending_executions(status, resolved_at);

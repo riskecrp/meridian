@@ -18,7 +18,7 @@ import {
 import {
   getReviewHistory, getReviewDataFor, submitReview, setReviewStatus,
   getFactionLeadershipSummary, submitPersonalNote,
-  generateFeedbackDraft, adjustFeedbackDraft, sendFeedbackToFaction, markFeedbackSent,
+  generateFeedbackDraft, adjustFeedbackDraft, sendFeedbackToFaction, markFeedbackSent, getFeedbackDraft,
 } from "../../../fm/leadership/actions.js";
 import {
   getFleetOverview, getFleetTierDefaults, addFleetVehicle, deleteFleetVehicle,
@@ -36,6 +36,9 @@ const IC_STATUS = { pending_discussion: ["disc", "Pending Discussion"], pending_
 import { PORTAL_URL as PORTAL_BASE } from "../../../../lib/constants.js";
 
 import Modal from "../../Modal.js";
+import Timeline from "./Timeline.js";
+import Readiness from "./Readiness.js";
+import VoteStrip from "./VoteStrip.js";
 
 function CapBar({ label, used, max }) {
   const pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
@@ -48,7 +51,7 @@ export default function FactionHubPage() {
 
 // All hub tabs are URL-addressable (?tab=) so other areas — Leadership Reviews,
 // Home, Discord pings — can land on the exact tab.
-const HUB_TAB_IDS = ["overview", "roster", "activity", "assets", "imports", "comms", "review", "admin"];
+const HUB_TAB_IDS = ["overview", "roster", "activity", "timeline", "assets", "imports", "comms", "review", "admin"];
 
 function FactionHub() {
   const auth = useAuth();
@@ -148,6 +151,7 @@ function FactionHub() {
     { id: "overview", label: "Overview" },
     { id: "roster", label: "Roster" },
     { id: "activity", label: "Activity" },
+    { id: "timeline", label: "Timeline" },
     { id: "assets", label: "Assets" },
     { id: "imports", label: "Imports" },
     { id: "comms", label: `Comms${activeIC ? ` · ${activeIC}` : ""}` },
@@ -256,6 +260,7 @@ function FactionHub() {
               <div className="hd"><div className="t">Team</div>{detail.teamName && <div className="meta">{detail.teamName}</div>}</div>
               <div className="kv"><div><div className="k">Lead</div><div className="v">{detail.leadName || "—"}</div></div><div style={{ gridColumn: "span 2" }}><div className="k">Guides</div><div className="v" style={{ fontSize: 12.5 }}>{detail.guidesText || "None"}</div></div></div>
             </div>
+            {level >= 2 && <Readiness factionId={detail.id} refreshKey={detail} />}
           </div>
           <div className="stack">
             <div className="card">
@@ -350,6 +355,9 @@ function FactionHub() {
           </div>
         </div>
       )}
+
+      {/* ── Timeline: merged feed of everything about the faction ── */}
+      {tab === "timeline" && <Timeline factionId={detail.id} />}
 
       {/* ── Assets: properties + fleet ── */}
       {tab === "assets" && (
@@ -634,6 +642,7 @@ function Review({ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary,
   const [adjText, setAdjText] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiErr, setAiErr] = useState("");
+  const [draftSources, setDraftSources] = useState([]);
 
   // Derived from the L3 votes (policy 7): a strict majority of the
   // "Confirmed …" votes confirms the outcome, anything else is still pending.
@@ -647,10 +656,18 @@ function Review({ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary,
   const tallyText = Object.entries(tally.counts || {}).filter(([s]) => s).map(([s, c]) => `${voteLabel(s)} ×${c}`).join(" · ");
 
   const genDraft = async () => {
-    setAiBusy(true); setAiErr("");
+    setAiBusy(true); setAiErr(""); setDraftSources([]);
     const r = await generateFeedbackDraft(detail.id).catch(e => ({ ok: false, error: e?.message }));
     setAiBusy(false);
     if (r.ok) setFbMsg(r.draft || r.message || ""); else setAiErr(r.error || "Draft failed.");
+  };
+  // Draft straight from this month's review, leadership notes, scene count and
+  // promotion state — no AI, same shape the team writes by hand.
+  const draftFromReview = async () => {
+    setAiBusy(true); setAiErr("");
+    const r = await getFeedbackDraft(detail.id).catch(e => ({ ok: false, error: e?.message }));
+    setAiBusy(false);
+    if (r.ok) { setFbMsg(r.draft || ""); setDraftSources(r.sources || []); } else { setDraftSources([]); setAiErr(r.error || "Draft failed."); }
   };
   const adjDraft = async () => {
     setAiBusy(true); setAiErr("");
@@ -694,6 +711,7 @@ function Review({ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary,
             Every viewer of this tab reads them; only L3 writes one. */}
         <div className="card">
           <StepHead n={++n} title="Leadership notes & votes" done={notesDone} meta={`${(leadSummary.notes || []).length} of ${(leadSummary.notes || []).length + (leadSummary.pending || []).length} voted${tallyText ? ` · ${tallyText}` : ""}`} />
+          <VoteStrip factionId={detail.id} refreshKey={(leadSummary.notes || []).map(x => `${x.id}:${x.status}`).join(",")} />
           {isL3 && !detail.archived && <div style={{ padding: "6px 0 2px" }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--ink-3)", marginBottom: 4 }}>{myVote ? "Your vote this month (saving again updates it)" : "Your vote this month"}</div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
@@ -715,8 +733,10 @@ function Review({ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary,
             {!canReview ? <div className="empty">{reviewInfo?.teamName || "The owning team"}’s lead sends the feedback.</div> : <>
               {!cur && <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginBottom: 8 }}>Submit the recommendation first — the feedback is recorded against it.</div>}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className="act" disabled={aiBusy || busy} onClick={genDraft}>{aiBusy ? "Working…" : "✦ Generate draft"}</button>
+                <button className="act primary" disabled={aiBusy || busy} onClick={draftFromReview}>{aiBusy ? "Working…" : "Draft from review & notes"}</button>
+                <button className="act" disabled={aiBusy || busy} onClick={genDraft}>{aiBusy ? "Working…" : "✦ AI draft"}</button>
               </div>
+              {draftSources.length > 0 && <div style={{ marginTop: 6, fontSize: 10.5, fontFamily: "var(--v2-mono)", color: "var(--ink-3)" }}>Built from: {draftSources.map(s => s.label).join(" · ")}</div>}
               <textarea className="filter-inp" rows={5} placeholder="Message sent to the faction." value={fbMsg} onChange={e => setFbMsg(e.target.value)} style={{ margin: "8px 0" }} />
               {fbMsg.trim() && (
                 <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>

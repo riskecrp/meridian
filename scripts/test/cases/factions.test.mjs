@@ -15,6 +15,11 @@ const hist = (fid) => queryOne('SELECT action_type, faction_name, details FROM f
 { const clean = sanitizeHtml('<p onclick="x()">hi <script>alert(1)</script><a href="javascript:alert(1)">bad</a> <a href="https://ok">ok</a><img src=x onerror=alert(1)><strong style="color:red">s</strong></p>');
   ok(!/script|onclick|onerror|javascript:|<img/.test(clean), 'sanitizer strips scripts/handlers/javascript: urls'); ok(/href="https:\/\/ok"/.test(clean), 'sanitizer keeps https links'); } pass('sanitizer');
 
+// ── hub feed + readiness (the detail lives in hub.test.mjs; this guards the contract shape against the seed) ──
+as('tok-l1'); { const t = await A.getFactionTimeline(1, { limit: 5 }); ok(t.length === 5 && t.every(e => e.at && e.kind && e.title && e.cursor), 'timeline: L1 read, 5 entries with cursors'); ok(t[0].at >= t[4].at, 'timeline newest first'); }
+await rejects(() => A.getPromotionReadiness(1), 'AUTH_INSUFFICIENT', 'readiness L2+');
+as('tok-l2'); { const r = await A.getPromotionReadiness(1); ok(r.tier === 2 && r.nextTier === 3 && r.checks.length === 6 && r.checks.every(c => 'ok' in c && 'target' in c), 'readiness shape vs seed'); } pass('hub feed + readiness');
+
 // ── rename cascade ──
 as('tok-l2'); await rejects(() => A.renameFaction(1, 'The Vanguard', 'X'), 'AUTH_INSUFFICIENT', 'rename L2');
 as('tok-l3'); await failsWith(() => A.renameFaction(1, 'The Vanguard', 'harbor syndicate'), null, 'rename duplicate'); await failsWith(() => A.renameFaction(1, 'The Vanguard', '  '), null, 'rename empty');

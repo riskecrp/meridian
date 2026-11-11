@@ -14,8 +14,26 @@ import { sendPing, sendDiscord, getPingRoute, rpComponents, urls } from "../../.
 import { requireActor } from "../../../lib/requireActor.js";
 import { assertFactionWrite, resolveFaction, canWriteFaction, writableFactionIds } from "../../../lib/access.js";
 import { str, toInt, oneOf, isSnowflake, fail, RP_TYPES, PROPERTY_TYPES } from "../../../../../shared/validate.js";
-import { todayIso, nowIso } from "../../../../../shared/dates.js";
+import { todayIso, nowIso, toIso, parseDate, monthKey } from "../../../../../shared/dates.js";
+import { canSeeTask } from "../../../../../shared/tasks.js";
 import { sanitizeHtml, htmlToText } from "../leadership/_shared/sanitize.js";
+
+// ── PROMOTION READINESS TARGETS (leadership can tune these) ──────────────────
+// The hub's readiness card compares a faction against the row for its current
+// tier: the entry with the highest `tier` that is <= the faction's tier applies,
+// so a Tier 5 faction uses the Tier 4 row. Every number is a minimum except open
+// RP requests, which are always expected to be 0.
+//   scenes30 / scenes90    scenes logged in the last 30 / 90 days
+//   members                characters on the roster (Roster tab)
+//   streak                 consecutive months whose review ended Confirmed Hold or Confirmed Promote
+//   daysSincePromotion     days since the last promotion (since creation when never promoted)
+const READINESS_TARGETS = [
+  { tier: 0, scenes30: 2, scenes90: 5,  members: 2, streak: 1, daysSincePromotion: 30 },
+  { tier: 2, scenes30: 3, scenes90: 8,  members: 3, streak: 2, daysSincePromotion: 45 },
+  { tier: 4, scenes30: 4, scenes90: 10, members: 4, streak: 2, daysSincePromotion: 60 },
+  { tier: 7, scenes30: 5, scenes90: 12, members: 5, streak: 3, daysSincePromotion: 90 },
+];
+const MAX_TIER = 9;
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -1036,4 +1054,210 @@ export async function getStaffForTeam(factionName) {
   const leadTeamId = queryOne("SELECT team_id FROM staff WHERE discord_id = ?", [r.faction.lead_discord_id])?.team_id;
   if (!leadTeamId) return [];
   return query("SELECT discord_id, display_name, rank, clearance FROM staff WHERE team_id = ? AND discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY clearance DESC, display_name", [leadTeamId]);
+}
+
+// ── FACTION HUB: TIMELINE ─────────────────────────────────────────────────────
+// One merged, newest-first feed of everything that happened to a faction:
+// faction_history, the audit rows about it or its records, task_log for tasks
+// that name it, RP change requests, monthly reviews, feedback forms and scene
+// logs. Reads are global (L1+, Event Team and Lead Storyteller included); the
+// review recommendation text and leadership-note audits are shown to L2+ only,
+// L1 sees that a review exists. Each entry carries a `cursor` ("<at>|<key>")
+// that the next call passes as `before` to page further back.
+
+const TIMELINE_FETCH_PAD = 20;
+const clip = (s, n = 240) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+const likeEscape = (s) => String(s).replace(/[\\%_]/g, (c) => `\\${c}`);
+const titleCase = (s) => { const t = String(s || '').replace(/_/g, ' ').toLowerCase(); return t.charAt(0).toUpperCase() + t.slice(1); };
+function factionNames(f) {
+  const seen = new Set();
+  return [f.name, ...(f.aliases || '').split(',').map(a => a.trim())].filter(n => n && !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase()));
+}
+
+export async function getFactionTimeline(factionId, opts = {}) {
+  const actor = await requireActor(1, { allowEventTeam: true, allowLeadStoryteller: true });
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const limit = toInt(o.limit, { min: 1, max: 500, def: 100 });
+  const r = resolveFaction(factionId, { allowArchived: true });
+  if (!r.faction) return [];
+  const f = r.faction;
+  const names = factionNames(f);
+  const leader = actor.level >= 2 || actor.isLeadStoryteller;
+
+  // Cursor: "<ISO at>|<key>" from a previous entry, or a bare date/time.
+  let beforeAt = null, beforeKey = null;
+  if (o.before) {
+    const [a, k] = String(o.before).split('|');
+    const d = parseDate(a);
+    if (d) { beforeAt = d.toISOString(); beforeKey = k || null; }
+  }
+  // Timestamps are stored as ISO ("…T…Z") or SQLite ("YYYY-MM-DD HH:MM:SS");
+  // the SQL side only trims by calendar day, the exact cut happens in JS.
+  const day = beforeAt ? beforeAt.slice(0, 10) : null;
+  const dateClause = (col) => (day ? ` AND substr(${col}, 1, 10) <= ?` : '');
+  const dateParams = () => (day ? [day] : []);
+  const fetchN = limit * 2 + TIMELINE_FETCH_PAD;
+  const hubHref = (tab) => `/v2/factions/${encodeURIComponent(f.name)}${tab ? `?tab=${tab}` : ''}`;
+  const approvalsHref = leader ? '/v2/leadership?tab=approvals' : null;
+
+  const entries = [];
+  const push = (e) => { const at = toIso(e.at); if (at) entries.push({ ...e, at, key: `${e.kind}:${e.key}` }); };
+
+  // faction_history
+  for (const h of query(`SELECT id, action_type, details, authorized_by, created_at FROM faction_history WHERE faction_id = ?${dateClause('created_at')} ORDER BY created_at DESC, id DESC LIMIT ?`, [f.id, ...dateParams(), fetchN]))
+    push({ at: h.created_at, kind: 'history', key: h.id, title: titleCase(h.action_type), detail: clip(h.details), actor: h.authorized_by || '', href: hubHref('admin'), ref: null });
+
+  // site_audit_log: by id where the record carries one, by label/details otherwise.
+  {
+    const ph = names.map(() => '?').join(',');
+    const endsWith = names.map(() => "details LIKE ? ESCAPE '\\'").join(' OR ');
+    const endsVals = names.map(n => `% ${likeEscape(n)}`);
+    const parts = [
+      ["(target_type IN ('faction','faction_import') AND target_id = ?)", [String(f.id)]],
+      ["(target_type = 'rp_change' AND target_id IN (SELECT CAST(id AS TEXT) FROM pending_executions WHERE faction_id = ?))", [f.id]],
+      [`(target_type = 'feedback_sent' AND (target_id IN (SELECT CAST(id AS TEXT) FROM faction_reviews WHERE faction_id = ?) OR target_label IN (${ph})))`, [f.id, ...names]],
+      [`(target_type = 'member' AND (target_id IN (SELECT CAST(id AS TEXT) FROM faction_members WHERE faction_id = ?) OR ${endsWith}))`, [f.id, ...endsVals]],
+      [`(target_type = 'property' AND (target_id IN (SELECT CAST(id AS TEXT) FROM properties WHERE faction_id = ?) OR ${endsWith}))`, [f.id, ...endsVals]],
+      [`(target_type = 'feedback' AND (${names.map(() => "target_label LIKE ? ESCAPE '\\'").join(' OR ')}))`, names.map(n => `${likeEscape(n)} — %`)],
+    ];
+    if (leader) {
+      parts.push([`(target_type = 'review' AND (target_id IN (SELECT CAST(id AS TEXT) FROM faction_reviews WHERE faction_id = ?) OR target_label IN (${ph})))`, [f.id, ...names]]);
+      parts.push([`(target_type = 'leadership_note' AND target_label IN (${ph}))`, names]);
+    }
+    const rows = query(`SELECT id, timestamp, actor_name, action, target_type, target_id, target_label, details FROM site_audit_log
+      WHERE (${parts.map(p => p[0]).join(' OR ')})${dateClause('timestamp')} ORDER BY timestamp DESC, id DESC LIMIT ?`,
+      [...parts.flatMap(p => p[1]), ...dateParams(), fetchN]);
+    for (const a of rows)
+      push({ at: a.timestamp, kind: 'audit', key: a.id, title: `${a.action} — ${a.target_label || titleCase(a.target_type)}`, detail: clip(a.details), actor: a.actor_name || '',
+        href: a.target_type === 'rp_change' ? approvalsHref : a.target_type === 'feedback' && a.target_id ? `/v2/feedback/${a.target_id}` : hubHref(a.target_type === 'review' || a.target_type === 'feedback_sent' || a.target_type === 'leadership_note' ? 'review' : null),
+        ref: a.target_id ? `${a.target_type === 'feedback_sent' ? 'review' : a.target_type}:${a.target_id}` : null });
+  }
+
+  // task_log for tasks that name the faction (only tasks this viewer may see).
+  {
+    const like = names.map(() => "description LIKE ? ESCAPE '\\'").join(' OR ');
+    const tasks = query(`SELECT * FROM tasks WHERE ${like}`, names.map(n => `%${likeEscape(n)}%`)).filter(t => canSeeTask(actor, t));
+    if (tasks.length) {
+      const byUid = Object.fromEntries(tasks.map(t => [t.task_uid, t]));
+      const ph = tasks.map(() => '?').join(',');
+      for (const l of query(`SELECT id, action, actor, task_uid, description, created_at FROM task_log WHERE task_uid IN (${ph})${dateClause('created_at')} ORDER BY created_at DESC, id DESC LIMIT ?`, [...tasks.map(t => t.task_uid), ...dateParams(), fetchN]))
+        push({ at: l.created_at, kind: 'task', key: l.id, title: `Task ${String(l.action || '').toLowerCase()}`, detail: clip(l.description || byUid[l.task_uid]?.description), actor: l.actor || '', href: `/v2/tasks/${encodeURIComponent(l.task_uid)}`, ref: `task:${l.task_uid}` });
+    }
+  }
+
+  // pending_executions: requested, then whichever later steps have a timestamp.
+  for (const e of query("SELECT * FROM pending_executions WHERE faction_id = ? ORDER BY created_at DESC, id DESC LIMIT ?", [f.id, fetchN])) {
+    const label = `${RP_LABEL[e.execution_type] || e.execution_type} · ${e.old_value} → ${e.new_value}${e.turf && e.turf !== 'N/A' ? ` (${e.turf})` : ''}`;
+    const base = { kind: 'rp', href: approvalsHref, ref: `rp_change:${e.id}` };
+    push({ ...base, at: e.created_at, key: `${e.id}:req`, title: `RP change #${e.id} requested`, detail: clip(`${label}${e.rp_note ? ` — ${e.rp_note}` : ''}`), actor: e.requested_by || '' });
+    if (e.resolved_at && e.status === 'DENIED') push({ ...base, at: e.resolved_at, key: `${e.id}:denied`, title: `RP change #${e.id} denied`, detail: clip(`${label}${e.deny_reason ? ` — ${e.deny_reason}` : ''}`), actor: '' });
+    if (e.resolved_at && e.status === 'EXECUTED') push({ ...base, at: e.resolved_at, key: `${e.id}:exec`, title: `RP change #${e.id} executed`, detail: clip(label), actor: '' });
+    if (e.verified_at) push({ ...base, at: e.verified_at, key: `${e.id}:ver`, title: `RP change #${e.id} verified`, detail: clip(label), actor: e.verified_by || '' });
+  }
+
+  // faction_reviews: recommendation (text for L2+), confirmed outcome (L2+), feedback sent (everyone).
+  for (const rv of query("SELECT * FROM faction_reviews WHERE faction_id = ? ORDER BY review_month DESC, id DESC LIMIT ?", [f.id, fetchN])) {
+    const base = { kind: 'review', href: leader ? hubHref('review') : null, ref: `review:${rv.id}` };
+    push({ ...base, at: rv.created_at, key: `${rv.id}:rec`, title: `Review ${rv.review_month} submitted`,
+      detail: leader ? clip(`${rv.recommendation}${rv.feedback ? ` — ${rv.feedback}` : ''}`) : 'Team lead recommendation on file', actor: rv.reviewer_name || rv.submitted_by || '' });
+    if (leader && /^Confirmed /.test(rv.status || '') && rv.updated_at && rv.updated_at !== rv.created_at)
+      push({ ...base, at: rv.updated_at, key: `${rv.id}:status`, title: `Review ${rv.review_month}: ${rv.status}`, detail: 'Outcome derived from the leadership vote tally', actor: '' });
+    if (rv.feedback_sent_at) push({ ...base, at: rv.feedback_sent_at, key: `${rv.id}:sent`, title: `Feedback sent (${rv.review_month})`, detail: '', actor: rv.feedback_sent_by || '' });
+  }
+
+  // faction_feedback (website / sheet forms naming the faction).
+  {
+    const where = names.map(() => 'faction = ? COLLATE NOCASE').join(' OR ');
+    for (const fb of query(`SELECT id, character_name, status, source, created_at, claimed_at, claimed_by_name, concluded_at, concluded_by_name FROM faction_feedback WHERE (${where}) ORDER BY created_at DESC, id DESC LIMIT ?`, [...names, fetchN])) {
+      const base = { kind: 'feedback', href: `/v2/feedback/${fb.id}`, ref: `feedback:${fb.id}` };
+      const who = fb.character_name || 'Anonymous';
+      push({ ...base, at: fb.created_at, key: `${fb.id}:new`, title: 'Feedback form received', detail: `${who} · ${fb.source === 'web' ? 'website form' : 'sheet'}`, actor: '' });
+      if (fb.claimed_at) push({ ...base, at: fb.claimed_at, key: `${fb.id}:claimed`, title: 'Feedback claimed', detail: who, actor: fb.claimed_by_name || '' });
+      if (fb.concluded_at) push({ ...base, at: fb.concluded_at, key: `${fb.id}:done`, title: `Feedback ${fb.status}`, detail: who, actor: fb.concluded_by_name || '' });
+    }
+  }
+
+  // scene_logs
+  for (const s of query(`SELECT id, rewards, logged_by, notes, created_at FROM scene_logs WHERE faction_id = ?${dateClause('created_at')} ORDER BY created_at DESC, id DESC LIMIT ?`, [f.id, ...dateParams(), fetchN]))
+    push({ at: s.created_at, kind: 'scene', key: s.id, title: 'Scene logged', detail: clip(`${s.notes}${s.rewards && s.rewards !== 'None' ? ` · Rewards: ${s.rewards}` : ''}`), actor: s.logged_by || '', href: hubHref('activity'), ref: `scene_log:${s.id}` });
+
+  // Newest first; ties broken by key so paging is stable.
+  entries.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.key < b.key ? 1 : a.key > b.key ? -1 : 0));
+
+  // Every faction write lands in both the audit log and one of the sources above,
+  // so an audit row is dropped when the same record (ref) appears within two
+  // minutes, or when a history row by the same person sits within five seconds.
+  // The surviving entry inherits the audit row's actor when it had none.
+  const own = entries.filter(e => e.kind !== 'audit');
+  const kept = [];
+  for (const e of entries) {
+    if (e.kind === 'audit') {
+      const t = Date.parse(e.at);
+      const twin = e.ref ? own.find(x => x.ref === e.ref && Math.abs(Date.parse(x.at) - t) <= 120000) : null;
+      if (twin) { if (!twin.actor && e.actor) twin.actor = e.actor; continue; }
+      if (e.actor && own.some(x => x.kind === 'history' && x.actor === e.actor && Math.abs(Date.parse(x.at) - t) <= 5000)) continue;
+    }
+    kept.push(e);
+  }
+
+  const page = kept.filter(e => !beforeAt || e.at < beforeAt || (e.at === beforeAt && beforeKey && e.key < beforeKey)).slice(0, limit);
+  return page.map(e => ({ at: e.at, kind: e.kind, title: e.title, detail: e.detail || '', actor: e.actor || '', href: e.href || null, key: e.key, cursor: `${e.at}|${e.key}` }));
+}
+
+// ── FACTION HUB: PROMOTION READINESS ──────────────────────────────────────────
+
+function readinessTargets(tier) {
+  let row = READINESS_TARGETS[0];
+  for (const t of READINESS_TARGETS) if (t.tier <= tier) row = t;
+  return row;
+}
+function prevMonthKey(key) {
+  const [y, m] = String(key).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7);
+}
+
+/**
+ * How close a faction is to the next tier, against READINESS_TARGETS for its
+ * current tier. A guide for the review conversation, not a gate. L2+ (and Lead
+ * Storyteller reads). null for an unknown faction.
+ */
+export async function getPromotionReadiness(factionId) {
+  await requireActor(2, { allowLeadStoryteller: true });
+  const r = resolveFaction(factionId, { allowArchived: true });
+  if (!r.faction) return null;
+  const f = r.faction;
+  const t = readinessTargets(f.tier);
+  const sc = queryOne(`SELECT SUM(CASE WHEN created_at >= datetime('now','-30 days') THEN 1 ELSE 0 END) AS s30,
+                              SUM(CASE WHEN created_at >= datetime('now','-90 days') THEN 1 ELSE 0 END) AS s90
+                       FROM scene_logs WHERE faction_id = ?`, [f.id]) || {};
+  const scenes30 = sc.s30 || 0, scenes90 = sc.s90 || 0;
+  const members = queryOne("SELECT COUNT(*) AS c FROM faction_members WHERE faction_id = ?", [f.id])?.c || 0;
+  const openRp = queryOne("SELECT COUNT(*) AS c FROM pending_executions WHERE faction_id = ? AND status IN ('PENDING','APPROVED','RP_DONE')", [f.id])?.c || 0;
+
+  // Consecutive months ending Confirmed Hold / Promote. This month's review may
+  // still be in progress, so the streak may start at last month.
+  const byMonth = {};
+  query("SELECT review_month, status FROM faction_reviews WHERE faction_id = ?", [f.id]).forEach(x => { byMonth[x.review_month] = x.status; });
+  const good = (s) => s === 'Confirmed Promote' || s === 'Confirmed Hold';
+  let m = monthKey();
+  if (!good(byMonth[m])) m = prevMonthKey(m);
+  let streak = 0;
+  while (good(byMonth[m])) { streak++; m = prevMonthKey(m); }
+
+  const since = parseDate(f.last_promoted) || parseDate(f.created_at);
+  const days = since ? Math.max(0, Math.floor((Date.now() - since.getTime()) / 86400000)) : null;
+
+  const checks = [
+    { id: 'scenes30', label: 'Scenes in the last 30 days', value: scenes30, target: t.scenes30, op: 'min', ok: scenes30 >= t.scenes30 },
+    { id: 'scenes90', label: 'Scenes in the last 90 days', value: scenes90, target: t.scenes90, op: 'min', ok: scenes90 >= t.scenes90 },
+    { id: 'members', label: 'Members on the roster', value: members, target: t.members, op: 'min', ok: members >= t.members },
+    { id: 'streak', label: 'Months in a row with a confirmed Hold / Promote review', value: streak, target: t.streak, op: 'min', ok: streak >= t.streak },
+    { id: 'openRp', label: 'Open RP change requests', value: openRp, target: 0, op: 'max', ok: openRp === 0 },
+    { id: 'sincePromotion', label: f.last_promoted ? 'Days since last promotion' : 'Days since creation (never promoted)', value: days ?? 0, target: t.daysSincePromotion, op: 'min', ok: days != null && days >= t.daysSincePromotion },
+  ];
+  return {
+    tier: f.tier, nextTier: f.tier >= MAX_TIER ? null : f.tier + 1, checks,
+    ready: checks.every(c => c.ok), met: checks.filter(c => c.ok).length,
+    lastPromoted: f.last_promoted || null, staged: !!f.pending_promo, archived: !!f.archived,
+  };
 }

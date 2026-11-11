@@ -53,3 +53,10 @@ as('tok-l1'); eq(await L.getMeetingNote(g.id), null, 'group note hidden from L1'
 as('tok-l2'); await failsWith(() => L.deleteMeetingNote(n.id), null, 'delete non-author'); eq((await L.getAttendeesForTarget('group', 'management')).length, 0, 'group attendees hidden from L2');
 as('tok-l3'); ok((await L.getTeamPerformance()).length >= 2, 'team performance rows');
 as('tok-l2'); ok(!(await L.getGuideActivity()).some(x => /Placeholder/.test(x.name)), 'guide activity skips placeholder staff'); pass('meeting notes + performance');
+
+// ── hub helpers: vote status + feedback draft (detail in hub.test.mjs) ──
+as('tok-l1'); await rejects(() => L.getVoteStatus(), 'AUTH_INSUFFICIENT', 'vote status L2+'); await rejects(() => L.getFeedbackDraft(1), 'AUTH_INSUFFICIENT', 'draft L2+');
+as('tok-l3'); { const v = await L.getVoteStatus(month); const f1 = v.factions.find(f => f.factionId === 1); ok(v.ok && f1 && f1.votes.length === 2 && f1.missing.length === 0 && f1.complete, 'vote status reflects the two votes cast above'); }
+await failsWith(() => L.getVoteStatus('2026-13'), /YYYY-MM/, 'vote status bad month');
+as('tok-l2'); await failsWith(() => L.getFeedbackDraft(4), /outside your team/, 'draft cross-team');
+{ const d = await L.getFeedbackDraft(1); ok(d.ok && d.draft.startsWith('Hello The Vanguard,') && /landed on a demotion/.test(d.draft) && /Revised/.test(d.draft) && /Promote them/.test(d.draft) && !/Mgmt Three|Risk/.test(d.draft) && /Faction Management$/.test(d.draft.trim()), 'draft: greeting, confirmed demote, team + leadership text, no author names, sign-off'); ok(d.sources.length >= 3, 'draft sources'); } pass('hub helpers');

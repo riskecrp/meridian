@@ -39,6 +39,16 @@
  * lost outright; reading the sheet each cycle means a missed submission is picked
  * up on the next pass instead of vanishing.
  *
+ * Hosted forms: the dashboard serves the same four forms at /forms/<key>
+ * (dashboard/src/app/forms) and writes each submission straight into
+ * form_submissions with source = 'web', thread_id NULL and a negative sheet_row,
+ * carrying the same { question: answer } payload a sheet row would. postWebRows
+ * posts those rows through postSubmission — the exact path a new sheet row
+ * takes — at the start of every poll and from a one-minute job, then fills in
+ * thread_id. INTAKE_SOURCE (or INTAKE_SOURCE_<FORM>) = web | sheet | both
+ * (default) says which sources a form still listens to; the sheet stays a
+ * fallback until the Google Form is retired.
+ *
  * Buttons are handled in index.js with the rest of the interaction routing; the
  * record id travels in the custom id, so they keep working across restarts.
  */
@@ -55,6 +65,7 @@ import {
   OPEN_STATUS_TAGS, DECISION_STATUS_TAGS, titled, retag, chunks, fetchSheetRows,
   TIMESTAMP_HEADER, valueByHeader, identify, splitAnswers, rowPayload,
   rowKeys, ensureIntakeSchema, rowSeen, markRowSeen, markAllRowsSeen, freeSheetRow, seedSeenFromLastRow,
+  sheetPollingEnabled, webIntakeEnabled, payloadToRow, sourceLabel,
 } from './lib/formIntake.js';
 
 // Sheet ids/tabs and the links the setup checklist hands out come from the
@@ -337,6 +348,13 @@ function checklistView(item, form) {
 async function pollForm(form) {
   const job = `form_poll.${form.key}`;
   ensureIntakeSchema();
+  // Website submissions first: they are already in the database and need no
+  // network to read, so an unreadable sheet never holds them up.
+  await postWebRows(form).catch((e) => console.error(`[FORMS] ${form.key} web rows:`, e.message));
+  if (!sheetPollingEnabled(form.key)) {
+    recordSyncOk(job, 'sheet polling is off (INTAKE_SOURCE=web); submissions arrive from the website form');
+    return;
+  }
   const source = `form:${form.key}`;
   const { rows, error } = await fetchSheetRows(form.sheet.id, form.sheet.gid);
   if (error) { recordSyncFail(job, error); return; }
@@ -439,15 +457,19 @@ async function postSubmission(form, header, row, sheetRow, { silent = false, key
   // opening a second thread and then dying on the constraint. ack_message_id is
   // written last and checked first, so it doubles as the "posted in full" marker.
   const existing = queryOne(
-    'SELECT id, thread_id, ack_message_id FROM form_submissions WHERE form_key = ? AND row_key = ?',
+    'SELECT id, thread_id, ack_message_id, source FROM form_submissions WHERE form_key = ? AND row_key = ?',
     [form.key, key]);
   if (existing?.ack_message_id) return existing.id;
+  // Where this came from, for the card's footer: a website row already exists
+  // (the dashboard wrote it), a sheet row is created just below.
+  const origin = existing?.source || 'sheet';
 
   let recordId, threadId;
   if (existing) {
     recordId = existing.id;
     threadId = existing.thread_id;
-    console.log(`[FORMS] resuming partially posted ${form.key} row ${sheetRow} (#${recordId})`);
+    if (origin === 'web') console.log(`[FORMS] posting website submission #${recordId} (${form.key})`);
+    else console.log(`[FORMS] resuming partially posted ${form.key} row ${sheetRow} (#${recordId})`);
   } else {
     const res = run(
       `INSERT INTO form_submissions (form_key, sheet_row, row_key, title, contact, submitted_at, payload,
@@ -518,7 +540,7 @@ async function postSubmission(form, header, row, sheetRow, { silent = false, key
         ? 'Discuss this in the thread, then **Accept** or **Reject**.'
         : 'Discuss and handle this in the thread. Press **Complete** once it is done.',
       color: form.color,
-      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is ${decides ? 'decided and set up' : 'completed'}.` },
+      footer: { text: `Reminders every ${REMINDER_HOURS}h until this is ${decides ? 'decided and set up' : 'completed'}. Received via ${sourceLabel(origin)}.` },
     }],
     components: [decides ? decisionRow(recordId) : completeRow(recordId)],
     allowed_mentions: allow,
@@ -530,6 +552,63 @@ async function postSubmission(form, header, row, sheetRow, { silent = false, key
   // Only now is the row fully posted, so an earlier failure record is stale.
   run('DELETE FROM form_submission_failures WHERE form_key = ? AND (sheet_row = ? OR row_key = ?)', [form.key, sheetRow, key]);
   return recordId;
+}
+
+/**
+ * Post every website submission of one form that has no thread yet.
+ *
+ * The dashboard's public form writes the record (source 'web', thread_id NULL,
+ * payload keyed by question text) and stops there; this turns each such row into
+ * a thread through postSubmission, the same path a new sheet row takes, so the
+ * card, the checklist, the ping and the nudges are identical whichever way the
+ * submission arrived. postSubmission finds the existing record by row_key and
+ * resumes it, writing thread_id first and ack_message_id last, so a crash
+ * half-way is picked up on the next pass rather than posted twice.
+ *
+ * `freshOnly` is for the one-minute job: rows that have already failed once
+ * are left to the fifteen-minute poll, so a row the channel configuration
+ * cannot accept is reported every poll rather than every minute.
+ *
+ * Returns the number posted; records health under `form_web.<form>`.
+ */
+export async function postWebRows(form, { freshOnly = false } = {}) {
+  const job = `form_web.${form.key}`;
+  if (!webIntakeEnabled(form.key)) {
+    if (!freshOnly) recordSyncOk(job, 'website submissions are ignored for this form (INTAKE_SOURCE=sheet)');
+    return 0;
+  }
+  ensureIntakeSchema();
+  const pending = query(
+    `SELECT s.id, s.sheet_row, s.row_key, s.payload FROM form_submissions s
+     WHERE s.form_key = ? AND s.source = 'web' AND s.thread_id IS NULL AND s.ack_message_id IS NULL
+       AND s.row_key IS NOT NULL
+       AND s.status NOT IN (${ENDED_STATUSES.map(() => '?').join(', ')})
+       ${freshOnly ? 'AND NOT EXISTS (SELECT 1 FROM form_submission_failures f WHERE f.form_key = s.form_key AND f.sheet_row = s.sheet_row)' : ''}
+     ORDER BY s.id`,
+    [form.key, ...ENDED_STATUSES]);
+  if (!pending.length) {
+    if (!freshOnly) recordSyncOk(job, 'checked, nothing waiting');
+    return 0;
+  }
+  let posted = 0;
+  const failures = [];
+  for (const rec of pending) {
+    const { header, row } = payloadToRow(rec.payload);
+    try {
+      await postSubmission(form, header, row, rec.sheet_row, { key: rec.row_key });
+      posted++;
+    } catch (e) {
+      // Reported, never skipped: a website submission has no sheet to fall back
+      // to, so it stays queued until the post succeeds (usually the route being
+      // given a channel in Discord & Access).
+      const attempts = recordFailure(form.key, rec.sheet_row, rec.row_key, e);
+      console.error(`[FORMS] website submission #${rec.id} (${form.key}) attempt ${attempts} failed:`, e.message);
+      failures.push(`#${rec.id}: ${e.message.slice(0, 80)}`);
+    }
+  }
+  if (failures.length) recordSyncFail(job, `${posted} posted, ${failures.length} waiting: ${failures.join(' | ')}`);
+  else recordSyncOk(job, `${posted} website submission(s) posted`);
+  return posted;
 }
 
 /**
@@ -1018,6 +1097,18 @@ async function pollAll() {
   }
 }
 
+// The one-minute pass over website submissions: a cheap indexed SELECT per
+// form, so a hosted submission reaches Discord within a minute instead of
+// waiting out the sheet cycle. Rows that have failed once wait for pollAll.
+async function webAll() {
+  for (const form of FORMS) {
+    await postWebRows(form, { freshOnly: true }).catch((e) => {
+      console.error(`[FORMS] ${form.key} web intake error:`, e.message);
+      recordSyncFail(`form_web.${form.key}`, e);
+    });
+  }
+}
+
 async function nudgeAll() {
   for (const form of FORMS) {
     await checkReminders(form).catch((e) => {
@@ -1027,16 +1118,20 @@ async function nudgeAll() {
   }
 }
 
-export { pollForm, checkReminders, FORMS };
+export { pollForm, checkReminders, webAll, FORMS };
 
 export function startFormSubmissions() {
-  for (const form of FORMS) if (!form.sheet.id) console.warn(`[FORMS] SHEET_${form.key.toUpperCase()}_ID is not set — ${form.key} will report a configuration error on every poll`);
+  for (const form of FORMS) {
+    if (!sheetPollingEnabled(form.key)) console.log(`[FORMS] ${form.key}: sheet polling off (INTAKE_SOURCE=web), website submissions only`);
+    else if (!form.sheet.id) console.warn(`[FORMS] SHEET_${form.key.toUpperCase()}_ID is not set — ${form.key} will report a configuration error on every poll`);
+  }
   cron.schedule('*/15 * * * *', () => { pollAll(); }, { timezone: 'UTC' });
+  cron.schedule('* * * * *', () => { webAll(); }, { timezone: 'UTC' });
   cron.schedule('*/30 * * * *', () => { nudgeAll(); }, { timezone: 'UTC' });
 
   // Read the sheets once on boot as well, so a restart picks up anything that
   // arrived while the bot was down instead of waiting out the cron interval.
   pollAll();
 
-  console.log(`[FORMS] Form intake running for ${FORMS.length} forms — sheets every 15m, nudges every ${REMINDER_HOURS}h.`);
+  console.log(`[FORMS] Form intake running for ${FORMS.length} forms — website submissions every 1m, sheets every 15m, nudges every ${REMINDER_HOURS}h.`);
 }
