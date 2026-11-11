@@ -652,3 +652,13 @@
 .v3-root .settings-chips { max-width: 100%; }
 .v3-root .main { overflow-x: clip; }
 .v3-root .rd-row .rd-ok { flex: 0 0 14px; }
+
+/* ── Coordinator: phone rows. The action cluster takes its own full-width line
+   UNDER the text (the row wraps) instead of sharing the line and squeezing the
+   text column to nothing. Applies to every .li, including queue and work rows. ── */
+@media (max-width: 760px) {
+  .v3-root .li { flex-wrap: wrap; }
+  .v3-root .li .body { flex: 1 1 60%; min-width: 60%; }
+  .v3-root .li .side { flex: 1 1 100%; flex-basis: 100%; justify-content: flex-start; margin-top: 6px; }
+  .v3-root .li > .unread:not(.li) { order: -1; }
+}
