@@ -311,7 +311,7 @@
 .v3-root .note .body.muted { color: var(--ink-2); }
 .v3-root .note .reward { display: inline-block; margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--good); background: var(--good-bg); padding: 3px 8px; border-radius: 6px; }
 .v3-root .note.dim { opacity: .65; }
-.v3-root .unread { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.v3-root .unread:not(.li) { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .v3-root .ai-box { padding: 12px 14px; border-radius: 8px; background: var(--accent-bg); color: var(--ink-1); white-space: pre-wrap; font-size: 13px; line-height: 1.55; }
 .v3-root .step { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; font-family: var(--mono); flex-shrink: 0; background: var(--panel-2); color: var(--ink-3); border: 1px solid var(--line-2); margin-right: 8px; }
 .v3-root .step.done { background: var(--good-bg); color: var(--good); border-color: var(--good); }
