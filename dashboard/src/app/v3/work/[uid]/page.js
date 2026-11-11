@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useAuth } from "../../../../lib/useAuth.js";
-import { PageHeader, Card, Badge, Button, Empty, Restricted, useAction, fmtDateTime } from "../../ui.js";
+import { PageHeader, Card, Empty, Restricted, useAction, fmtDateTime } from "../../ui.js";
 import { getTaskDetail, answerTaskQuestion } from "../../../fm/dashboard/actions.js";
 import { TaskActions } from "../TaskRow.js";
 import { Skeleton, usePickerData, TaskStatusBadge, TargetBadge, isClaimed, factionHref, InlineForm } from "../shared.js";
@@ -96,4 +96,3 @@ export default function TaskDetailPage() {
   );
 }
 
-export { Badge, Button };

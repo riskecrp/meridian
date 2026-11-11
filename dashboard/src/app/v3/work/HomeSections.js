@@ -3,7 +3,7 @@
 // (useHomeData) so the role-shaped layouts in v3/page.js only arrange them.
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Card, Badge, Button, Empty, Tabs, Stat, useAction, setQueryParam } from "../ui.js";
+import { Card, Badge, Empty, Tabs, Stat, setQueryParam } from "../ui.js";
 import { getMyTasks, getMyCreatedTasks, getMyReminders, getMyTeamFactions, getQACountsForTasks } from "../../fm/dashboard/actions.js";
 import { getMyAttention } from "../../v2/actions.js";
 import { getAttentionFactions } from "../../fm/scenes/actions.js";
@@ -54,12 +54,13 @@ export function AttentionCard({ auth, att, onChanged }) {
       <div className="list">
         {instances.map(ri => <ReminderInstanceRow key={ri.id} auth={auth} ri={ri} onChanged={onChanged} />)}
         {items.map((it, i) => {
-          const body = <><div className="body"><div className="t row"><Badge tone={it.tone}>{it.chip}</Badge>{it.text}</div>
-            {it.sub?.length > 0 && <div className="chips mt8">{it.sub.map(s => <Link key={s.label} href={s.href} className="chip" title={`Open ${s.label}'s Review tab`} onClick={e => e.stopPropagation()}>{s.label} →</Link>)}{it.more > 0 && <Link href={it.href} className="chip">+{it.more} more →</Link>}</div>}
-          </div><div className="side faint">→</div></>;
-          return it.href
-            ? <Link key={i} href={it.href} className="li link">{body}</Link>
-            : <div key={i} className="li link" onClick={it.onClick} role="button">{body}</div>;
+          const body = <><div className="body"><div className="t row"><Badge tone={it.tone}>{it.chip}</Badge>{it.text}</div></div><div className="side faint">→</div></>;
+          return (
+            <div key={i} className="lirow">
+              {it.href ? <Link href={it.href} className="li link">{body}</Link> : <div className="li link" onClick={it.onClick} role="button">{body}</div>}
+              {it.sub?.length > 0 && <div className="chips mb8">{it.sub.map(s => <Link key={s.label} href={s.href} className="chip" title={`Open ${s.label}'s Review tab`}>{s.label} →</Link>)}{it.more > 0 && <Link href={it.href} className="chip">+{it.more} more →</Link>}</div>}
+            </div>
+          );
         })}
       </div>
     </Card>
@@ -138,10 +139,10 @@ export function ScenesDueCard({ scenesDue }) {
       {scenesDue.length === 0 ? <Empty>Every active faction has had scenes in the last 30 days.</Empty> : (
         <div className="list">
           {scenesDue.map(([name, n]) => (
-            <Link key={name} href={factionHref(name)} className="li link">
-              <div className="body"><div className="t">{name}</div><div className="d">{n === 0 ? "no scenes" : `${n} scene`} in 30 days</div></div>
-              <div className="side"><Link href={`/v3/storytelling?tab=scenelogs&new=1&faction=${encodeURIComponent(name)}`} className="btn ghost sm" onClick={e => e.stopPropagation()}>Log a scene</Link></div>
-            </Link>
+            <div key={name} className="li">
+              <div className="body"><div className="t"><Link href={factionHref(name)}>{name}</Link></div><div className="d">{n === 0 ? "no scenes" : `${n} scene`} in 30 days</div></div>
+              <div className="side"><Link href={`/v3/storytelling?tab=scenelogs&new=1&faction=${encodeURIComponent(name)}`} className="btn ghost sm">Log a scene</Link></div>
+            </div>
           ))}
         </div>
       )}
@@ -220,4 +221,3 @@ export function StorytellingShortcuts({ auth }) {
   );
 }
 
-export { Button, useAction };

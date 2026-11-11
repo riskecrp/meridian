@@ -4,7 +4,7 @@
 // form and thread view) and the team summary card from v2/teams.
 import { useState } from "react";
 import Link from "next/link";
-import { Card, Button, Badge, Age, Empty, useAction, fmtDateTime } from "../ui.js";
+import { Card, Button, Badge, Age, useAction, fmtDateTime } from "../ui.js";
 import { snoozeMyReminder, deleteMyReminder } from "../../fm/dashboard/actions.js";
 import { completeMyReminderInstance } from "../../v2/actions.js";
 import { markRPDone, resubmitRPChange } from "../../fm/operations/actions.js";
@@ -217,4 +217,3 @@ export function TeamSummary({ team, selected, onOpen }) {
   );
 }
 
-export { Empty };

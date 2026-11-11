@@ -4,7 +4,7 @@
 // shared/tasks.js; the server stays the authority and every refusal is a toast.
 import { useState } from "react";
 import Link from "next/link";
-import { Button, Badge, useAction, fmtDateTime } from "../ui.js";
+import { Button, useAction, fmtDateTime } from "../ui.js";
 import {
   completeMyTask, unclaimMyTask, reassignMyTask, requestTaskInfo, editMyTask,
 } from "../../fm/dashboard/actions.js";
@@ -141,4 +141,3 @@ export default function TaskRow({ auth, task: t, qa, staffList, roleTargets, onR
   );
 }
 
-export { Badge };
