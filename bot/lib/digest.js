@@ -7,7 +7,8 @@
 //   buildDigest()          grouped "waiting on leadership" data (pure, testable)
 //   sendLeadershipDigest() Monday embed on route 'leadership.digest'
 //   verifyNudgeTick()      hourly DM (channel fallback) on 'rp.verify_nudge'
-//   missingVotes()         who still has to vote this month (pure)
+//   fetchVoters()          FM Leadership role holders (the review panel)
+//   missingVotes()         which of them still has to vote this month (pure)
 //   reviewVoteNudge()      12th-of-month DM (channel fallback) on 'review.vote_nudge'
 //
 // Every job records sync_status (lib/syncStatus.js) and does nothing but record
@@ -176,27 +177,50 @@ export async function verifyNudgeTick(client, { now = new Date() } = {}) {
 // ── Review vote nudge ─────────────────────────────────────────────────────────
 
 /**
- * Active L3s (clearance ≥ 3, active, not placeholder) and the factions reviewed
- * this month they have no leadership_personal_notes row for.
- *   [{ leaderId, leaderName, factions: [{ id, name }] }]  (leaders with nothing missing are omitted)
+ * The voters are the holders of the FM Leadership Discord role (discord_roles
+ * 'fm_leadership') — NOT everyone with clearance 3, which also covers Game
+ * Affairs / Founder / Executive Admin, who are not on the review panel.
+ * Returns [{ id, name }] for the role's members in GUILD_ID, or null when the
+ * role or the guild can't be read (the caller then sends nothing).
  */
-export function missingVotes(month = monthKey()) {
-  const leaders = query("SELECT discord_id, display_name FROM staff WHERE clearance >= 3 AND active = 1 AND discord_id != '' AND discord_id NOT LIKE 'placeholder%' ORDER BY display_name");
+export async function fetchVoters(client) {
+  const roleId = getRole('fm_leadership');
+  const guildId = process.env.GUILD_ID;
+  if (!roleId || !guildId || !client?.guilds?.fetch) return null;
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    const members = await guild.members.fetch();
+    return [...members.values()]
+      .filter(m => !m.user?.bot && m.roles?.cache?.has(roleId))
+      .map(m => ({ id: m.id, name: m.displayName || m.user?.globalName || m.user?.username || m.id }));
+  } catch (e) { console.error('[VOTE_NUDGE] could not read FM Leadership members:', e.message); return null; }
+}
+
+/**
+ * The given voters ([{ id, name }]) and the factions reviewed this month they
+ * have no leadership_personal_notes row for. Names prefer staff.display_name.
+ *   [{ leaderId, leaderName, factions: [{ id, name }] }]  (voters with nothing missing are omitted)
+ */
+export function missingVotes(month = monthKey(), voters = []) {
   const reviewed = query("SELECT DISTINCT f.id, f.name FROM faction_reviews r JOIN factions f ON f.id = r.faction_id WHERE r.review_month = ? AND f.archived = 0 ORDER BY f.name", [month]);
-  if (!leaders.length || !reviewed.length) return [];
+  if (!voters?.length || !reviewed.length) return [];
+  const staffName = (id) => queryOne("SELECT display_name FROM staff WHERE discord_id = ?", [id])?.display_name;
   const voted = new Set(query("SELECT author_id, faction_id FROM leadership_personal_notes WHERE review_month = ?", [month]).map(n => `${n.author_id}:${n.faction_id}`));
-  return leaders
-    .map(l => ({ leaderId: l.discord_id, leaderName: l.display_name, factions: reviewed.filter(f => !voted.has(`${l.discord_id}:${f.id}`)) }))
-    .filter(l => l.factions.length);
+  return voters
+    .map(v => ({ leaderId: v.id, leaderName: staffName(v.id) || v.name || v.id, factions: reviewed.filter(f => !voted.has(`${v.id}:${f.id}`)) }))
+    .filter(l => l.factions.length)
+    .sort((a, b) => a.leaderName.localeCompare(b.leaderName));
 }
 
 /** 12th 10:00 UTC. Route 'review.vote_nudge'; sync_status 'review_vote_nudge'. DM first, channel fallback with a mention. */
-export async function reviewVoteNudge(client, { now = new Date() } = {}) {
+export async function reviewVoteNudge(client, { now = new Date(), voters } = {}) {
   const month = monthKey(now);
   const summary = { month, leaders: 0, dm: 0, channel: 0, failed: 0, muted: false };
   try {
     if (!pingEnabled('review.vote_nudge')) { summary.muted = true; recordSyncOk('review_vote_nudge', `${month}: route review.vote_nudge muted; nothing sent`); return summary; }
-    const missing = missingVotes(month);
+    const panel = voters ?? await fetchVoters(client);
+    if (!panel) { summary.error = 'could not read FM Leadership role members'; recordSyncFail('review_vote_nudge', `${month}: could not read FM Leadership role members; nothing sent`); return summary; }
+    const missing = missingVotes(month, panel);
     summary.leaders = missing.length;
     const errors = [];
     for (const m of missing) {

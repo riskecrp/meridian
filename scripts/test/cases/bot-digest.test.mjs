@@ -4,7 +4,7 @@
 // posts and through a fake client for DMs; cron and timers are stubbed.
 import { as, ok, eq, pass, captureDiscord, pings } from '../lib.mjs';
 import { query, queryOne, run } from '../../../shared/db.js';
-import { fakeClient, IDS } from '../harness/discord-fakes.mjs';
+import { fakeClient, IDS, ROLES } from '../harness/discord-fakes.mjs';
 import cron from '../../../bot/node_modules/node-cron/dist/node-cron.js';
 process.env.BASE_URL = 'http://localhost:3000';
 const crons = []; cron.schedule = (expr, fn, opts) => { crons.push({ expr, fn, opts }); return { stop() {} }; };
@@ -19,7 +19,7 @@ const mute = (key, on) => run('UPDATE ping_routes SET enabled=? WHERE key=?', [o
 const agoIso = (ms) => new Date(Date.now() - ms).toISOString();
 const H = 3600000, D = 24 * H;
 
-const { buildDigest, digestEmbed, sendLeadershipDigest, unverifiedForNudge, verifyNudgeTick, missingVotes, reviewVoteNudge } = await import('../../../bot/lib/digest.js');
+const { buildDigest, digestEmbed, sendLeadershipDigest, unverifiedForNudge, verifyNudgeTick, missingVotes, reviewVoteNudge, fetchVoters } = await import('../../../bot/lib/digest.js');
 const { healthReport, classifyJob, diffHealth, registerJob } = await import('../../../bot/lib/health.js');
 const { healthAlertTick, startLeadershipJobs, LEADERSHIP_JOBS } = await import('../../../bot/scheduler.js');
 for (const k of ['leadership.digest', 'rp.verify_nudge', 'review.vote_nudge', 'ops.health']) ok(!!route(k), `route ${k} exists (migration 026)`);
@@ -70,17 +70,30 @@ eq(JSON.stringify(unverifiedForNudge().map(r => r.id)), JSON.stringify([nudgedLo
 section('verify nudge');
 
 // ── review vote nudge ──
-// 2026-10: reviews for factions 1 and 2; Mgmt Three voted on 1; Risk (owner, L3) voted on nothing. Lead Two (L2) and the placeholder are not voters.
-{ const m = missingVotes('2026-10'); eq(JSON.stringify(m.map(x => [x.leaderName, x.factions.map(f => f.name)])), JSON.stringify([['Mgmt Three', ['Los Santos Kings']], ['Risk (owner)', ['Los Santos Kings', 'The Vanguard']]]), 'missing voters per leader');
-  run("UPDATE staff SET active = 0 WHERE discord_id = ?", [IDS.owner]); eq(missingVotes('2026-10').length, 1, 'retired L3 is not nudged'); run("UPDATE staff SET active = 1 WHERE discord_id = ?", [IDS.owner]);
-  run("INSERT INTO leadership_personal_notes (faction_id, faction_name, author_id, author_name, review_month, note, status) VALUES (2,'Los Santos Kings',?,'Mgmt Three','2026-10','fine','')", [IDS.l3]); eq(missingVotes('2026-10').length, 1, 'any note row for the faction-month counts as having voted'); eq(missingVotes('2026-10')[0].leaderName, 'Risk (owner)', 'Risk still missing');
-  eq(missingVotes('2026-12').length, 0, 'a month without reviews has nothing to vote on'); }
-{ const client = fakeClient({}); log.length = 0; const r = await reviewVoteNudge(client, { now: new Date('2026-10-12T10:00:00Z') });
+// 2026-10: reviews for factions 1 and 2; Mgmt Three voted on 1; Risk (owner, L3) voted on nothing.
+// Voters are the FM Leadership role holders only, never "everyone at clearance 3".
+const PANEL = [{ id: IDS.l3, name: 'x' }, { id: IDS.owner, name: 'y' }];
+{ const m = missingVotes('2026-10', PANEL); eq(JSON.stringify(m.map(x => [x.leaderName, x.factions.map(f => f.name)])), JSON.stringify([['Mgmt Three', ['Los Santos Kings']], ['Risk (owner)', ['Los Santos Kings', 'The Vanguard']]]), 'missing voters per leader (staff names)');
+  eq(missingVotes('2026-10', [{ id: IDS.owner, name: 'y' }]).length, 1, 'an L3 without the FM Leadership role is not a voter');
+  eq(missingVotes('2026-10').length, 0, 'no voters → nobody'); eq(missingVotes('2026-10', [{ id: IDS.nobody, name: 'Discord Name' }])[0].leaderName, 'Discord Name', 'role holder with no staff row uses the Discord name');
+  run("INSERT INTO leadership_personal_notes (faction_id, faction_name, author_id, author_name, review_month, note, status) VALUES (2,'Los Santos Kings',?,'Mgmt Three','2026-10','fine','')", [IDS.l3]); eq(missingVotes('2026-10', PANEL).length, 1, 'any note row for the faction-month counts as having voted'); eq(missingVotes('2026-10', PANEL)[0].leaderName, 'Risk (owner)', 'Risk still missing');
+  eq(missingVotes('2026-12', PANEL).length, 0, 'a month without reviews has nothing to vote on'); }
+{ process.env.GUILD_ID ||= '1457188814916423855'; const role = queryOne("SELECT role_id FROM discord_roles WHERE key='fm_leadership'").role_id;
+  const mem = (id, roles, bot = false) => [id, { id, displayName: 'D' + id.slice(-2), user: { bot }, roles: { cache: new Map(roles.map(r => [r, {}])) } }];
+  const guildClient = (members) => Object.assign(fakeClient({}), { guilds: { fetch: async (gid) => { if (gid !== process.env.GUILD_ID) throw new Error('wrong guild'); return { members: { fetch: async () => new Map(members) } }; } } });
+  const v = await fetchVoters(guildClient([mem(IDS.owner, [role]), mem(IDS.l3, [ROLES.game_affairs]), mem('999999999999999999', [role], true)]));
+  eq(JSON.stringify(v.map(x => x.id)), JSON.stringify([IDS.owner]), 'fetchVoters: FM Leadership holders only, bots and other L3 roles excluded');
+  eq(await fetchVoters(Object.assign(fakeClient({}), { guilds: { fetch: async () => { throw new Error('nope'); } } })), null, 'fetchVoters: unreadable guild → null');
+  const c = guildClient([mem(IDS.owner, [role]), mem(IDS.l3, [ROLES.game_affairs])]); log.length = 0; const r = await reviewVoteNudge(c, { now: new Date('2026-10-12T10:00:00Z') });
+  ok(r.leaders === 1 && c.dms.length === 1 && c.dms[0].to === IDS.owner, 'scheduled run: only the role holder is DMed');
+  const u = fakeClient({}); log.length = 0; const n = await reviewVoteNudge(u, { now: new Date('2026-10-12T10:00:00Z') });
+  ok(n.error && u.dms.length === 0 && pings(log).length === 0 && /could not read FM Leadership/.test(sync('review_vote_nudge').last_error), 'role unreadable → nothing sent, failure recorded'); }
+{ const client = fakeClient({}); log.length = 0; const r = await reviewVoteNudge(client, { now: new Date('2026-10-12T10:00:00Z'), voters: PANEL });
   ok(r.month === '2026-10' && r.leaders === 1 && r.dm === 1 && client.dms.length === 1 && client.dms[0].to === IDS.owner && /2 factions/.test(client.dms[0].m.content) && /\*\*The Vanguard\*\*/.test(client.dms[0].m.content) && /\*\*Los Santos Kings\*\*/.test(client.dms[0].m.content) && /\/v2\/leadership\?tab=reviews/.test(client.dms[0].m.content), 'one DM listing both factions, with the reviews link'); ok(pings(log).length === 0 && /1 leader\(s\) behind; 1 by DM/.test(sync('review_vote_nudge').last_detail), 'sync recorded, no channel post');
-  const bad = fakeClient({ users: { [IDS.owner]: false } }); log.length = 0; const f = await reviewVoteNudge(bad, { now: new Date('2026-10-12T10:00:00Z') }); const p = pings(log);
+  const bad = fakeClient({ users: { [IDS.owner]: false } }); log.length = 0; const f = await reviewVoteNudge(bad, { now: new Date('2026-10-12T10:00:00Z'), voters: PANEL }); const p = pings(log);
   ok(f.channel === 1 && p.length === 1 && p[0].ch === route('review.vote_nudge').channel_id && p[0].content.startsWith(`<@${IDS.owner}>`), 'DM failure → channel post mentioning the leader');
-  mute('review.vote_nudge', true); log.length = 0; const m = await reviewVoteNudge(fakeClient({}), { now: new Date('2026-10-12T10:00:00Z') }); mute('review.vote_nudge', false); ok(m.muted && pings(log).length === 0, 'muted route sends nothing');
-  eq((await reviewVoteNudge(fakeClient({}), { now: new Date('2026-12-12T10:00:00Z') })).leaders, 0, 'nothing reviewed this month → nobody nudged'); }
+  mute('review.vote_nudge', true); log.length = 0; const m = await reviewVoteNudge(fakeClient({}), { now: new Date('2026-10-12T10:00:00Z'), voters: PANEL }); mute('review.vote_nudge', false); ok(m.muted && pings(log).length === 0, 'muted route sends nothing');
+  eq((await reviewVoteNudge(fakeClient({}), { now: new Date('2026-12-12T10:00:00Z'), voters: PANEL })).leaders, 0, 'nothing reviewed this month → nobody nudged'); }
 section('review vote nudge');
 
 // ── health classification ──
