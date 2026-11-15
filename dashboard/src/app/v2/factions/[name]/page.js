@@ -644,8 +644,8 @@ function Review({ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary,
   const [aiErr, setAiErr] = useState("");
   const [draftSources, setDraftSources] = useState([]);
 
-  // Derived from the L3 votes (policy 7): a strict majority of the
-  // "Confirmed …" votes confirms the outcome, anything else is still pending.
+  // Derived from the L3 votes (policy 7): a majority of the FM Leadership panel
+  // voting the same "Confirmed …" status confirms it, anything else is pending.
   const tally = leadSummary.tally || reviewInfo?.tally || { counts: {}, confirmed: 0 };
   const derived = leadSummary.status || tally.derived || cur?.status || "Pending Discussion";
   const outcomeConfirmed = derived.startsWith("Confirmed");
@@ -756,7 +756,7 @@ function Review({ detail, reviewInfo, recForm, setRecForm, reviews, leadSummary,
         <div className="card">
           <StepHead n={++n} title="Confirm outcome" done={outcomeConfirmed} meta={outcomeConfirmed ? derived : tally.confirmed ? "no majority yet" : cur ? "awaiting leadership votes" : "needs a review first"} />
           <div style={{ paddingTop: 6, fontSize: 12.5, color: "var(--ink-2)" }}>
-            The outcome is the majority of leadership votes{tallyText ? ` — ${tallyText}` : ""}. {outcomeConfirmed ? <b style={{ color: "var(--good)" }}>{derived}.</b> : <span>Still <b>Pending Discussion</b>.</span>}
+            The outcome needs {tally.needed && tally.panel ? `${tally.needed} of the ${tally.panel} FM Leadership members` : "a majority of FM Leadership"} voting the same way{tallyText ? ` — ${tallyText}` : ""}. {outcomeConfirmed ? <b style={{ color: "var(--good)" }}>{derived}.</b> : <span>Still <b>Pending Discussion</b>.</span>}
             {outcomeConfirmed && (outcome === "Demote" || outcome === "Remove") && <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--ink-3)" }}>A leadership task was raised to apply the {outcome.toLowerCase()}.</div>}
           </div>
           {isL3 && !detail.archived && (

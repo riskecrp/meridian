@@ -37,16 +37,16 @@ const statusTone = (s) => !s || s === "Pending Discussion" ? "warn" : recTone(sh
 const monthLabel = (key) => { const [y, m] = key.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1)).toLocaleString(undefined, { month: "long", year: "numeric", timeZone: "UTC" }); };
 const lastMonths = (n) => { const out = []; const d = new Date(); for (let i = 0; i < n; i++) { const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 1)); out.push(x.toISOString().slice(0, 7)); } return out; };
 
-/** Majority of the 'Confirmed *' votes, else Pending Discussion (mirrors the server tally). */
-function deriveStatus(votes) {
+/** `needed` matching 'Confirmed *' votes (a majority of the panel), else Pending Discussion (mirrors shared/reviewPanel.js). */
+function deriveStatus(votes, needed) {
   const counts = {};
-  let confirmed = 0, top = null;
+  let top = null;
   for (const v of votes || []) {
     if (!CONFIRMED.includes(v.status)) continue;
-    counts[v.status] = (counts[v.status] || 0) + 1; confirmed++;
+    counts[v.status] = (counts[v.status] || 0) + 1;
     if (!top || counts[v.status] > counts[top]) top = v.status;
   }
-  return top && counts[top] * 2 > confirmed ? top : "Pending Discussion";
+  return top && needed && counts[top] >= needed ? top : "Pending Discussion";
 }
 
 export default function Cycle({ auth }) {
@@ -107,7 +107,7 @@ export default function Cycle({ auth }) {
     const vr = voteRow(f);
     if (current) return { review: f.currentReview, status: f.status || "Pending Discussion", feedbackSent: f.feedbackSent || { sent: false }, staged: !!f.staged, promo: promos[f.id] || null, votes: vr };
     const review = (hist[f.id] || []).find(r => r.review_month === month) || null;
-    const status = review?.status || deriveStatus(vr?.votes);
+    const status = review?.status || deriveStatus(vr?.votes, votes?.needed);
     return { review, status, feedbackSent: review?.feedback_sent_at ? { sent: true, by: review.feedback_sent_by, at: review.feedback_sent_at } : { sent: false }, staged: false, promo: null, votes: vr };
   };
 
@@ -376,7 +376,7 @@ function ConfirmCell({ v, myVote, canVote, busy, onVote }) {
             : CONFIRMED.map(st => <button key={st} className={`chip${myVote?.status === st ? " on" : ""}`} disabled={busy} onClick={() => onVote(st)}>{short(st)}</button>)}
         </div>
       )}
-      {canVote && <div className="tiny faint">The outcome is the strict majority of leadership votes — there is no manual override.</div>}
+      {canVote && <div className="tiny faint">The outcome needs a majority of FM Leadership voting the same way — there is no manual override.</div>}
     </div>
   );
 }

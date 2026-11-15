@@ -6,8 +6,9 @@
 // per month (faction_reviews). Each L3 casts ONE vote per faction per month —
 // a leadership_personal_notes row (UNIQUE faction/author/month, upserted) whose
 // `status` is one of REVIEW_STATUSES. faction_reviews.status is never set by
-// hand: it is DERIVED from the tally of those votes (strict majority of the
-// 'Confirmed *' votes → that status, otherwise 'Pending Discussion'). The bot's
+// hand: it is DERIVED from the tally of those votes — a strict majority OF THE
+// PANEL (the FM Leadership role holders, shared/reviewPanel.js) voting the same
+// 'Confirmed *' status, otherwise 'Pending Discussion'. The bot's
 // 14th-of-month job reads the same 'Confirmed Promote' / 'Confirmed Hold'
 // strings. A tally that lands on Confirmed Demote / Remove raises a leadership
 // task, the same way the bot does for Promote. Feedback delivery is recorded on
@@ -22,9 +23,10 @@ import { str, toInt, oneOf, isSnowflake, fail, REVIEW_RECOMMENDATIONS, REVIEW_ST
 import { monthKey, nowIso, todayIso } from "../../../../../shared/dates.js";
 import { createTask } from "../../../../../shared/tasks.js";
 import { sanitizeHtml, htmlToText } from "./_shared/sanitize.js";
+import { fetchReviewPanel, decideOutcome, CONFIRMED_STATUSES } from "../../../../../shared/reviewPanel.js";
 
 const ok = (extra = {}) => ({ ok: true, ...extra });
-const CONFIRMED = REVIEW_STATUSES.filter(s => s.startsWith('Confirmed '));
+const CONFIRMED = CONFIRMED_STATUSES;
 
 // Factions the actor works with: everything for L3 and Lead Storytellers
 // (reads), the team's factions for L1/L2.
@@ -33,24 +35,22 @@ function scopedFactions(actor) {
   return writableFactions(actor);
 }
 
-function leadershipVoters() {
-  return query("SELECT discord_id, display_name FROM staff WHERE clearance >= 3 AND discord_id != '' AND discord_id NOT LIKE 'placeholder%' AND COALESCE(active, 1) = 1 ORDER BY display_name");
+/** The review panel (FM Leadership role holders) as [{ discord_id, display_name }], or null when Discord can't be read. */
+async function leadershipVoters() {
+  const panel = await fetchReviewPanel();
+  return panel ? panel.map(m => ({ discord_id: m.id, display_name: m.name })) : null;
 }
 
-/** Vote tally for one faction-month: { counts: {status: n}, total, confirmed, status }. */
-function tallyVotes(factionId, month) {
+/**
+ * Vote tally for one faction-month against a panel of `panelSize`:
+ * { counts: {status: n}, total, confirmed, needed, panel, status }.
+ */
+function tallyVotes(factionId, month, panelSize) {
   const rows = query("SELECT status, COUNT(*) AS c FROM leadership_personal_notes WHERE faction_id = ? AND review_month = ? AND status != '' GROUP BY status", [factionId, month]);
   const counts = {};
-  let confirmed = 0, top = null;
-  for (const r of rows) {
-    counts[r.status] = r.c;
-    if (CONFIRMED.includes(r.status)) {
-      confirmed += r.c;
-      if (!top || r.c > top.c) top = { status: r.status, c: r.c };
-    }
-  }
-  const status = top && top.c * 2 > confirmed ? top.status : 'Pending Discussion';
-  return { counts, total: rows.reduce((s, r) => s + r.c, 0), confirmed, status };
+  for (const r of rows) counts[r.status] = r.c;
+  const { status, needed, confirmed } = decideOutcome(counts, panelSize);
+  return { counts, total: rows.reduce((s, r) => s + r.c, 0), confirmed, needed, panel: panelSize ?? null, status };
 }
 
 /**
@@ -59,8 +59,11 @@ function tallyVotes(factionId, month) {
  * Returns { status, review, changed }.
  */
 async function deriveReviewStatus(actor, factionId, month) {
-  const { status } = tallyVotes(factionId, month);
   const review = queryOne("SELECT * FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [factionId, month]);
+  const panel = await fetchReviewPanel();
+  // Can't read the panel → leave the stored outcome alone rather than guess.
+  if (!panel) return { status: review?.status || 'Pending Discussion', review, changed: false, panelUnreadable: true };
+  const { status } = tallyVotes(factionId, month, panel.length);
   if (!review) return { status, review: null, changed: false };
   if (review.status === status) return { status, review, changed: false };
   run("UPDATE faction_reviews SET status = ?, updated_at = ? WHERE id = ?", [status, nowIso(), review.id]);
@@ -84,7 +87,7 @@ async function deriveReviewStatus(actor, factionId, month) {
 // ══════════════════════════════════════════════
 
 /** One row per faction with everything the board and the hub need, in a handful of queries. */
-function reviewRows(actor, onlyFactionId = null) {
+function reviewRows(actor, onlyFactionId = null, panel = null) {
   const month = monthKey();
   const factions = query(`SELECT f.*, s.display_name AS lead_name, s.team_name AS lead_team_name, s.team_id AS lead_team_id
     FROM factions f LEFT JOIN staff s ON s.discord_id = f.lead_discord_id
@@ -113,7 +116,7 @@ function reviewRows(actor, onlyFactionId = null) {
   const myVotes = actor.level >= 3
     ? new Set(query(`SELECT faction_id FROM leadership_personal_notes WHERE review_month = ? AND author_id = ? AND faction_id IN (${ph})`, [month, actor.id, ...ids]).map(r => r.faction_id))
     : null;
-  const voterCount = actor.level >= 2 ? leadershipVoters().length : 0;
+  const voterCount = actor.level >= 2 && panel ? panel.length : 0;
   const writable = writableFactionIds(actor);
   const canWrite = (id) => !actor.isLeadStoryteller && (writable === null || writable.has(id));
 
@@ -121,10 +124,7 @@ function reviewRows(actor, onlyFactionId = null) {
     const sc = scenes[f.id] || {};
     const review = reviews[f.id] || null;
     const v = votes[f.id] || {};
-    const castVotes = Object.entries(v).filter(([s]) => CONFIRMED.includes(s));
-    const confirmedTotal = castVotes.reduce((s, [, c]) => s + c, 0);
-    const top = castVotes.sort((a, b) => b[1] - a[1])[0];
-    const derived = top && top[1] * 2 > confirmedTotal ? top[0] : 'Pending Discussion';
+    const { status: derived, needed } = decideOutcome(v, panel ? panel.length : null);
     const notesRecorded = Object.values(v).reduce((s, c) => s + c, 0);
     return {
       id: f.id, name: f.name, tier: f.tier,
@@ -138,7 +138,7 @@ function reviewRows(actor, onlyFactionId = null) {
       recentHistory: hist[f.id] || [],
       currentReview: review,
       status: review ? review.status : derived,
-      tally: { counts: v, recorded: notesRecorded, voters: voterCount, derived },
+      tally: { counts: v, recorded: notesRecorded, voters: voterCount, needed, derived },
       hasMyNote: myVotes ? myVotes.has(f.id) : null,
       feedbackSent: review?.feedback_sent_at ? { sent: true, by: review.feedback_sent_by, at: review.feedback_sent_at } : { sent: false },
       staged: !!f.pending_promo,
@@ -148,7 +148,7 @@ function reviewRows(actor, onlyFactionId = null) {
 
 export async function getReviewData() {
   const actor = await requireActor(2, { allowLeadStoryteller: true });
-  return reviewRows(actor);
+  return reviewRows(actor, null, await fetchReviewPanel());
 }
 
 /** The same row for one faction (the hub's Review tab). */
@@ -156,7 +156,7 @@ export async function getReviewDataFor(factionId) {
   const actor = await requireActor(2, { allowLeadStoryteller: true });
   const id = toInt(factionId);
   if (!id) return null;
-  return reviewRows(actor, id)[0] || null;
+  return reviewRows(actor, id, await fetchReviewPanel())[0] || null;
 }
 
 export async function getReviewHistory(factionId) {
@@ -183,7 +183,8 @@ export async function submitReview(data) {
     run("UPDATE faction_reviews SET recommendation = ?, feedback = ?, faction_name = ?, updated_at = ? WHERE id = ?", [recommendation, feedback, f.name, nowIso(), reviewId]);
     logAudit(actor.id, actor.name, 'EDIT', 'review', reviewId, f.name, recommendation);
   } else {
-    const { status } = tallyVotes(f.id, month);
+    const panel = await fetchReviewPanel();
+    const status = panel ? tallyVotes(f.id, month, panel.length).status : 'Pending Discussion';
     reviewId = Number(run("INSERT INTO faction_reviews (faction_id, faction_name, review_month, recommendation, feedback, reviewer_id, reviewer_name, submitted_by, submitted_by_id, team_id, team_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [f.id, f.name, month, recommendation, feedback, actor.id, actor.name, actor.name, actor.id, actor.teamId || '', actor.teamName || '', status, nowIso(), nowIso()]).lastInsertRowid);
     logAudit(actor.id, actor.name, 'CREATE', 'review', reviewId, f.name, recommendation);
@@ -259,11 +260,13 @@ export async function getFactionLeadershipSummary(factionId) {
   const actor = await requireActor(2, { allowLeadStoryteller: true });
   const id = toInt(factionId);
   const month = monthKey();
-  const leaders = leadershipVoters();
+  const leaders = await leadershipVoters();
   const notes = query("SELECT * FROM leadership_personal_notes WHERE faction_id = ? AND review_month = ? ORDER BY created_at ASC", [id, month]);
   const submitted = new Set(notes.map(n => n.author_id));
-  const pending = leaders.filter(l => !submitted.has(l.discord_id));
-  const tally = tallyVotes(id, month);
+  const pending = (leaders || []).filter(l => !submitted.has(l.discord_id));
+  const tally = tallyVotes(id, month, leaders ? leaders.length : null);
+  // Discord unreadable: show the stored outcome rather than a guessed one.
+  if (!leaders) tally.status = queryOne("SELECT status FROM faction_reviews WHERE faction_id = ? AND review_month = ?", [id, month])?.status || 'Pending Discussion';
   return { notes, pending, tally, status: tally.status, mine: notes.find(n => n.author_id === actor.id) || null, month };
 }
 
@@ -730,16 +733,18 @@ export async function getVoteStatus(reviewMonth) {
   const actor = await requireActor(2, { allowLeadStoryteller: true });
   const month = str(reviewMonth) || monthKey();
   if (!MONTH_RE.test(month)) return fail('Month must look like YYYY-MM.');
-  const voters = leadershipVoters().map(v => ({ id: v.discord_id, name: v.display_name || v.discord_id }));
+  const panel = await leadershipVoters();
+  const voters = (panel || []).map(v => ({ id: v.discord_id, name: v.display_name || v.discord_id }));
+  const needed = panel ? decideOutcome({}, panel.length).needed : null;
   const nameOf = Object.fromEntries(voters.map(v => [v.id, v.name]));
   const factions = scopedFactions(actor);
-  if (!factions.length) return ok({ month, voters, factions: [] });
+  if (!factions.length) return ok({ month, voters, needed, factions: [] });
   const ids = factions.map(f => f.id);
   const byFaction = {};
   query(`SELECT faction_id, author_id, author_name, status FROM leadership_personal_notes WHERE review_month = ? AND faction_id IN (${ids.map(() => '?').join(',')}) ORDER BY created_at, id`, [month, ...ids])
     .forEach(n => { (byFaction[n.faction_id] ||= []).push(n); });
   return ok({
-    month, voters,
+    month, voters, needed,
     factions: factions.map(f => {
       const votes = (byFaction[f.id] || []).map(n => ({ authorId: n.author_id, authorName: nameOf[n.author_id] || n.author_name, status: n.status || '' }));
       const seen = new Set(votes.map(v => v.authorId));
@@ -771,7 +776,8 @@ export async function getFeedbackDraft(factionId, reviewMonth) {
   const current = month === monthKey();
   const forumPosts = current ? (f.forum_posts_30d || 0) : null;
   const moves = query("SELECT action_type, details, created_at FROM faction_history WHERE faction_id = ? AND action_type IN ('PROMOTED','DEMOTED') AND substr(created_at, 1, 7) = ? ORDER BY created_at DESC, id DESC", [f.id, month]);
-  const tally = tallyVotes(f.id, month);
+  const panel = await fetchReviewPanel();
+  const tally = tallyVotes(f.id, month, panel ? panel.length : null);
   const status = review?.status && review.status !== 'Pending Discussion' ? review.status : tally.status;
   const outcome = /^Confirmed /.test(status) ? status.replace('Confirmed ', '') : null;
   const rec = review?.recommendation || null;

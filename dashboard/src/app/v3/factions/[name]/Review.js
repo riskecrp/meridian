@@ -64,7 +64,7 @@ export default function Review({ hub }) {
   useEffect(() => { setRec({ recommendation: cur?.recommendation || "", feedback: cur?.feedback || "" }); }, [cur?.id, cur?.recommendation, cur?.feedback]);
   useEffect(() => { if (leadSummary?.mine) setNote({ text: leadSummary.mine.note || "", status: leadSummary.mine.status || "" }); }, [leadSummary?.mine?.id, leadSummary?.mine?.status]);
 
-  // Derived from the L3 votes (policy 7): a strict majority of the "Confirmed …" votes confirms the outcome.
+  // Derived from the L3 votes (policy 7): a majority of the FM Leadership panel voting the same "Confirmed …" status confirms it.
   const tally = leadSummary?.tally || reviewInfo?.tally || { counts: {}, confirmed: 0 };
   const derived = leadSummary?.status || tally.derived || cur?.status || "Pending Discussion";
   const confirmed = derived.startsWith("Confirmed");
@@ -143,7 +143,7 @@ export default function Review({ hub }) {
         </Card>
 
         <Card title={<Step n={++n} done={confirmed}>Confirm outcome</Step>} right={<span className="muted small">{confirmed ? derived : tally.confirmed ? "no majority yet" : cur ? "awaiting leadership votes" : "needs a review first"}</span>}>
-          <div className="small muted">The outcome is the majority of leadership votes{tallyText ? ` — ${tallyText}` : ""}. {confirmed ? <b className="c-good">{derived}.</b> : <span>Still <b>Pending Discussion</b>.</span>}
+          <div className="small muted">The outcome needs {tally.needed && tally.panel ? `${tally.needed} of the ${tally.panel} FM Leadership members` : "a majority of FM Leadership"} voting the same way{tallyText ? ` — ${tallyText}` : ""}. {confirmed ? <b className="c-good">{derived}.</b> : <span>Still <b>Pending Discussion</b>.</span>}
             {confirmed && (outcome === "Demote" || outcome === "Remove") && <div className="hint mt-s">A leadership task was raised to apply the {outcome.toLowerCase()}.</div>}
           </div>
           {isL3 && !archived && (

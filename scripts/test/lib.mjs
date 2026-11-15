@@ -33,6 +33,21 @@ export function captureDiscord(handler) {
   };
   return log;
 }
+/**
+ * A captureDiscord handler answer for the guild member list that
+ * shared/reviewPanel.js reads: the given ids hold the seed's FM Leadership role
+ * (plus a non-role member and a bot, which must not count). null for any other
+ * request (GUILD_ID comes from harness/register.mjs).
+ */
+export function panelReply(entry, ids) {
+  if (!/\/guilds\/\d+\/members\?/.test(entry.url)) return null;
+  const role = '900000000000000001';
+  return { json: [
+    ...ids.map(id => ({ user: { id, username: 'u' + id.slice(-3) }, roles: [role] })),
+    { user: { id: '100000000000000002', username: 'lead2' }, roles: ['900000000000000002'] },
+    { user: { id: '100000000000000099', username: 'abot', bot: true }, roles: [role] },
+  ] };
+}
 /** Drain the capture log and keep only channel message POSTs, summarised. */
 export function pings(log) {
   const out = log.splice(0).filter(e => /\/channels\/\d+\/messages/.test(e.url) && e.method === 'POST');

@@ -5,9 +5,9 @@
  * Policy 7: one leadership_personal_notes row per L3 per faction per month is
  * that leader's vote (UNIQUE(faction_id, author_id, review_month)). The tally
  * DERIVES faction_reviews.status — 'Confirmed Promote' / 'Confirmed Hold' /
- * 'Confirmed Demote' / 'Confirmed Remove' when a strict majority of the
- * confirmed votes agree (the same rule as the dashboard's deriveReviewStatus in
- * fm/leadership/actions.js, so the two surfaces never disagree), otherwise
+ * 'Confirmed Demote' / 'Confirmed Remove' when a strict majority OF THE PANEL
+ * (FM Leadership role holders) votes the same way — decideOutcome() in
+ * shared/reviewPanel.js, the same rule the dashboard uses — otherwise
  * 'Pending Discussion' — and writes it back. Confirmed Promote opens
  * the weapon polls; Confirmed Demote / Remove raise a leadership task straight
  * away, exactly as a closed promotion poll does.
@@ -26,6 +26,7 @@ import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import { BOT_ACTOR } from './lib/auth.js';
 import { createTask } from '../shared/tasks.js';
 import { REVIEW_STATUSES } from '../shared/validate.js';
+import { fetchReviewPanel, decideOutcome } from '../shared/reviewPanel.js';
 import { monthKey, nowIso } from '../shared/dates.js';
 
 export const GUN_CATEGORIES = (process.env.PROMO_GUN_CATEGORIES || [
@@ -36,9 +37,6 @@ export const GUN_CATEGORIES = (process.env.PROMO_GUN_CATEGORIES || [
   'MG',
 ].join(',')).split(',').map(s => s.trim()).filter(Boolean);
 
-// A confirmed outcome needs a strict majority of the confirmed votes
-// (top * 2 > confirmed), exactly as the dashboard tallies it.
-const majority = (top, confirmed) => top > 0 && top * 2 > confirmed;
 // A poll whose message cannot be fetched for this long after it should have
 // closed is given up on (the thread was deleted) rather than retried forever.
 const POLL_GIVE_UP_DAYS = 7;
@@ -88,7 +86,7 @@ const CONFIRMED = REVIEW_STATUSES.filter(s => s.startsWith('Confirmed '));
  * "Pending Discussion" is a note, not a vote, and does not count toward the
  * threshold. Returns { [factionId]: { name, votes, counts: {status: n}, status } }.
  */
-export function tallyMonth(month) {
+export function tallyMonth(month, panelSize) {
   const notes = query(
     `SELECT n.faction_id, f.name AS faction_name, n.status
        FROM leadership_personal_notes n JOIN factions f ON f.id = n.faction_id
@@ -103,10 +101,8 @@ export function tallyMonth(month) {
     v.counts[n.status] = (v.counts[n.status] || 0) + 1;
   }
   for (const v of Object.values(byFaction)) {
-    v.status = 'Pending Discussion';
-    let top = null;
-    for (const [status, count] of Object.entries(v.counts)) if (!top || count > top.count) top = { status, count };
-    if (top && majority(top.count, v.votes)) v.status = top.status;
+    const d = decideOutcome(v.counts, panelSize);
+    v.status = d.status; v.needed = d.needed;
   }
   return byFaction;
 }
@@ -151,13 +147,19 @@ function outcomeTask(f, month, outcome) {
 
 // ── Main review job (14th at 12:00 UTC) ───────────────────────────────────────
 
-export async function runPromotionReview(client, { now = new Date() } = {}) {
+export async function runPromotionReview(client, { now = new Date(), panel } = {}) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) { console.error('[PROMO] No bot token.'); recordSyncFail('promotion_review', 'no bot token'); return { ok: false, error: 'no bot token' }; }
 
   const month = monthKey(now);
   console.log(`[PROMO] Running promotion review for ${month}`);
-  const tally = tallyMonth(month);
+  const voters = panel ?? await fetchReviewPanel();
+  if (!voters) {
+    console.error('[PROMO] Could not read the FM Leadership role — not tallying.');
+    recordSyncFail('promotion_review', `${month}: could not read FM Leadership role members; nothing tallied`);
+    return { ok: false, error: 'could not read FM Leadership role members' };
+  }
+  const tally = tallyMonth(month, voters.length);
   const entries = Object.entries(tally);
   if (entries.length === 0) {
     console.log('[PROMO] No leadership notes found — skipping.');

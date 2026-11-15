@@ -2,8 +2,9 @@
 // and the leadership helpers behind it (fm/leadership/actions.js getVoteStatus /
 // getFeedbackDraft): merge of every source, ordering, paging, L1 redaction,
 // readiness numbers against the seed, vote status and the feedback draft's gates.
-import { as, ok, eq, rejects, failsWith, pass } from '../lib.mjs';
+import { as, ok, eq, rejects, failsWith, pass, captureDiscord, panelReply } from '../lib.mjs';
 import { query, queryOne, run } from '../../../shared/db.js';
+captureDiscord((e) => panelReply(e, ['100000000000000003', '738214924760907907']));   // FM Leadership = Mgmt Three + Risk
 const A = await import('../../../dashboard/src/app/fm/factions/actions.js');
 const L = await import('../../../dashboard/src/app/fm/leadership/actions.js');
 const month = new Date().toISOString().slice(0, 7);
@@ -92,7 +93,7 @@ run("UPDATE factions SET tier = 9 WHERE id = 4"); eq((await A.getPromotionReadin
 as('tok-l1'); await rejects(() => L.getVoteStatus('2026-10'), 'AUTH_INSUFFICIENT', 'vote status L2+');
 as('tok-l3'); await failsWith(() => L.getVoteStatus('2026-1'), /YYYY-MM/, 'bad month');
 { const v = await L.getVoteStatus('2026-10'); ok(v.ok && v.month === '2026-10', 'ok shape');
-  eq(v.voters.length, 2, 'two active L3s'); ok(v.voters.every(x => x.id && x.name), 'voter shape');
+  eq(v.voters.length, 2, 'two FM Leadership role holders'); eq(v.needed, 2, 'needs 2 of 2'); ok(v.voters.every(x => x.id && x.name), 'voter shape');
   const f1 = v.factions.find(f => f.factionId === 1); ok(f1 && f1.name === 'The Vanguard', 'faction row');
   eq(f1.votes.length, 1, 'one note'); eq(f1.votes[0].authorName, 'Mgmt Three', 'author name'); eq(f1.votes[0].status, '', 'note without a vote has empty status'); eq(f1.voted, 0, 'not counted as a vote');
   eq(f1.missing.length, 1, 'one missing'); eq(f1.missing[0].name, 'Risk (owner)', 'the owner is missing'); ok(!f1.complete, 'incomplete');

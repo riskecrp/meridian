@@ -1,9 +1,12 @@
 // Leadership actions (dashboard/src/app/fm/leadership/actions.js): review
 // submission scoping, personal-note votes and the derived review status,
 // feedback-sent tracking, meeting notes, team performance.
-import { as, ok, eq, rejects, failsWith, pass, captureDiscord, pings } from '../lib.mjs';
+import { as, ok, eq, rejects, failsWith, pass, captureDiscord, pings, panelReply } from '../lib.mjs';
 import { query, queryOne, run } from '../../../shared/db.js';
-const log = captureDiscord();
+// The review panel = FM Leadership role holders, read from the guild member list: Mgmt Three + Risk.
+let panelUp = true;
+const log = captureDiscord((e) => /\/guilds\/\d+\/members\?/.test(e.url) && !panelUp ? { status: 500, json: {} } : panelReply(e, ['100000000000000003', '738214924760907907']));
+const { resetReviewPanelCache } = await import('../../../shared/reviewPanel.js');
 const L = await import('../../../dashboard/src/app/fm/leadership/actions.js');
 const audit = () => queryOne('SELECT actor_name, action, target_type, target_id, target_label, details FROM site_audit_log ORDER BY id DESC LIMIT 1');
 const month = new Date().toISOString().slice(0, 7);
@@ -16,16 +19,20 @@ log.length = 0; const rv = await L.submitReview({ factionId: 1, factionName: 'WR
 log.length = 0; ok((await L.submitReview({ factionId: 1, recommendation: 'Hold', feedback: 'Revised' })).ok && pings(log).length === 0, 'resubmit updates without ping');
 as('tok-l3'); await failsWith(() => L.submitPersonalNote(1, '', 'note', 'Promote'), null, 'bare Promote refused (bot needs Confirmed X)');
 await failsWith(() => L.submitPersonalNote(3, '', 'note', 'Confirmed Hold'), null, 'note on archived'); await failsWith(() => L.submitPersonalNote(999, '', 'note', 'Confirmed Hold'), null, 'note unknown faction');
-{ const r = await L.submitPersonalNote(1, 'WRONG', 'Looks good', 'Confirmed Promote'); ok(r.ok && r.status === 'Confirmed Promote' && queryOne('SELECT status FROM faction_reviews WHERE id=?', [rv.id]).status === 'Confirmed Promote', 'vote derives Confirmed Promote'); }
-{ const r = await L.submitPersonalNote(1, '', 'Changed my mind', 'Confirmed Hold'); ok(r.ok && queryOne("SELECT COUNT(*) c FROM leadership_personal_notes WHERE faction_id=1 AND author_id='100000000000000003' AND review_month=?", [month]).c === 1, 'same month upserts'); eq(queryOne('SELECT status FROM faction_reviews WHERE id=?', [rv.id]).status, 'Confirmed Hold', 'derived Hold'); }
-as('tok-owner'); { const r = await L.submitPersonalNote(1, '', 'Promote them', 'Confirmed Promote'); ok(r.status === 'Pending Discussion' && queryOne('SELECT status FROM faction_reviews WHERE id=?', [rv.id]).status === 'Pending Discussion', 'tie → Pending Discussion'); }
+{ const r = await L.submitPersonalNote(1, 'WRONG', 'Looks good', 'Confirmed Promote'); ok(r.ok && r.status === 'Pending Discussion' && queryOne('SELECT status FROM faction_reviews WHERE id=?', [rv.id]).status === 'Pending Discussion', 'one vote of a 2-person panel confirms nothing'); }
+{ const r = await L.submitPersonalNote(1, '', 'Changed my mind', 'Confirmed Hold'); ok(r.ok && queryOne("SELECT COUNT(*) c FROM leadership_personal_notes WHERE faction_id=1 AND author_id='100000000000000003' AND review_month=?", [month]).c === 1, 'same month upserts'); eq(queryOne('SELECT status FROM faction_reviews WHERE id=?', [rv.id]).status, 'Pending Discussion', 'still one vote'); }
+as('tok-owner'); { const r = await L.submitPersonalNote(1, '', 'Hold them', 'Confirmed Hold'); ok(r.status === 'Confirmed Hold', '2 of 2 agree → Confirmed Hold'); }
+{ const r = await L.submitPersonalNote(1, '', 'Promote them', 'Confirmed Promote'); ok(r.status === 'Pending Discussion' && queryOne('SELECT status FROM faction_reviews WHERE id=?', [rv.id]).status === 'Pending Discussion', 'tie → Pending Discussion'); }
 as('tok-l2'); await rejects(() => L.setReviewStatus(rv.id, 'Confirmed Promote'), 'AUTH_INSUFFICIENT', 'L2 cannot confirm');
 as('tok-l3'); await failsWith(() => L.setReviewStatus(rv.id, 'Whatever'), null, 'bad status');
 const openTasks0 = queryOne("SELECT COUNT(*) c FROM tasks WHERE status='open'").c;
 eq((await L.setReviewStatus(rv.id, 'Confirmed Demote')).status, 'Pending Discussion', 'L3 demote vs owner promote still tied');
 as('tok-owner'); eq((await L.setReviewStatus(rv.id, 'Confirmed Demote')).status, 'Confirmed Demote', 'majority demote');
 { const t = query("SELECT target_id FROM tasks WHERE status='open' ORDER BY id DESC LIMIT 1")[0]; ok(queryOne("SELECT COUNT(*) c FROM tasks WHERE status='open'").c === openTasks0 + 1 && t.target_id === '900000000000000001', 'one leadership task raised'); }
-as('tok-l2'); { const s = await L.getFactionLeadershipSummary(1); ok(s.status === 'Confirmed Demote' && s.notes.length === 2, 'summary derived'); }
+as('tok-l2'); { const s = await L.getFactionLeadershipSummary(1); ok(s.status === 'Confirmed Demote' && s.notes.length === 2 && s.pending.length === 0 && s.tally.needed === 2 && s.tally.panel === 2, 'summary derived against a 2-person panel (bots + non-role members excluded)'); }
+panelUp = false; resetReviewPanelCache();
+as('tok-owner'); { const r = await L.setReviewStatus(rv.id, 'Confirmed Promote'); ok(r.ok && queryOne('SELECT status FROM faction_reviews WHERE id=?', [rv.id]).status === 'Confirmed Demote', 'panel unreadable → stored outcome left alone'); }
+panelUp = true; resetReviewPanelCache(); eq((await L.setReviewStatus(rv.id, 'Confirmed Demote')).status, 'Confirmed Demote', 'panel back → demote re-derived');
 as('tok-lst'); ok(typeof (await L.getFactionLeadershipSummary(1)).status === 'string', 'LST reads summary'); ok((await L.getReviewData()).length > 0, 'LST reads review data');
 ok(query("SELECT DISTINCT status FROM leadership_personal_notes WHERE status != ''").every(x => /^Confirmed /.test(x.status)), 'only bot-compatible Confirmed X strings stored'); pass('reviews + votes');
 
