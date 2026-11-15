@@ -247,6 +247,22 @@ export async function setReviewStatus(reviewId, status) {
 // LEADERSHIP VOTES / PERSONAL NOTES
 // ══════════════════════════════════════════════
 
+/**
+ * The team lead's ping when a leadership member votes: who voted and what,
+ * nothing about the tally — a single vote never decides the outcome.
+ * Statuses are stored as 'Confirmed X'; the ping says just 'X'.
+ */
+function voteNotice(leadId, actorName, factionName, status, prevStatus, isNew) {
+  const v = (s) => String(s || '').replace(/^Confirmed /, '');
+  const who = `**${actorName}**`, fac = `**${factionName}**`;
+  let line;
+  if (status && prevStatus) line = `${who} changed their vote on ${fac}: ${v(prevStatus)} → **${v(status)}**`;
+  else if (status) line = `${who} voted **${v(status)}** on ${fac}`;
+  else if (prevStatus) line = `${who} withdrew their vote on ${fac}`;
+  else line = `${who} ${isNew ? 'added' : 'updated'} a leadership note on ${fac}`;
+  return `${leadId ? `<@${leadId}> ` : ''}📝 ${line}\n${urls.faction(factionName, 'review')}`;
+}
+
 function upsertVote(actor, faction, month, note, status) {
   run(`INSERT INTO leadership_personal_notes (faction_id, faction_name, author_id, author_name, review_month, note, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -296,8 +312,7 @@ export async function submitPersonalNote(factionId, factionName, note, status) {
   const { status: derived } = await deriveReviewStatus(actor, f.id, month);
   logAudit(actor.id, actor.name, before ? 'EDIT' : 'CREATE', 'leadership_note', noteId, f.name, (st ? st + ' — ' : '') + text.substring(0, 80));
   if (!before || before.status !== st) {
-    await sendPing('review.leadership_note',
-      `${f.lead_discord_id ? `<@${f.lead_discord_id}> ` : ''}📝 **Leadership note ${before ? 'updated' : 'submitted'} for ${f.name}**${st ? ` · vote: ${st}` : ''} · tally: ${derived}\nPlease fold it into the faction's message before the 15th.\n${urls.faction(f.name, 'review')}`);
+    await sendPing('review.leadership_note', voteNotice(f.lead_discord_id, actor.name, f.name, st, before?.status, !before));
   }
   return ok({ id: noteId, status: derived, updated: !!before });
 }
@@ -315,8 +330,7 @@ export async function editPersonalNote(noteId, note, status) {
   logAudit(actor.id, actor.name, 'EDIT', 'leadership_note', existing.id, existing.faction_name, (st || '') + ' — ' + text.substring(0, 80));
   if (st !== existing.status && existing.review_month === monthKey()) {
     const f = queryOne("SELECT name, lead_discord_id FROM factions WHERE id = ?", [existing.faction_id]);
-    await sendPing('review.leadership_note',
-      `${f?.lead_discord_id ? `<@${f.lead_discord_id}> ` : ''}📝 **Leadership note updated for ${existing.faction_name}**${st ? ` · vote: ${st}` : ''} · tally: ${derived}\n${urls.faction(f?.name || existing.faction_name, 'review')}`);
+    await sendPing('review.leadership_note', voteNotice(f?.lead_discord_id, actor.name, f?.name || existing.faction_name, st, existing.status, false));
   }
   return ok({ status: derived });
 }
