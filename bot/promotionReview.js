@@ -26,7 +26,7 @@ import { recordSyncOk, recordSyncFail } from './lib/syncStatus.js';
 import { BOT_ACTOR } from './lib/auth.js';
 import { createTask } from '../shared/tasks.js';
 import { REVIEW_STATUSES } from '../shared/validate.js';
-import { fetchReviewPanel, decideOutcome } from '../shared/reviewPanel.js';
+import { fetchReviewPanel, decideOutcome, votesNeeded } from '../shared/reviewPanel.js';
 import { monthKey, nowIso } from '../shared/dates.js';
 
 export const GUN_CATEGORIES = (process.env.PROMO_GUN_CATEGORIES || [
@@ -329,7 +329,7 @@ async function openConfirmedPromotionsNow({ now = new Date(), panel, tally } = {
     }
 
     await discordPost(token, `/channels/${threadId}/messages`, {
-      content: `<@&${role}> ✅ **${faction.name}** — promotion to Tier ${nextTier} confirmed. Vote below on which new weapons they get; the polls close in 48 hours.`,
+      content: `<@&${role}> ✅ **${faction.name}** — promotion to Tier ${nextTier} confirmed. Vote below on which new weapons they get — a weapon needs a majority of FM Leadership to be approved; the polls close in 48 hours.`,
       allowed_mentions: { parse: [], roles: [role].filter(Boolean) },
     }).catch(e => console.error(`[PROMO] Intro error for ${faction.name}:`, e.message));
 
@@ -366,8 +366,12 @@ async function openConfirmedPromotionsNow({ now = new Date(), panel, tally } = {
 
 // ── Poll result processor ──────────────────────────────────────────────────────
 
-/** Read a poll message and decide whether it is closed. Returns { closed, approved[] } or throws. */
-async function readPoll(token, poll, now) {
+/**
+ * Read a poll message and decide whether it is closed. A weapon is approved
+ * when at least `needed` people voted for it (a majority of FM Leadership, the
+ * same rule as the outcome vote). Returns { closed, approved[], counts{} } or throws.
+ */
+async function readPoll(token, poll, now, needed) {
   const msg = await discordGet(token, `/channels/${poll.thread_id}/messages/${poll.message_id}`);
   const p = msg.poll || {};
   const expiry = p.expiry ? new Date(p.expiry).getTime() : 0;
@@ -377,17 +381,18 @@ async function readPoll(token, poll, now) {
   const answerCounts = p.results?.answer_counts || [];
   const weapons = JSON.parse(poll.weapon_names || '[]');
   const approved = [];
+  const counts = {};
   for (const ac of answerCounts) {
-    if (ac.count > 0) {
-      const answer = answers.find(a => a.answer_id === ac.id);
-      const weaponName = answer?.poll_media?.text || weapons[ac.id - 1];
-      if (weaponName) approved.push(weaponName);
-    }
+    const answer = answers.find(a => a.answer_id === ac.id);
+    const weaponName = answer?.poll_media?.text || weapons[ac.id - 1];
+    if (!weaponName) continue;
+    counts[weaponName] = ac.count;
+    if (ac.count >= needed) approved.push(weaponName);
   }
-  return { closed: true, approved };
+  return { closed: true, approved, counts };
 }
 
-export async function processClosedPolls({ now = new Date() } = {}) {
+export async function processClosedPolls({ now = new Date(), panel } = {}) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) return { ok: false, error: 'no bot token' };
 
@@ -400,6 +405,10 @@ export async function processClosedPolls({ now = new Date() } = {}) {
   `, [now.toISOString().slice(0, 19).replace('T', ' ')]);
   if (candidates.length === 0) return { ok: true, processed: 0 };
   console.log(`[PROMO] Checking ${candidates.length} poll(s) for results`);
+  // Each weapon needs a majority of the panel; can't read the panel → try again later.
+  const voters = panel ?? await fetchReviewPanel();
+  const needed = voters ? votesNeeded(voters.length) : null;
+  if (!needed) { recordSyncFail('promotion_polls', 'could not read FM Leadership role members; results not processed (will retry)'); return { ok: false, processed: 0, errors: ['could not read FM Leadership role members'] }; }
 
   const byFaction = {};
   for (const p of candidates) {
@@ -413,7 +422,7 @@ export async function processClosedPolls({ now = new Date() } = {}) {
     let allClosed = true;
     for (const poll of data.polls) {
       try {
-        const r = await readPoll(token, poll, now);
+        const r = await readPoll(token, poll, now, needed);
         if (!r.closed) { allClosed = false; break; }
         results.push({ poll, approved: r.approved });
         await new Promise(r => setTimeout(r, 300));
@@ -438,13 +447,13 @@ export async function processClosedPolls({ now = new Date() } = {}) {
     const month = monthKey(String(data.polls[0].created_at).replace(' ', 'T') + 'Z');
     const body = approvedWeapons.length
       ? [
-          `Weapon polls have closed. Approved imports:`,
+          `Weapon polls have closed. Approved imports (${needed}+ of ${voters.length} FM Leadership votes):`,
           ...approvedWeapons.map(w => `• ${w}`),
           ``,
           `Stage the promotion in the Factions dashboard with these imports. This will notify Team Leads to schedule the RP.`,
           urls.faction(data.name, 'review'),
         ].join('\n')
-      : `No weapon votes were recorded. Please review poll results and stage the promotion manually in the Factions dashboard.\n${urls.faction(data.name, 'review')}`;
+      : `No weapon reached ${needed} of ${voters.length} FM Leadership votes. Please review the poll results and stage the promotion manually in the Factions dashboard.\n${urls.faction(data.name, 'review')}`;
     const task = await raiseReviewTask(`${data.name} — Stage Promotion to Tier ${data.nextTier} (review ${month})`, body);
     if (!task.ok) { errors.push(`${data.name}: task failed (${task.error})`); continue; }
     transaction(() => { for (const r of results) run("UPDATE promotion_polls SET processed = 1 WHERE id = ?", [r.poll.id]); });
@@ -452,9 +461,9 @@ export async function processClosedPolls({ now = new Date() } = {}) {
 
     const summary = approvedWeapons.length
       ? [`<@&${getRole('fm_leadership')}> ✅ **${data.name}** — Polls closed`,
-         `**Approved imports (${approvedWeapons.length}):** ${approvedWeapons.join(', ')}`,
+         `**Approved imports (${approvedWeapons.length}, ${needed}+ votes each):** ${approvedWeapons.join(', ')}`,
          `A task has been created for FM Leadership to stage the promotion. Team Leads will be notified once it is staged.`].join('\n')
-      : `<@&${getRole('fm_leadership')}> ⚠️ **${data.name}** — No weapon votes were cast. A task has been created to review and stage the promotion manually.`;
+      : `<@&${getRole('fm_leadership')}> ⚠️ **${data.name}** — No weapon reached ${needed} of ${voters.length} FM Leadership votes. A task has been created to review and stage the promotion manually.`;
     await discordPost(token, `/channels/${data.threadId}/messages`, { content: summary, allowed_mentions: { parse: [], roles: [getRole('fm_leadership')].filter(Boolean) } })
       .catch(e => console.error(`[PROMO] Thread summary error for ${data.name}:`, e.message));
     await new Promise(r => setTimeout(r, 800));
