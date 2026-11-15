@@ -952,3 +952,9 @@ CREATE TABLE sheet_rows_seen (
     PRIMARY KEY (source, row_key)
   );
 CREATE INDEX idx_pe_status ON pending_executions(status, resolved_at);
+CREATE TABLE promotion_threads (
+  month TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL,
+  summary_posted_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
