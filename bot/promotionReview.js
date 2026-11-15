@@ -191,98 +191,151 @@ export async function runPromotionReview(client, { now = new Date(), panel } = {
     }
   }
 
-  const needsThread = outcome.promote.length > 0 || outcome.discuss.length > 0;
-  if (!needsThread) {
-    console.log('[PROMO] No promotions or discussions needed.');
-    recordSyncOk('promotion_review', `${month}: ${entries.length} faction(s) tallied; no polls or discussions; ${outcome.tasks.length} task(s)`);
-    return { ok: true, ...outcome };
-  }
-
-  // Factions that already have polls this month are done; the month's thread
-  // (if any) is reused for the rest.
-  const existingPolls = query("SELECT faction_id, thread_id FROM promotion_polls WHERE strftime('%Y-%m', created_at) = ?", [month]);
-  const polledIds = new Set(existingPolls.map(p => p.faction_id));
-  const toPoll = outcome.promote.filter(f => !polledIds.has(f.factionId));
-  outcome.skipped = outcome.promote.filter(f => polledIds.has(f.factionId)).map(f => f.name);
-  if (!toPoll.length && existingPolls.length) {
-    console.log(`[PROMO] ${month} already reviewed — nothing new to poll.`);
-    recordSyncOk('promotion_review', `${month}: already reviewed (${outcome.skipped.length} faction(s) polled earlier)`);
-    return { ok: true, ...outcome, alreadyReviewed: true };
-  }
-
-  const boardChannel = pingChannel('promo.review.thread');
-  if (!boardChannel) {
-    recordSyncFail('promotion_review', 'route promo.review.thread is disabled or has no channel');
-    return { ok: false, ...outcome, error: 'promo.review.thread route unavailable' };
-  }
-  const tName = threadName(month);
-  let threadId = existingPolls[0]?.thread_id || null;
-  if (!threadId) {
-    try {
-      const thread = await discordPost(token, `/channels/${boardChannel}/threads`, { name: tName, auto_archive_duration: 10080, type: 11 });
-      threadId = thread.id;
-      console.log(`[PROMO] Created thread "${tName}" (${threadId})`);
-    } catch (e) {
-      console.error('[PROMO] Failed to create thread:', e.message);
-      recordSyncFail('promotion_review', `thread: ${e.message}`);
-      return { ok: false, ...outcome, error: e.message };
-    }
-
-    // Opening ping
-    const sections = [];
-    if (outcome.promote.length) sections.push(`**Confirmed Promotions:** ${outcome.promote.map(f => f.name).join(', ')}`);
-    if (outcome.demote.length)  sections.push(`**Confirmed Demotions:** ${outcome.demote.map(f => f.name).join(', ')} (leadership tasks raised)`);
-    if (outcome.remove.length)  sections.push(`**Confirmed Removals:** ${outcome.remove.map(f => f.name).join(', ')} (leadership tasks raised)`);
-    if (outcome.hold.length)    sections.push(`**Confirmed Hold:** ${outcome.hold.map(f => f.name).join(', ')}`);
-    if (outcome.discuss.length) sections.push(`**Needs Discussion:** ${outcome.discuss.map(d => `${d.name} (${Object.entries(d.counts).map(([s, n]) => `${n} ${s.replace('Confirmed ', '').toLowerCase()}`).join(' / ')})`).join(', ')}`);
-    await discordPost(token, `/channels/${threadId}/messages`, {
-      content: `<@&${getRole('fm_leadership')}> **Promotion Review — ${tName}**\n\n${sections.join('\n')}\n\nWeapon polls for confirmed promotions are below. Polls close in 48 hours.`,
-      allowed_mentions: { parse: [], roles: [getRole('fm_leadership')].filter(Boolean) },
-    }).catch(e => console.error('[PROMO] Opening message error:', e.message));
-
-    for (const d of outcome.discuss) {
+  // The month's summary for leadership — once per month, in the month's thread.
+  const needsSummary = outcome.promote.length > 0 || outcome.discuss.length > 0;
+  let threadId = null;
+  if (needsSummary) {
+    const existing = queryOne("SELECT thread_id, summary_posted_at FROM promotion_threads WHERE month = ?", [month]);
+    if (!existing?.summary_posted_at) {
+      try { threadId = await ensureMonthThread(token, month); }
+      catch (e) {
+        recordSyncFail('promotion_review', `thread: ${e.message}`);
+        return { ok: false, ...outcome, error: e.message };
+      }
+      const role = getRole('fm_leadership');
+      const sections = [];
+      if (outcome.promote.length) sections.push(`**Confirmed Promotions:** ${outcome.promote.map(f => f.name).join(', ')}`);
+      if (outcome.demote.length)  sections.push(`**Confirmed Demotions:** ${outcome.demote.map(f => f.name).join(', ')} (leadership tasks raised)`);
+      if (outcome.remove.length)  sections.push(`**Confirmed Removals:** ${outcome.remove.map(f => f.name).join(', ')} (leadership tasks raised)`);
+      if (outcome.hold.length)    sections.push(`**Confirmed Hold:** ${outcome.hold.map(f => f.name).join(', ')}`);
+      if (outcome.discuss.length) sections.push(`**Needs Discussion:** ${outcome.discuss.map(d => `${d.name} (${splitText(d.counts)})`).join(', ')}`);
       await discordPost(token, `/channels/${threadId}/messages`, {
-        content: `<@&${getRole('fm_leadership')}> ⚠️ **${d.name}** has a split vote (${Object.entries(d.counts).map(([s, n]) => `${n} ${s.replace('Confirmed ', '').toLowerCase()}`).join(' / ')}) — please discuss and reach a decision.`,
-        allowed_mentions: { parse: [], roles: [getRole('fm_leadership')].filter(Boolean) },
-      }).catch(e => console.error(`[PROMO] Discussion message error for ${d.name}:`, e.message));
-      await new Promise(r => setTimeout(r, 500));
+        content: `<@&${role}> **Promotion Review — ${threadName(month)}**\n\n${sections.join('\n')}${outcome.promote.length ? '\n\nWeapon polls for confirmed promotions are in this thread (each opens as soon as the promotion is confirmed). Polls close in 48 hours.' : ''}`,
+        allowed_mentions: { parse: [], roles: [role].filter(Boolean) },
+      }).catch(e => console.error('[PROMO] Opening message error:', e.message));
+      for (const d of outcome.discuss) {
+        await discordPost(token, `/channels/${threadId}/messages`, {
+          content: `<@&${role}> ⚠️ **${d.name}** has no majority yet (${splitText(d.counts)}) — please discuss and reach a decision.`,
+          allowed_mentions: { parse: [], roles: [role].filter(Boolean) },
+        }).catch(e => console.error(`[PROMO] Discussion message error for ${d.name}:`, e.message));
+        await sleep(500);
+      }
+      run("UPDATE promotion_threads SET summary_posted_at = ? WHERE month = ?", [nowIso(), month]);
+    } else {
+      outcome.alreadyReviewed = true;
     }
   }
 
-  // Weapon polls for confirmed factions
-  const pollErrors = [];
-  for (const faction of toPoll) {
+  // Weapon polls for any confirmed promotion not opened yet (normally the
+  // 5-minute sweep has already opened them the moment they were confirmed).
+  const opened = await openConfirmedPromotions({ now, panel: voters, tally });
+  outcome.polls = opened.polls;
+  outcome.tasks.push(...opened.tasks);
+  outcome.skipped = outcome.promote.filter(f => !opened.opened.includes(f.name)).map(f => f.name);
+
+  console.log(`[PROMO] Review complete for ${month}.`);
+  if (opened.errors.length) recordSyncFail('promotion_review', opened.errors.join(' | '));
+  else recordSyncOk('promotion_review', `${month}: ${entries.length} faction(s) tallied, ${outcome.polls} poll(s), ${outcome.tasks.length} task(s)${outcome.alreadyReviewed ? ' (summary already posted)' : ''}`);
+  return { ok: opened.errors.length === 0, ...outcome, threadId: threadId || opened.threadId || null };
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const splitText = (counts) => Object.entries(counts).map(([s, n]) => `${n} ${s.replace('Confirmed ', '').toLowerCase()}`).join(' / ');
+
+/** The month's "YYYY-MON Promotion Discussions" thread, created on first use. */
+async function ensureMonthThread(token, month) {
+  const row = queryOne("SELECT thread_id FROM promotion_threads WHERE month = ?", [month]);
+  if (row?.thread_id) return row.thread_id;
+  const boardChannel = pingChannel('promo.review.thread');
+  if (!boardChannel) throw new Error('route promo.review.thread is disabled or has no channel');
+  const thread = await discordPost(token, `/channels/${boardChannel}/threads`, { name: threadName(month), auto_archive_duration: 10080, type: 11 });
+  run("INSERT OR IGNORE INTO promotion_threads (month, thread_id) VALUES (?, ?)", [month, thread.id]);
+  console.log(`[PROMO] Created thread "${threadName(month)}" (${thread.id})`);
+  return queryOne("SELECT thread_id FROM promotion_threads WHERE month = ?", [month]).thread_id;
+}
+
+/**
+ * Has this month's promotion for the faction already been started (or done by
+ * hand)? Polls, a staging task, a staged promotion or a promotion in the
+ * faction's history all count — so nothing is ever opened twice.
+ */
+function promotionStarted(faction, month) {
+  if (queryOne("SELECT 1 FROM promotion_polls WHERE faction_id = ? AND strftime('%Y-%m', created_at) = ?", [faction.factionId, month])) return true;
+  if (queryOne("SELECT 1 FROM tasks WHERE description LIKE ?", [`${faction.name} — Stage Promotion to Tier % (review ${month})%`])) return true;
+  const f = queryOne("SELECT pending_promo FROM factions WHERE id = ?", [faction.factionId]);
+  if (f?.pending_promo) return true;
+  return !!queryOne("SELECT 1 FROM faction_history WHERE faction_id = ? AND action_type IN ('PROMOTED','PROMO_STAGED') AND substr(created_at, 1, 7) = ?", [faction.factionId, month]);
+}
+
+// One sweep at a time: the 5-minute sweep and the 14th's job share this.
+let sweeping = Promise.resolve();
+
+/**
+ * Open the weapon polls for every promotion confirmed THIS month that hasn't
+ * been started. Runs every 5 minutes, so a promotion confirmed on any day gets
+ * its polls within minutes — not only if it was confirmed before the 14th.
+ * Only the current month is looked at: older months were handled by hand.
+ * Returns { polls, tasks, opened: [names], errors, threadId }.
+ */
+export function openConfirmedPromotions(opts = {}) {
+  const run_ = sweeping.then(() => openConfirmedPromotionsNow(opts));
+  sweeping = run_.catch(() => {});
+  return run_;
+}
+
+async function openConfirmedPromotionsNow({ now = new Date(), panel, tally } = {}) {
+  const out = { polls: 0, tasks: [], opened: [], errors: [], threadId: null };
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) return out;
+  const month = monthKey(now);
+  const reviews = query(`SELECT r.faction_id, f.name FROM faction_reviews r JOIN factions f ON f.id = r.faction_id
+     WHERE r.review_month = ? AND r.status = 'Confirmed Promote' AND f.archived = 0 ORDER BY f.name`, [month]);
+  if (!reviews.length) return out;
+  // Re-check the votes against the live panel rather than trusting a stored status.
+  const voters = panel ?? await fetchReviewPanel();
+  if (!voters) { out.errors.push('could not read FM Leadership role members'); return out; }
+  const t = tally ?? tallyMonth(month, voters.length);
+  const due = reviews.map(r => ({ factionId: r.faction_id, name: r.name }))
+    .filter(f => t[f.factionId]?.status === 'Confirmed Promote' && !promotionStarted(f, month));
+  if (!due.length) return out;
+
+  let threadId;
+  try { threadId = await ensureMonthThread(token, month); }
+  catch (e) { out.errors.push(`thread: ${e.message}`); recordSyncFail('promotion_open', out.errors.join(' | ')); return out; }
+  out.threadId = threadId;
+  const role = getRole('fm_leadership');
+
+  for (const faction of due) {
     const factionRow = queryOne("SELECT tier FROM factions WHERE id = ?", [faction.factionId]);
-    if (!factionRow) { console.warn(`[PROMO] Faction ${faction.name} not found`); continue; }
+    if (!factionRow) continue;
     const nextTier = parseInt(factionRow.tier) + 1;
-
-    const authorizedIds = new Set(
-      query(`SELECT item_id FROM faction_imports WHERE faction_id = ? AND permitted = 1`, [faction.factionId]).map(r => r.item_id)
-    );
-
+    const authorizedIds = new Set(query(`SELECT item_id FROM faction_imports WHERE faction_id = ? AND permitted = 1`, [faction.factionId]).map(r => r.item_id));
     const placeholders = GUN_CATEGORIES.map(() => '?').join(',');
     const weapons = query(
-      `SELECT id, name, category FROM import_items
-       WHERE category IN (${placeholders}) AND CAST(tier AS INTEGER) = ?
-       ORDER BY category, name`,
+      `SELECT id, name, category FROM import_items WHERE category IN (${placeholders}) AND CAST(tier AS INTEGER) = ? ORDER BY category, name`,
       [...GUN_CATEGORIES, String(nextTier)]
     ).filter(w => !authorizedIds.has(w.id));
 
     if (weapons.length === 0) {
       await discordPost(token, `/channels/${threadId}/messages`, {
-        content: `**${faction.name} Promotion** — No new Tier ${nextTier} weapons available (all already authorized).`,
+        content: `<@&${role}> ✅ **${faction.name}** — promotion to Tier ${nextTier} confirmed. No new Tier ${nextTier} weapons are available (all already authorized), so there is nothing to poll; a task has been raised to stage it.`,
+        allowed_mentions: { parse: [], roles: [role].filter(Boolean) },
       }).catch(() => {});
-      // Nothing to poll: stage straight away so the promotion is not lost.
       const r = await raiseReviewTask(`${faction.name} — Stage Promotion to Tier ${nextTier} (review ${month})`,
         `Leadership confirmed the promotion; no new Tier ${nextTier} weapons were available to poll. Stage the promotion in the Factions dashboard.\n${urls.faction(faction.name, 'review')}`);
-      if (r.ok) outcome.tasks.push({ faction: faction.name, kind: 'promote', uid: r.uid, existing: !!r.existing });
+      if (r.ok) out.tasks.push({ faction: faction.name, kind: 'promote', uid: r.uid, existing: !!r.existing });
+      out.opened.push(faction.name);
       continue;
     }
 
-    // Group by category and create one poll per category
+    await discordPost(token, `/channels/${threadId}/messages`, {
+      content: `<@&${role}> ✅ **${faction.name}** — promotion to Tier ${nextTier} confirmed. Vote below on which new weapons they get; the polls close in 48 hours.`,
+      allowed_mentions: { parse: [], roles: [role].filter(Boolean) },
+    }).catch(e => console.error(`[PROMO] Intro error for ${faction.name}:`, e.message));
+
     const byCategory = {};
     for (const w of weapons) (byCategory[w.category] ||= []).push(w);
-
+    let any = false;
     for (const [category, items] of Object.entries(byCategory)) {
       try {
         const msg = await discordPost(token, `/channels/${threadId}/messages`, {
@@ -293,25 +346,22 @@ export async function runPromotionReview(client, { now = new Date(), panel } = {
             duration: 48,
           },
         });
-        run(
-          `INSERT INTO promotion_polls (faction_id, faction_name, next_tier, thread_id, message_id, category, weapon_names, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [faction.factionId, faction.name, nextTier, threadId, msg.id, category, JSON.stringify(items.slice(0, 10).map(w => w.name)), nowIso().slice(0, 19).replace('T', ' ')]
-        );
-        outcome.polls++;
+        run(`INSERT INTO promotion_polls (faction_id, faction_name, next_tier, thread_id, message_id, category, weapon_names, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [faction.factionId, faction.name, nextTier, threadId, msg.id, category, JSON.stringify(items.slice(0, 10).map(w => w.name)), nowIso().slice(0, 19).replace('T', ' ')]);
+        out.polls++; any = true;
         console.log(`[PROMO] Poll created: ${faction.name} — ${category} (${items.length} options)`);
-        await new Promise(r => setTimeout(r, 600));
+        await sleep(600);
       } catch (e) {
         console.error(`[PROMO] Poll error ${faction.name} ${category}:`, e.message);
-        pollErrors.push(`${faction.name}/${category}: ${e.message}`);
+        out.errors.push(`${faction.name}/${category}: ${e.message}`);
       }
     }
+    if (any) out.opened.push(faction.name);
   }
-
-  console.log(`[PROMO] Review complete for ${month}.`);
-  if (pollErrors.length) recordSyncFail('promotion_review', pollErrors.join(' | '));
-  else recordSyncOk('promotion_review', `${month}: ${entries.length} faction(s) tallied, ${outcome.polls} poll(s), ${outcome.tasks.length} task(s)`);
-  return { ok: pollErrors.length === 0, ...outcome, threadId };
+  if (out.errors.length) recordSyncFail('promotion_open', out.errors.join(' | '));
+  else recordSyncOk('promotion_open', `${month}: opened ${out.opened.join(', ') || 'nothing'} (${out.polls} poll(s))`);
+  return out;
 }
 
 // ── Poll result processor ──────────────────────────────────────────────────────
@@ -425,7 +475,9 @@ export function startPromotionReview(client) {
   // Poll result processor — every 5 minutes
   cron.schedule('*/5 * * * *', () => {
     processClosedPolls().catch(e => { console.error('[PROMO RESULTS] Uncaught error:', e.message); recordSyncFail('promotion_polls', e); });
+    // Promotions confirmed on any day get their weapon polls within 5 minutes.
+    openConfirmedPromotions().catch(e => { console.error('[PROMO OPEN] Uncaught error:', e.message); recordSyncFail('promotion_open', e); });
   }, { timezone: 'UTC' });
 
-  console.log('[PROMO] Promotion review scheduled — 14th at 12:00 UTC. Result processor running every 5 minutes.');
+  console.log('[PROMO] Promotion review scheduled — summary on the 14th at 12:00 UTC; confirmed promotions opened + poll results processed every 5 minutes.');
 }

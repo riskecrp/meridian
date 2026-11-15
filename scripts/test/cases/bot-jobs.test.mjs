@@ -73,7 +73,7 @@ const st = (id) => queryOne('SELECT rank, clearance, active FROM staff WHERE dis
   ok(retireStaffOnLeave(id, 'New Person') === true && st(id).active === 0 && /left the FM Discord/.test(queryOne("SELECT details FROM site_audit_log WHERE target_type='staff' ORDER BY id DESC LIMIT 1").details), 'leave → retired + audited'); } section('staff sync');
 
 // ── promotion review ──
-const { runPromotionReview, processClosedPolls, tallyMonth } = await import('../../../bot/promotionReview.js');
+const { runPromotionReview, processClosedPolls, tallyMonth, openConfirmedPromotions } = await import('../../../bot/promotionReview.js');
 const month = new Date().toISOString().slice(0, 7); run('DELETE FROM leadership_personal_notes');
 run("INSERT INTO leadership_personal_notes (faction_id, faction_name, author_id, author_name, review_month, note, status) VALUES (1,'The Vanguard','100000000000000003','Mgmt Three',?,'go','Confirmed Promote'),(1,'The Vanguard','738214924760907907','Risk',?,'go','Confirmed Promote'),(1,'The Vanguard','232331558676070401','Other',?,'meh','Confirmed Hold'),(2,'Los Santos Kings','100000000000000003','Mgmt Three',?,'x','Confirmed Promote'),(2,'Los Santos Kings','738214924760907907','Risk',?,'x','Confirmed Hold'),(4,'Harbor Syndicate','100000000000000003','Mgmt Three',?,'bad','Confirmed Demote'),(4,'Harbor Syndicate','738214924760907907','Risk',?,'',''),(4,'Harbor Syndicate','232331558676070401','Other',?,'bad','Confirmed Demote')", [month, month, month, month, month, month, month, month]);
 const PANEL = [{ id: '100000000000000003', name: 'Mgmt Three' }, { id: '738214924760907907', name: 'Risk' }, { id: '232331558676070401', name: 'Other' }];
@@ -86,7 +86,20 @@ plan = (e) => e.url.includes('/threads') ? { json: { id: 'thread1' } } : { json:
   eq(JSON.stringify(query('SELECT faction_id, status FROM faction_reviews WHERE review_month=? ORDER BY faction_id', [month])), JSON.stringify([{ faction_id: 1, status: 'Confirmed Promote' }, { faction_id: 2, status: 'Pending Discussion' }, { faction_id: 4, status: 'Confirmed Demote' }]), 'derived statuses written');
   const t = query("SELECT target_id, created_by_id, created_by_name, status, created_at FROM tasks WHERE created_by_id='bot'"); ok(t.length === 1 && t[0].target_id === ROLES.fm_leadership && t[0].created_by_name === 'Meridian' && t[0].status === 'open' && /^\d{4}-\d\d-\d\dT/.test(t[0].created_at) && r.tasks[0].kind === 'demote' && !r.tasks[0].existing, 'demote task via shared createTask');
   eq(query('SELECT category FROM promotion_polls ORDER BY category').map(x => x.category).join(), 'Pistol Medium,SMG', 'polls per weapon category'); }
-{ const r = await runPromotionReview(null, { panel: PANEL }); ok(r.alreadyReviewed && r.tasks[0].existing && query('SELECT 1 FROM promotion_polls').length === 2 && query("SELECT 1 FROM tasks WHERE created_by_id='bot'").length === 1 && /already reviewed/.test(sync('promotion_review').last_detail), 'second run: no duplicate thread/polls/tasks'); }
+{ const r = await runPromotionReview(null, { panel: PANEL }); ok(r.alreadyReviewed && r.tasks[0].existing && query('SELECT 1 FROM promotion_polls').length === 2 && query("SELECT 1 FROM tasks WHERE created_by_id='bot'").length === 1 && /summary already posted/.test(sync('promotion_review').last_detail), 'second run: no duplicate thread/polls/tasks'); }
+{ const th = queryOne('SELECT thread_id, summary_posted_at FROM promotion_threads WHERE month=?', [month]); ok(th?.thread_id === 'thread1' && th.summary_posted_at, 'month thread recorded with its summary'); }
+// Confirmed AFTER the 14th: the 5-minute sweep opens it without waiting for next month, in the same thread.
+{ const prev = (() => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1)).toISOString().slice(0, 7); })();
+  run("INSERT INTO faction_reviews (faction_id, faction_name, review_month, recommendation, feedback, status) VALUES (1,'The Vanguard',?,'Promote','old','Confirmed Promote') ON CONFLICT(faction_id, review_month) DO UPDATE SET status='Confirmed Promote'", [prev]);
+  run("UPDATE leadership_personal_notes SET status='Confirmed Promote' WHERE faction_id=2 AND author_id='738214924760907907' AND review_month=?", [month]);
+  run("UPDATE faction_reviews SET status='Confirmed Promote' WHERE faction_id IN (2,4) AND review_month=?", [month]);   // 4's stored status is wrong on purpose: its votes say Demote
+  log.length = 0;
+  const a = await openConfirmedPromotions({ panel: PANEL });
+  ok(a.opened.join() === 'Los Santos Kings' && !log.some(e => e.url.endsWith('/threads')) && log.some(e => /Los Santos Kings\*\* — promotion to Tier 2 confirmed/.test(e.body?.content || '')), `late confirmation opened in the existing thread (${a.opened})`);
+  ok(query("SELECT 1 FROM tasks WHERE description LIKE 'Los Santos Kings — Stage Promotion to Tier 2 (review ' || ? || ')%'", [month]).length === 1, 'no weapons at the next tier → staging task');
+  ok(!a.opened.includes('Harbor Syndicate'), 'a stored status the votes do not support is not opened');
+  log.length = 0; const b = await openConfirmedPromotions({ panel: PANEL }); ok(b.opened.length === 0 && log.length === 0, 'second sweep: nothing opened twice, previous month untouched');
+  ok((await openConfirmedPromotions({ panel: null })).opened.length === 0, 'panel unreadable → nothing opened'); }
 run("UPDATE promotion_polls SET created_at = datetime('now','-49 hours')");
 plan = () => ({ json: { poll: { expiry: new Date(Date.now() + 3600000).toISOString(), results: { is_finalized: false, answer_counts: [] }, answers: [] } } }); { const a = await processClosedPolls(); ok(a.ok && a.processed === 0, 'unfinalised polls untouched'); }
 { let n = 0; plan = (e) => (e.method === 'GET' && n++ === 0) ? { status: 500, json: { message: 'boom' } } : { json: { id: 'x', poll: { expiry: new Date(Date.now() - 3600000).toISOString(), results: { is_finalized: true, answer_counts: [{ id: 1, count: 2 }] }, answers: [{ answer_id: 1, poll_media: { text: 'Pistol .50' } }] } } };

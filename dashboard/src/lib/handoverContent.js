@@ -56,6 +56,7 @@ export const TABLE_DOCS = {
   ooc_notes: "Out-of-character notes attached to scenes.",
   change_log: "A log of world and story changes — drop locations, turf edits, and similar.",
   promotion_polls: "Polls used when deciding faction promotions.",
+  promotion_threads: "Each month's Promotion Discussions thread and whether its summary was posted.",
   knowledge_base: "The team's how-to articles and reference information.",
   intel_notes: "Intelligence notes staff recorded about factions and players.",
   documents: "The team's written guides and SOPs (rich text written in the dashboard), each with the clearance level needed to read it.",
