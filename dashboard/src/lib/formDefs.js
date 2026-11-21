@@ -140,8 +140,8 @@ export const FORM_DEFS = [
     // Headers below are chosen so each pattern's FIRST match is the right
     // column (the feedback text must match none of them).
     identify: {
-      team: /team|division/i,
-      faction: /faction/i,
+      team: /\bteam\b|faction management|reports to/i,
+      faction: /^(?!.*(?:faction management|reports to)).*faction/i,
       character: /character/i,
       discord: /discord/i,
       occurred: /occur|when did/i,

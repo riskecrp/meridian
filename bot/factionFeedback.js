@@ -69,9 +69,14 @@ const SOURCE = 'feedback';
 // Columns are found by HEADER TEXT, not position, so a question inserted into
 // the form cannot re-point every field below it (BOT-9). Everything that is
 // not one of these identity fields is a question and is posted as a section.
+// The live form's team question is "…reports to Legal Faction Management (LFM)
+// or Criminal Faction Management (FM)?", and its Discord question ends "…the
+// faction's oversight division?" — so `team` must not match "division" (that
+// sent every row to the username column and skipped them all, Nov 11–21), and
+// `faction` must skip the team question, which also says "faction".
 const COLS = {
-  team: /team|division/i,
-  faction: /faction/i,
+  team: /\bteam\b|faction management|reports to/i,
+  faction: /^(?!.*(?:faction management|reports to)).*faction/i,
   character: /character/i,
   discord: /discord/i,
   occurred: /occur|when did/i,

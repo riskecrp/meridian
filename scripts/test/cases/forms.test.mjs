@@ -46,7 +46,21 @@ for (const bf of FORMS) {
   // Each column pattern's FIRST non-empty match in field order must be the intended field.
   const header = fb.fields.map(f => f.name); const row = fb.fields.map(f => f.type === 'fixed' ? f.value : 'x');
   const want = { team: 'Which team is this for?', faction: 'Which faction is this feedback about?', character: 'Character name', discord: 'Your Discord username', occurred: 'When did this occur?' };
-  for (const [k, re] of Object.entries(fb.identify)) eq(header[valueByHeader(header, row, re).index], want[k], `feedback: ${k} resolves to the right column`); }
+  for (const [k, re] of Object.entries(fb.identify)) eq(header[valueByHeader(header, row, re).index], want[k], `feedback: ${k} resolves to the right column`);
+  // The LIVE Google Form's headers, verbatim (2026-11-21). "/team|division/" once
+  // matched the Discord question ("…oversight division?") instead of the team
+  // question, so every FM row was skipped for ten days with no error.
+  const live = ['Timestamp',
+    'Are you providing feedback for a faction that reports to Legal Faction Management (LFM) or Criminal Faction Management (FM)?',
+    'Which faction is this feedback about?', "What is your character's name?",
+    "What is your Discord username for follow up from the faction's oversight division?", 'When did this occur? ',
+    'Please provide a detailed description of the event in question and any POV or evidence you have.',
+    'What worked well in this interaction?', 'What could have been handled better?',
+    "Is there anything you'd like Game Affairs to be aware of when reviewing this feedback? ",
+    'This form is for faction feedback and behavioral reviews, and should not be used in place of forum reports for rule breaks.'];
+  const liveRow = live.map((_, i) => i === 1 ? FEEDBACK_TEAM_VALUE : 'x');
+  const liveWant = { team: 1, faction: 2, character: 3, discord: 4, occurred: 5 };
+  for (const [k, re] of Object.entries(fb.identify)) eq(valueByHeader(live, liveRow, re).index, liveWant[k], `feedback (live sheet headers): ${k} resolves to column ${liveWant[k]}`); }
 pass('definitions');
 
 // ── validation (pure) ──
